@@ -48,6 +48,22 @@ const sprite = await spriteUpload(me.spriteUrl, me.atlas)
 
 const startSeat = Number.isInteger(config.seat) ? config.seat : 0
 const world = createWorld(viewport, { seat: startSeat, dock, pixelScale: 2, autoRender: false })
+// Joy decorators (sound, play, mood) attach before any pet is upserted, and only once this world
+// build has the joy moments; a world without them never requests the modules (no 404s).
+const joy = { muted: false }
+if (['celebrate', 'knock', 'handshake'].some(name => typeof world[name] === 'function')) {
+  const attach = async (file, name, ...args) => {
+    try {
+      const module = await import(file)
+      if (typeof module[name] === 'function') return (await module[name](world, ...args)) || world
+    } catch (error) { console.warn(`petpack: ${file} unavailable`, error?.message || error) }
+    return null
+  }
+  joy.sound = await attach('./world/sound.js', 'attachSound')
+  joy.play = await attach('./world/play.js', 'attachPlay', { container: viewport })
+  joy.mood = await attach('./world/mood.js', 'attachMood')
+}
+joy.mute = () => { joy.muted = !joy.muted; world.setMuted?.(joy.muted); flash(joy.muted ? 'sound off' : 'sound on') }
 let net = null
 // Render-side state the brain's view callbacks touch (declared before the brain exists).
 const shown = new Map() // id -> upserted info key
@@ -79,7 +95,8 @@ const brain = createBrain({
     throwPet: (id, v) => withPet(id, () => world.throwPet?.(id, v)),
     bloom: bloom => world.bloom?.(bloom),
     garden: list => world.setGarden?.(list),
-    handshake: info => world.handshake?.(info),
+    // The link reaches both panes together (welcome + seat broadcast); a fixed beat lets both pets arrive first.
+    handshake: info => setTimeout(() => withPet(myId, () => world.handshake?.(info)), 1200),
     conga: (ids, startAt) => world.conga?.(ids, { startAt: worldTimeOf(startAt) }),
   },
 })
@@ -198,7 +215,7 @@ let interactive = null
 let selectedUntil = 0
 let hoverSaid = 0
 window.addEventListener('mousemove', event => {
-  const id = world.pick(event.clientX, event.clientY)
+  const id = world.playHitTest?.(event.clientX, event.clientY) ?? world.pick(event.clientX, event.clientY)
   const want = !!id
   if (want !== interactive) { interactive = want; try { bridge.setInteractive?.(want) } catch { /* bridge gone */ } }
   if (id === myId && performance.now() - hoverSaid > 6000) {
@@ -221,36 +238,12 @@ window.addEventListener('keydown', event => {
   else if (event.key === 'ArrowRight') brain.moveSeatRequest(1)
 })
 
-// ---- joy modules (sound, play, mood): attached only once the world exposes them ----
-const joy = {}
-async function attachJoy() {
-  const joyful = ['celebrate', 'bloom', 'conga', 'photo', 'knock'].some(name => typeof world[name] === 'function')
-  if (!joyful) return
-  const attach = async (file, name, ...args) => {
-    try {
-      const module = await import(file)
-      if (typeof module[name] === 'function') return await module[name](world, ...args)
-    } catch (error) { console.warn(`petpack: ${file} unavailable`, error?.message || error) }
-    return null
-  }
-  joy.sound = await attach('./world/sound.js', 'attachSound')
-  joy.play = await attach('./world/play.js', 'attachPlay', { container: viewport })
-  joy.mood = await attach('./world/mood.js', 'attachMood')
-  joy.mute = () => {
-    const sound = joy.sound
-    if (typeof sound?.toggle === 'function') return sound.toggle()
-    if (typeof sound?.setMuted === 'function') return sound.setMuted(!sound.muted)
-    if (typeof world.mute === 'function') return world.mute()
-    return undefined
-  }
-  if (typeof world.setGarden === 'function') world.setGarden(brain.garden)
-}
-attachJoy()
-// Throwing: your own pet (and local demo bots) land where they're thrown; other panes replay the throw.
-world.onThrow?.((id, info = {}) => {
-  const to = info.to || (Number.isFinite(info.x) ? { x: info.x, z: info.z } : null)
-  brain.throwPet(id, to, info)
+// Throwing: our own pet (and local demo bots) land where they're thrown; other panes replay the throw.
+world.onThrow?.((event = {}) => {
+  const to = event.to && Number.isFinite(event.to.x) ? { x: event.to.x, z: event.to.z } : null
+  brain.throwPet(event.id, to, event)
 })
+if (typeof world.setGarden === 'function') world.setGarden(brain.garden)
 async function takePhoto() {
   try {
     let shot = await world.photo?.()

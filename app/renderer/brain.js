@@ -458,7 +458,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     if (to && Number.isFinite(to.x) && Number.isFinite(to.z)) { agent.x = to.x; agent.z = to.z; agent.route = [] }
     agent.pauseUntil = time + 2
     if (agent.isMe) wake()
-    if (online && !agent.isBot) send({ t: 'fx', kind: 'throw', src: id, vx: velocity.vx || 0, vz: velocity.vz || 0, x: to?.x, z: to?.z })
+    if (online && !agent.isBot) send({ t: 'fx', kind: 'throw', src: id, vx: velocity.vx || 0, vz: velocity.vz || 0, from: velocity.from, to: velocity.to || to, duration: velocity.duration })
     return true
   }
 
@@ -474,8 +474,11 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   }
   function showFx(kind, p) {
     // Text only for the moments that matter: the question, the answer and "learned X".
-    if (kind === 'gift' || kind === 'fetch') emit('gift', p.src, p.dst, { label: '', color: DOT_COLORS[p.dot] || DOT_COLORS.skill, kind: p.dot })
-    else if (kind === 'ask') emit('ask', p.src, p.dst, { question: bubbleText(p.question, 44), answer: bubbleText(p.answer, 44), kind: p.dot || undefined, label: '' })
+    // A dot blooms in the garden where it lands; one shared seed keeps every pane's garden identical.
+    const knowledge = p.seed && KINDS.includes(p.dot) ? { kind: p.dot, seed: String(p.seed) } : {}
+    if (kind === 'gift' || kind === 'fetch') emit('gift', p.src, p.dst, { label: '', color: DOT_COLORS[p.dot] || DOT_COLORS.skill, ...knowledge })
+    else if (kind === 'ask') emit('ask', p.src, p.dst, { question: bubbleText(p.question, 44), answer: bubbleText(p.answer, 44),
+      kind: KINDS.includes(p.dot) ? p.dot : undefined, seed: p.seed ? String(p.seed) : undefined, label: '' })
     else if ((kind === 'learned' || kind === 'say') && p.text && p.src) emit('say', p.src, bubbleText(p.text, 30))
     else if (kind === 'wave' && p.src && agents.has(p.src)) setAnim(agents.get(p.src), 'wave', 1.4)
     else if (kind === 'knock') emit('knock', p.src, p.on !== false)
@@ -483,7 +486,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     else if (kind === 'celebrate') emit('celebrate', p.src)
     else if (kind === 'sleep') emit('sleep', p.src, p.on !== false)
     else if (kind === 'conga' && Array.isArray(p.ids)) emit('conga', p.ids, p.startAt)
-    else if (kind === 'throw') emit('throwPet', p.src, { vx: p.vx || 0, vz: p.vz || 0 })
+    else if (kind === 'throw') emit('throwPet', p.src, { vx: p.vx || 0, vz: p.vz || 0, ...(p.from ? { from: p.from } : {}), ...(p.to ? { to: p.to } : {}), ...(p.duration ? { duration: p.duration } : {}) })
     if (kind === 'learned' && p.src) {
       countLearned(p.src)
       if (p.bloom) plant({ ...p.bloom, color: colorOf(p.src) })
@@ -921,7 +924,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       const content = fetchItem(owner, item.ref, as)
       errandTo(mine, owner.id, { kind: item.kind, label: item.title, onArrive: async () => {
         await content
-        if (owner.online) { fx('fetch', { src: owner.id, dst: myId, dot: item.kind }); await sleep(1.4) }
+        if (owner.online) { fx('fetch', { src: owner.id, dst: myId, dot: item.kind, seed: id }); await sleep(1.4) }
         fx('learned', { src: myId, text: `learned ${shortTitle(item.title)}`, bloom: { kind: item.kind, seed: id } })
       } })
       const result = await content
@@ -961,7 +964,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         result = bridge.installItem ? await bridge.installItem({ ...item, text: content.text, pkg: content.pkg, owner: owner.name }, owner.name)
           : await bridge.installSkill?.(content.pkg, owner.name)
       } catch (error) { result = { installed: false, reason: String(error?.message || error) } }
-      fx('gift', { src: owner.online && member(owner.id) ? owner.id : myId, dst: myId, label: item.title, dot: item.kind })
+      fx('gift', { src: owner.online && member(owner.id) ? owner.id : myId, dst: myId, label: item.title, dot: item.kind, seed: id })
       setAnim(mine, 'jump', 1.1)
       fx('learned', { src: myId, text: `learned ${shortTitle(item.title)}`, bloom: { kind: item.kind, seed: id } })
       return { installed: !!result?.installed, path: result?.path, ...(result?.reason ? { reason: result.reason } : {}) }
@@ -1041,7 +1044,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       const shareKind = answer?.share?.kind
       const text = answer ? String(answer.text || '').replace(/\s+/g, ' ').slice(0, 90) : `${target.name} couldn't answer in time.`
       fx('ask', { src: agent.id, dst: target.id, question: question.slice(0, 90), answer: text,
-        dot: KINDS.includes(shareKind) ? shareKind : null, label: answer?.share?.title || '' })
+        dot: KINDS.includes(shareKind) ? shareKind : null, label: answer?.share?.title || '',
+        seed: answer?.share ? `${target.id}/${answer.share.ref || answer.share.title}` : undefined })
       await sleep(3.6, job)
       if (state.adopted && !job.cancelled) {
         const a = state.adopted
@@ -1136,7 +1140,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     errandTo(agent, receiverId, { kind: 'skill', label: skill.name, quiet: true, onArrive: async () => {
       const receiver = member(receiverId)
       if (!receiver) return
-      fx('gift', { src: agent.id, dst: receiverId, label: skill.name, dot: 'skill' })
+      fx('gift', { src: agent.id, dst: receiverId, label: skill.name, dot: 'skill', seed: `${agent.id}/skill:${skill.name}` })
       if (receiver.local && agents.get(receiverId)?.isBot) {
         const bot = agents.get(receiverId)
         await sleep(1.4)
@@ -1190,7 +1194,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       // Every 40-60 s a bot runs an errand to the user's pet for something the user owns.
       const item = mine.catalog[Math.floor(random() * mine.catalog.length)]
       errandTo(bot, myId, { kind: item.kind, label: item.title, onArrive: async () => {
-        fx('fetch', { src: myId, dst: bot.id, label: item.title, dot: item.kind })
+        fx('fetch', { src: myId, dst: bot.id, label: item.title, dot: item.kind, seed: `${myId}/${item.ref}` })
         await sleep(1.3)
         showFx('learned', { src: bot.id, text: `learned ${shortTitle(item.title)}`, bloom: { kind: item.kind, seed: `${myId}/${item.ref}` } })
       } })
