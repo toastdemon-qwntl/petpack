@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('petpack', {
   catalog: () => call('petpack:getCatalog'),
   readItem: (ref, as) => call('petpack:readItem', ref, as),
   answerAsk: request => call('petpack:answerAsk', request),
+  savePhoto: dataUrl => call('petpack:savePhoto', dataUrl),
   onAgentCall(handler) {
     agentHandler = typeof handler === 'function' ? handler : null
     if (agentHandler) {

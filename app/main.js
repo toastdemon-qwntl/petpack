@@ -322,6 +322,17 @@ handle('petpack:installItem', (item, fromName) => codex.installItem(item, fromNa
 handle('petpack:getCatalog', () => codex.getCatalog())
 handle('petpack:readItem', (ref, as) => codex.readItem(ref, as))
 handle('petpack:answerAsk', request => codex.answerAsk(request))
+// Photo mode (P): the page hands over a PNG data URL; it lands on the Desktop.
+handle('petpack:savePhoto', dataUrl => {
+  const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''))
+  if (!m) return { saved: false, reason: 'not a PNG data URL' }
+  let dir = app.getPath('desktop')
+  if (!fs.existsSync(dir)) dir = app.getPath('pictures')
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const file = path.join(dir, `petpack-${stamp}.png`)
+  fs.writeFileSync(file, Buffer.from(m[1], 'base64'))
+  return { saved: true, path: file }
+})
 ipcMain.on('petpack:interactive', (event, on) => { if (trusted(event)) clickThrough?.set(on) })
 ipcMain.on('petpack:agent-ready', (event, ready) => {
   if (!trusted(event)) return

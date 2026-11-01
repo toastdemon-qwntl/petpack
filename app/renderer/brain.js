@@ -384,6 +384,84 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     const local = id => id && agents.get(id)?.isBot
     if (online && !local(payload.src) && !local(payload.dst)) send({ t: 'fx', kind, ...payload })
   }
+  // ---- joy: knocks, weather, celebrations, sleep, blooms, hats, handshakes, conga, throws ----
+  const doneAt = new Map() // id -> wall ms of the last turn to 'done'
+  const learnedCount = new Map() // id -> learned items (hat level)
+  const garden = new Map() // seed -> { kind, seed, color }
+  let linkKey = ''
+  let lastActivity = 0
+  let sleeping = false
+  let lastConga = -Infinity
+  const HAT_AT = [1, 3, 6, 10, 15]
+  const hatLevel = n => HAT_AT.filter(k => n >= k).length
+  const colorOf = id => agents.get(id)?.color || peers.get(id)?.color || colorFor(id)
+  function wake() {
+    lastActivity = time
+    if (sleeping) { sleeping = false; fx('sleep', { src: myId, on: false }) }
+  }
+  function countLearned(id, by = 1) {
+    const before = learnedCount.get(id) || 0
+    learnedCount.set(id, before + by)
+    if (hatLevel(before + by) !== hatLevel(before)) emit('hat', id, hatLevel(before + by))
+  }
+  function plant(entry) {
+    if (!entry?.seed || garden.has(entry.seed)) return false
+    const bloom = { kind: KINDS.includes(entry.kind) ? entry.kind : 'skill', seed: String(entry.seed), color: entry.color }
+    garden.set(bloom.seed, bloom)
+    emit('bloom', bloom)
+    return true
+  }
+  /** On (re)join: the garden and hats from what the room has already adopted (petpack-* items in catalogs). */
+  function rebuildGarden() {
+    const counts = new Map()
+    const owners = [{ id: myId, catalog: mine.catalog }, ...[...peers.values()].map(p => ({ id: p.id, catalog: p.catalog }))]
+    for (const owner of owners) for (const item of owner.catalog || []) {
+      if (!/(^|:)petpack-/.test(item.ref)) continue
+      const seed = `${owner.id}/${item.ref}`
+      if (!garden.has(seed)) garden.set(seed, { kind: item.kind, seed, color: colorOf(owner.id) })
+      counts.set(owner.id, (counts.get(owner.id) || 0) + 1)
+    }
+    emit('garden', [...garden.values()])
+    for (const [id, n] of counts) if ((learnedCount.get(id) || 0) < n) { learnedCount.set(id, n); emit('hat', id, hatLevel(n)) }
+  }
+  function noteLinks(links) {
+    const mineLinks = links.filter(l => Array.isArray(l) && l.includes(myId)).map(l => l.join('|')).sort()
+    const key = mineLinks.join(',')
+    if (key === linkKey) return
+    const added = mineLinks.filter(l => !linkKey.split(',').includes(l))
+    linkKey = key
+    for (const l of added) {
+      const [left] = l.split('|')
+      emit('handshake', { seat: mySeat, side: left === myId ? 'right' : 'left' })
+    }
+  }
+  /** Whole room done within 60 s: the lowest seat starts the conga for everyone. */
+  function maybeConga(force = false) {
+    if (!force && time - lastConga < 90) return false
+    const everyone = members({ includeMe: true }).filter(m => m.online && !m.isBot)
+    if (!force) {
+      if (everyone.length < 2) return false
+      const now = wall()
+      if (!everyone.every(m => now - (doneAt.get(m.id) || -Infinity) < 60000)) return false
+      const lowest = everyone.reduce((a, b) => ((b.seat ?? 0) < (a.seat ?? 0) ? b : a))
+      if (lowest.id !== myId) return false
+    }
+    lastConga = time
+    const ids = members({ includeMe: true }).filter(m => m.online && (force || !m.isBot)).map(m => m.id)
+    fx('conga', { src: myId, ids, startAt: wall() + 1200 })
+    return true
+  }
+  function throwPet(id, to, velocity = {}) {
+    const agent = agents.get(id)
+    if (!agent) return false
+    cancelJob(agent)
+    if (to && Number.isFinite(to.x) && Number.isFinite(to.z)) { agent.x = to.x; agent.z = to.z; agent.route = [] }
+    agent.pauseUntil = time + 2
+    if (agent.isMe) wake()
+    if (online && !agent.isBot) send({ t: 'fx', kind: 'throw', src: id, vx: velocity.vx || 0, vz: velocity.vz || 0, x: to?.x, z: to?.z })
+    return true
+  }
+
   /** Stay at the meeting until the answer is out and the scene has played (caps keep it moving). */
   async function holdForScene(agent, job, answeredAt) {
     const started = time
@@ -400,6 +478,16 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     else if (kind === 'ask') emit('ask', p.src, p.dst, { question: bubbleText(p.question, 44), answer: bubbleText(p.answer, 44), kind: p.dot || undefined, label: '' })
     else if ((kind === 'learned' || kind === 'say') && p.text && p.src) emit('say', p.src, bubbleText(p.text, 30))
     else if (kind === 'wave' && p.src && agents.has(p.src)) setAnim(agents.get(p.src), 'wave', 1.4)
+    else if (kind === 'knock') emit('knock', p.src, p.on !== false)
+    else if (kind === 'weather') emit('weather', p.src, p.w === 'rainbow' ? 'rainbow' : 'rain')
+    else if (kind === 'celebrate') emit('celebrate', p.src)
+    else if (kind === 'sleep') emit('sleep', p.src, p.on !== false)
+    else if (kind === 'conga' && Array.isArray(p.ids)) emit('conga', p.ids, p.startAt)
+    else if (kind === 'throw') emit('throwPet', p.src, { vx: p.vx || 0, vz: p.vz || 0 })
+    if (kind === 'learned' && p.src) {
+      countLearned(p.src)
+      if (p.bloom) plant({ ...p.bloom, color: colorOf(p.src) })
+    }
     if (kind === 'learned' && p.src && p.skill) {
       const peer = peers.get(p.src)
       if (peer && !peer.skills.some(s => s.name === p.skill.name)) peer.skills.push(p.skill)
@@ -426,6 +514,14 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     const previous = codexStatus
     codexStatus = status
     mine.status = status
+    // Joy: the moments every pane shares.
+    wake()
+    if (status === 'waiting') fx('knock', { src: myId, on: true })
+    else if (previous === 'waiting') fx('knock', { src: myId, on: false })
+    if (status === 'done' && previous === 'failed') fx('weather', { src: myId, w: 'rainbow' })
+    else if (status === 'done') fx('celebrate', { src: myId })
+    if (status === 'failed') fx('weather', { src: myId, w: 'rain' })
+    if (status === 'done') doneAt.set(myId, wall())
     if (status === 'waiting') {
       // Hurry home so "waiting on you" shows on the owner's own screen.
       cancelJob(mine)
@@ -490,6 +586,10 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     const best = peer.clock.samples.reduce((a, b) => (b.rtt < a.rtt ? b : a))
     peer.clock.offset = Math.abs(best.offset) > best.rtt / 2 ? best.offset : 0
   }
+  function setPeerStatus(peer, status) {
+    if (status === 'done' && peer.status !== 'done') doneAt.set(peer.id, wall())
+    peer.status = status
+  }
   function onPose(from, p) {
     const peer = peers.get(from)
     if (!peer || !Number.isFinite(p.x) || !Number.isFinite(p.z) || !Number.isFinite(p.ts)) return
@@ -528,7 +628,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     return peer
   }
   function pushSample(peer, s, ts = wall() - 150) {
-    if (s.status) peer.status = s.status
+    if (s.status) setPeerStatus(peer, s.status)
     const list = peer.samples
     const last = list.at(-1)
     if (last && ts <= last.ts) return // stale or reordered
@@ -552,12 +652,14 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
           const peer = peers.get(id)
           if (peer && Number.isInteger(seat)) { peer.seat = seat; if (peer.online) seats.set(id, seat) }
         }
+        if (Array.isArray(msg.links)) noteLinks(msg.links)
         if (Number.isInteger(firstSeat)) moveSeat(firstSeat, 'welcome', !welcomed && firstSeat !== mySeat)
         seats.set(myId, mySeat)
         seatedCache = null
         welcomed = true
         if (!demo && bots().length) removeBots() // solo fallback bots leave once real peers can arrive
         rehomeBots()
+        rebuildGarden()
         emit('online', { room, seat: mySeat })
         sendState(true)
         break
@@ -570,6 +672,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
           mine.giftReadyAt = time + 4
           rehomeBots()
           emit('roster')
+          emit('arrive', peer.id)
         }
         break
       }
@@ -583,7 +686,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
           if (s.id === myId) continue
           const peer = peers.get(s.id) || upsertPeer({ id: s.id }, true)
           if (!peer) continue
-          if (peer.posed) { if (s.status) peer.status = s.status } // timestamped poses carry the position
+          if (peer.posed) { if (s.status) setPeerStatus(peer, s.status) } // timestamped poses carry the position
           else pushSample(peer, s)
         }
         break
@@ -599,6 +702,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
           emit('seats', { seat: mySeat, why: msg.why, links: msg.links || [] })
           if (msg.why === 'bump') setAnim(mine, 'wave', 1.2)
         }
+        if (Array.isArray(msg.links)) noteLinks(msg.links)
         break
       }
       case 'catalog': {
@@ -731,7 +835,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     } catch (error) { result = { installed: false, reason: String(error?.message || error) } }
     if (!mine.skills.some(s => s.name === skill.name)) mine.skills.push({ id: skill.id || skill.name, name: skill.name, description: skill.description || '' })
     setAnim(mine, 'jump', 1.1)
-    fx('learned', { src: myId, text: `learned ${shortTitle(skill.name)}`, skill: { id: skill.id || skill.name, name: skill.name, description: skill.description || '' } })
+    fx('learned', { src: myId, text: `learned ${shortTitle(skill.name)}`, bloom: { kind: 'skill', seed: `${msg.from || 'peer'}/skill:${skill.name}` }, skill: { id: skill.id || skill.name, name: skill.name, description: skill.description || '' } })
     emit('roster')
     return result
   }
@@ -818,7 +922,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       errandTo(mine, owner.id, { kind: item.kind, label: item.title, onArrive: async () => {
         await content
         if (owner.online) { fx('fetch', { src: owner.id, dst: myId, dot: item.kind }); await sleep(1.4) }
-        fx('learned', { src: myId, text: `learned ${shortTitle(item.title)}` })
+        fx('learned', { src: myId, text: `learned ${shortTitle(item.title)}`, bloom: { kind: item.kind, seed: id } })
       } })
       const result = await content
       if (!result?.ok) return { kind: item.kind, title: item.title, owner: owner.name, text: '', error: result?.reason || `${owner.name} is away` }
@@ -859,7 +963,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       } catch (error) { result = { installed: false, reason: String(error?.message || error) } }
       fx('gift', { src: owner.online && member(owner.id) ? owner.id : myId, dst: myId, label: item.title, dot: item.kind })
       setAnim(mine, 'jump', 1.1)
-      fx('learned', { src: myId, text: `learned ${shortTitle(item.title)}` })
+      fx('learned', { src: myId, text: `learned ${shortTitle(item.title)}`, bloom: { kind: item.kind, seed: id } })
       return { installed: !!result?.installed, path: result?.path, ...(result?.reason ? { reason: result.reason } : {}) }
     },
     async petpack_ask({ question = '', to, kind } = {}) {
@@ -941,7 +1045,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       await sleep(3.6, job)
       if (state.adopted && !job.cancelled) {
         const a = state.adopted
-        fx('learned', { src: agent.id, text: `learned ${shortTitle(a.title)}`,
+        fx('learned', { src: agent.id, text: `learned ${shortTitle(a.title)}`, bloom: { kind: a.kind, seed: `${target.id}/${a.ref || a.title}` },
           ...(a.kind === 'skill' && a.skill ? { skill: a.skill } : {}) })
         setAnim(agent, 'jump', 1.1)
         await sleep(1.2, job)
@@ -978,7 +1082,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       skill = { id: content.id || content.name || title, name: content.name || title, description: content.description || share?.summary || '' }
       if (!mine.skills.some(s => s.name === skill.name)) mine.skills.push(skill)
     }
-    return { path: result.path, kind, title, skill }
+    return { path: result.path, kind, title, skill, ref: share?.ref || null }
   }
 
   /** Bots answer tier 1 only: no exec, ever. */
@@ -1038,7 +1142,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         await sleep(1.4)
         if (!bot.skills.some(s => s.name === skill.name)) bot.skills.push({ ...skill })
         setAnim(bot, 'jump', 1)
-        showFx('learned', { src: bot.id, text: `learned ${shortTitle(skill.name)}` })
+        showFx('learned', { src: bot.id, text: `learned ${shortTitle(skill.name)}`, bloom: { kind: 'skill', seed: `${agent.id}/skill:${skill.name}` } })
       } else if (receiverId === myId) {
         await sleep(1.4)
         const item = agent.catalog.find(i => i.kind === 'skill' && i.title === skill.name)
@@ -1088,7 +1192,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       errandTo(bot, myId, { kind: item.kind, label: item.title, onArrive: async () => {
         fx('fetch', { src: myId, dst: bot.id, label: item.title, dot: item.kind })
         await sleep(1.3)
-        showFx('learned', { src: bot.id, text: `learned ${shortTitle(item.title)}` })
+        showFx('learned', { src: bot.id, text: `learned ${shortTitle(item.title)}`, bloom: { kind: item.kind, seed: `${myId}/${item.ref}` } })
       } })
     } else {
       const q = BOT_QUESTIONS[Math.floor(random() * BOT_QUESTIONS.length)]
@@ -1170,6 +1274,10 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     if (!config.noVisits) maybeVisit(mine)
     sendState()
     syncClocks()
+    // Idle with no Codex activity for 3 min: the pet naps until something happens.
+    if (mine.job || codexStatus === 'working' || codexStatus === 'waiting') { lastActivity = time; if (sleeping) wake() }
+    if (!sleeping && time - lastActivity > 180) { sleeping = true; fx('sleep', { src: myId, on: true }) }
+    if (online) maybeConga()
     catalogTimer += dt
     if (catalogTimer > 30) { catalogTimer = 0; refreshCatalog() }
     if (catalogDirty && online && time - lastCatalogSent >= 5) {
@@ -1237,6 +1345,11 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     tick, handle, call, setStatus, netStatus, hello, pets, addBots, removeBots, refreshCatalog,
     moveSeatRequest(delta) { if (online) send({ t: 'seat', op: 'move', to: mySeat + delta }) },
     isSeated(chunk) { for (const [id, seat] of seats) if (id !== myId && seat === chunk) return true; return false },
+    party: () => maybeConga(true),
+    throwPet,
+    wake,
+    get garden() { return [...garden.values()] },
+    hatOf: id => hatLevel(learnedCount.get(id) || 0),
     get time() { return time },
     get seat() { return mySeat },
     get room() { return room },

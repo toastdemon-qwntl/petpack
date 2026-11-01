@@ -49,6 +49,12 @@ const sprite = await spriteUpload(me.spriteUrl, me.atlas)
 const startSeat = Number.isInteger(config.seat) ? config.seat : 0
 const world = createWorld(viewport, { seat: startSeat, dock, pixelScale: 2, autoRender: false })
 let net = null
+// Render-side state the brain's view callbacks touch (declared before the brain exists).
+const shown = new Map() // id -> upserted info key
+const shownX = new Map() // id -> displayed x
+const textQueue = []
+let textBusyUntil = 0
+let shownMe = null
 const brain = createBrain({
   bridge,
   net: { send: msg => net?.send(msg) ?? false },
@@ -63,8 +69,30 @@ const brain = createBrain({
     say: (id, text) => queueText({ ids: [id], hold: 2800, run: () => world.say(id, text) }),
     seat: seat => { world.setSeat(seat); flash(`seat ${seat + 1}`) },
     seats: ({ seat }) => flash(`seat ${seat + 1}`),
+    // Joy (world lanes; every call optional until they land).
+    knock: (id, on) => withPet(id, () => world.knock?.(id, on)),
+    weather: (id, kind) => withPet(id, () => world.weather?.(id, kind)),
+    celebrate: id => withPet(id, () => world.celebrate?.(id)),
+    sleep: (id, on) => withPet(id, () => world.sleep?.(id, on)),
+    hat: (id, level) => withPet(id, () => world.setHat?.(id, level)),
+    arrive: id => withPet(id, () => world.arrive?.(id, 'balloon')),
+    throwPet: (id, v) => withPet(id, () => world.throwPet?.(id, v)),
+    bloom: bloom => world.bloom?.(bloom),
+    garden: list => world.setGarden?.(list),
+    handshake: info => world.handshake?.(info),
+    conga: (ids, startAt) => world.conga?.(ids, { startAt: worldTimeOf(startAt) }),
   },
 })
+// Per-pet effects wait until that pet is in this pane's world.
+const petWaiters = new Map()
+function withPet(id, fn) {
+  if (shown?.has(id)) { try { fn() } catch (error) { console.warn('petpack joy', error) } return }
+  const list = petWaiters.get(id) || []
+  list.push(fn)
+  petWaiters.set(id, list.slice(-6))
+}
+// Shared moments carry wall-clock times; the world runs on this page's frame clock (seconds).
+const worldTimeOf = epochMs => (Number.isFinite(epochMs) ? performance.now() + (epochMs - Date.now()) : performance.now()) / 1000
 if (demo) brain.addBots()
 if (relayUrl) {
   net = createNet({ url: relayUrl, hello: () => brain.hello(), onMessage: msg => brain.handle(msg), onStatus: s => brain.netStatus(s) })
@@ -78,9 +106,9 @@ bridge.onAgentCall?.(async (a, b) => {
 })
 
 // ---- text bubbles: one at a time per pane; asks first; stale lines dropped ----
-const shownX = new Map() // id -> displayed x
-const textQueue = []
-let textBusyUntil = 0
+
+
+
 function inView(id) {
   const x = shownX.get(id)
   return x != null && Math.abs(x - brain.seat * CHUNK_W) <= CHUNK_W / 2 + 0.4
@@ -103,7 +131,7 @@ function pumpText() {
 }
 
 // ---- draw loop: the brain advances on every frame; a slow timer keeps it alive when hidden ----
-const shown = new Map()
+
 let last = performance.now()
 let lastTick = last
 function advance(now) {
@@ -126,10 +154,12 @@ function syncPets() {
     const key = JSON.stringify(info)
     if (shown.get(p.id) !== key) { world.upsertPet(p.id, info); shown.set(p.id, key) }
     world.updatePet(p.id, { x: p.x, z: p.z, facing: p.facing, anim: p.anim, status: p.status, speed: p.speed, snap: true })
+    const waiting = petWaiters.get(p.id)
+    if (waiting) { petWaiters.delete(p.id); for (const fn of waiting) { try { fn() } catch (error) { console.warn('petpack joy', error) } } }
   }
   for (const id of [...shown.keys()]) if (!seen.has(id)) { world.removePet(id); shown.delete(id); shownX.delete(id) }
 }
-let shownMe = null
+
 function frame(now) {
   const dt = advance(now)
   syncPets()
@@ -181,10 +211,57 @@ window.addEventListener('click', event => {
   if (world.pick(event.clientX, event.clientY) === myId) { selectedUntil = performance.now() + 6000; world.say(myId, '← → to move seat') }
 })
 window.addEventListener('keydown', event => {
+  if (event.metaKey || event.ctrlKey || event.altKey) return
+  const key = event.key.toLowerCase()
+  if (key === 'p' && !event.shiftKey) { takePhoto(); return }
+  if (key === 'm') { joy.mute?.(); return }
+  if (key === 'c' || (key === 'p' && event.shiftKey)) { brain.party(); return }
   if (performance.now() > selectedUntil) return
   if (event.key === 'ArrowLeft') brain.moveSeatRequest(-1)
   else if (event.key === 'ArrowRight') brain.moveSeatRequest(1)
 })
+
+// ---- joy modules (sound, play, mood): attached only once the world exposes them ----
+const joy = {}
+async function attachJoy() {
+  const joyful = ['celebrate', 'bloom', 'conga', 'photo', 'knock'].some(name => typeof world[name] === 'function')
+  if (!joyful) return
+  const attach = async (file, name, ...args) => {
+    try {
+      const module = await import(file)
+      if (typeof module[name] === 'function') return await module[name](world, ...args)
+    } catch (error) { console.warn(`petpack: ${file} unavailable`, error?.message || error) }
+    return null
+  }
+  joy.sound = await attach('./world/sound.js', 'attachSound')
+  joy.play = await attach('./world/play.js', 'attachPlay', { container: viewport })
+  joy.mood = await attach('./world/mood.js', 'attachMood')
+  joy.mute = () => {
+    const sound = joy.sound
+    if (typeof sound?.toggle === 'function') return sound.toggle()
+    if (typeof sound?.setMuted === 'function') return sound.setMuted(!sound.muted)
+    if (typeof world.mute === 'function') return world.mute()
+    return undefined
+  }
+  if (typeof world.setGarden === 'function') world.setGarden(brain.garden)
+}
+attachJoy()
+// Throwing: your own pet (and local demo bots) land where they're thrown; other panes replay the throw.
+world.onThrow?.((id, info = {}) => {
+  const to = info.to || (Number.isFinite(info.x) ? { x: info.x, z: info.z } : null)
+  brain.throwPet(id, to, info)
+})
+async function takePhoto() {
+  try {
+    let shot = await world.photo?.()
+    if (!shot) return
+    if (shot instanceof Blob) shot = await new Promise(resolve => { const r = new FileReader(); r.onload = () => resolve(r.result); r.readAsDataURL(shot) })
+    if (typeof shot !== 'string') shot = shot.toDataURL?.('image/png') || shot.dataUrl || shot.url
+    if (typeof shot !== 'string') return
+    if (bridge.savePhoto) { const saved = await bridge.savePhoto(shot); if (saved?.saved) flash('photo saved to Desktop') }
+    else Object.assign(document.createElement('a'), { href: shot, download: `petpack-${Date.now()}.png` }).click()
+  } catch (error) { console.warn('petpack photo', error?.message || error) }
+}
 
 /** Peers always get a plain 8x9 sheet: crop the top 9 rows of our atlas and re-encode as WebP (~1 MB). */
 async function spriteUpload(url, atlas) {

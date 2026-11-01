@@ -224,6 +224,38 @@ test('demo bot gifts animate and say "learned", but never write into the Codex h
   assert.equal(installs.length, 0)
 })
 
+test('joy: status moments, hats and blooms, handshake on link, conga when the whole room is done', async () => {
+  const seen = []
+  const view = new Proxy({}, { get: (_, name) => (...args) => seen.push([name, ...args]) })
+  const net = fakeNet()
+  const brain = createBrain({ bridge: {}, net, view, me: { id: 'me', name: 'Pip', skills: [], catalog: [] },
+    config: { seat: 0, noVisits: true }, random: seeded(5) })
+  welcome(brain, [{ ...REX, seat: 1 }])
+  brain.handle({ t: 'seat', seats: { me: 0, rex: 1 }, links: [['me', 'rex']], why: 'dock' })
+  assert.deepEqual(seen.find(e => e[0] === 'handshake')?.[1], { seat: 0, side: 'right' })
+
+  brain.setStatus('working'); brain.setStatus('failed'); brain.setStatus('done'); brain.setStatus('waiting'); brain.setStatus('idle')
+  const names = seen.map(e => e[0])
+  assert.deepEqual(seen.filter(e => e[0] === 'weather').map(e => e[2]), ['rain', 'rainbow'])
+  assert.deepEqual(seen.filter(e => e[0] === 'knock').map(e => e[2]), [true, false])
+  assert.ok(names.includes('weather') && net.sent.some(m => m.t === 'fx' && m.kind === 'weather'), 'shared with the room')
+  brain.setStatus('working'); brain.setStatus('done')
+  assert.ok(seen.some(e => e[0] === 'celebrate' && e[1] === 'me'))
+
+  for (let i = 0; i < 3; i++) brain.handle({ t: 'fx', from: 'rex', kind: 'learned', src: 'rex', text: `learned x${i}`, bloom: { kind: 'skill', seed: `me/skill:x${i}` } })
+  assert.deepEqual(seen.filter(e => e[0] === 'hat').map(e => e.slice(1)), [['rex', 1], ['rex', 2]])
+  assert.equal(seen.filter(e => e[0] === 'bloom').length, 3)
+  assert.equal(seen.find(e => e[0] === 'bloom')[1].color, REX.color)
+
+  // Rex finishes too: the lowest seat (us) starts the conga for the room.
+  brain.handle({ t: 'fx', from: 'rex', kind: 'pose', ts: Date.now(), x: 15, z: 1.5, status: 'done', m: 0 })
+  brain.tick(0.1)
+  const conga = net.sent.find(m => m.t === 'fx' && m.kind === 'conga')
+  assert.ok(conga, 'conga broadcast')
+  assert.deepEqual(conga.ids.sort(), ['me', 'rex'])
+  assert.ok(seen.some(e => e[0] === 'conga'))
+})
+
 test('search and meet helpers', () => {
   const owners = [{ id: 'rex', name: 'Rex', online: false, catalog: REX.catalog }]
   const [hit] = searchCatalogs('windows click through', owners, { now: 0 })
