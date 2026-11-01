@@ -10,7 +10,7 @@ import { getPet, imageInfo, atlasOf, tuiPetFromToml, appPetFromToml, loadBuiltin
 import { listSkills, packSkill, parseFrontmatter } from './skills.js'
 import { installSkill, skillSlug } from './install.js'
 import { readStatus, createStatusTracker, watchStatus, currentTask, compressTitle } from './status.js'
-import { createCodex, codexEventMessage } from './index.js'
+import { createCodex, codexEventMessage, releasePet } from './index.js'
 import { openCodex, codexThreadUrl } from './open.js'
 
 const made = []
@@ -488,6 +488,62 @@ test('openCodex: codex:// deep link to the thread, then the app by name', async 
   assert.deepEqual(mac.tried[1], ['open', ['-a', 'Codex']])
   const win = await openCodex({ threadId: id, platform: 'win32', dryRun: true })
   assert.ok(win.tried.some(([c, a]) => c === 'explorer.exe' && a[0].startsWith('shell:AppsFolder\\OpenAI.Codex_')))
+})
+
+test('takeover: Codex pet off on desktop and CLI, same pet in petpack, exact restore, idempotent, crash-safe', async () => {
+  const home = tmp('takeover')
+  const ud = tmp('takeover-ud')
+  const cfg = 'model = "gpt"\n\n[tui]\npet = "custom:mochi"\nanimations = true\n\n[desktop]\nselected-avatar-id = "custom:mochi"\npet-visibility = "always-visible"\n'
+  const gs = JSON.stringify({ 'electron-avatar-overlay-open': true, other: { a: 1 } })
+  write(path.join(home, 'config.toml'), cfg)
+  write(path.join(home, '.codex-global-state.json'), gs)
+  makePet(home, 'mochi', { displayName: 'Mochi' }, 'spritesheet.webp', makeWebpX(1536, 1872))
+  makePet(home, 'zed', { displayName: 'Zed' }, 'spritesheet.webp', makeWebpX(1536, 1872))
+  touch(path.join(home, 'pets', 'mochi', 'spritesheet.webp'), 600_000); touch(path.join(home, 'pets', 'mochi', 'pet.json'), 600_000)
+  const codex = createCodex({ home, cacheDir: path.join(ud, 'pets'), fetchPets: false, appAsars: [] })
+
+  const r = codex.takeOverPet()
+  assert.equal(r.ok, true)
+  let now = fs.readFileSync(path.join(home, 'config.toml'), 'utf8')
+  assert.match(now, /\[desktop\]\navatar-overlay-pet-visible = false\nselected-avatar-id = "custom:mochi"/)
+  assert.match(now, /\[tui\]\npet = "disabled"/)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, '.codex-global-state.json'), 'utf8'))['electron-avatar-overlay-open'], false)
+  assert.equal(codex.takeoverActive(), true)
+  // petpack still shows the pet that was selected, also when only the CLI had it
+  assert.equal((await codex.getPet()).displayName, 'Mochi')
+  write(path.join(home, 'config.toml'), now.replace('selected-avatar-id = "custom:mochi"\n', ''))
+  assert.equal((await codex.refreshPet()).displayName, 'Mochi')
+  write(path.join(home, 'config.toml'), now)
+
+  // twice is the same as once, and a second instance (a relaunch after a crash) keeps the first originals
+  codex.takeOverPet()
+  const again = createCodex({ home, cacheDir: path.join(ud, 'pets'), fetchPets: false, appAsars: [] })
+  again.takeOverPet()
+  assert.equal(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), now)
+
+  const back = again.releasePet()
+  assert.equal(back.ok, true)
+  assert.equal(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), cfg)
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, '.codex-global-state.json'), 'utf8')), JSON.parse(gs))
+  assert.equal(again.takeoverActive(), false)
+  assert.deepEqual(again.releasePet(), { ok: true, restored: [] })
+
+  // no [desktop] table and no CLI pet: the table is added, then removed again; --no-takeover restores a stale marker
+  const plain = 'model = "gpt"\n'
+  write(path.join(home, 'config.toml'), plain)
+  fs.rmSync(path.join(home, '.codex-global-state.json'))
+  codex.takeOverPet()
+  assert.equal(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), 'model = "gpt"\n\n[desktop]\navatar-overlay-pet-visible = false\n')
+  const off = createCodex({ home, cacheDir: path.join(ud, 'pets'), fetchPets: false, appAsars: [] }).takeOverPet({ enabled: false })
+  assert.equal(off.released.ok, true)
+  assert.equal(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), plain)
+  // an existing visible=true line comes back as it was
+  const vis = '[desktop]\navatar-overlay-pet-visible = true # mine\n'
+  write(path.join(home, 'config.toml'), vis)
+  codex.takeOverPet()
+  assert.match(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), /avatar-overlay-pet-visible = false/)
+  releasePet({ userData: ud })
+  assert.equal(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), vis)
 })
 
 test('index: createCodex wires the pieces for main.js', async () => {

@@ -35,6 +35,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { codexHomes, isDir } from './home.js'
+import { heldTuiPets } from './takeover.js'
 
 // Inside Electron, `fs` treats *.asar files as folders, so reading the Codex app's app.asar as bytes needs the
 // unpatched 'original-fs'. Plain Node has no such patch.
@@ -264,9 +265,12 @@ export function selectedPetIds (opts = {}) {
     const v = gs && deepFind(gs, 'selected-avatar-id')
     if (typeof v === 'string' && v) ids.push({ id: v, from: 'app-state', home })
   }
+  // while petpack holds the pet, the CLI's own [tui] pet reads "disabled"; the original is in the takeover marker
+  const held = opts.takeoverFile ? heldTuiPets(opts.takeoverFile) : {}
   for (const { home, text } of tomls) {
     const v = tuiPetFromToml(text)
-    if (v) ids.push({ id: v, from: 'tui', home })
+    const id = v === 'disabled' && held[home] ? held[home] : v
+    if (id) ids.push({ id, from: 'tui', home })
   }
   return ids
 }

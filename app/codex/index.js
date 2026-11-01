@@ -28,6 +28,13 @@
 //   currentTask()                Promise<{ title (<= 48 chars: thread name, else the latest prompt), status, since,
 //                                sessions (live count), approvalPending, session, threadId, cwd }>
 //   openCodex({ session|threadId }) Promise<{ ok, url, method }>: opens codex://threads/<id> (or the app)
+//   takeOverPet({ enabled })     switch Codex's own pet off (desktop [desktop] avatar-overlay-pet-visible = false +
+//                                .codex-global-state.json electron-avatar-overlay-open = false; CLI [tui] pet =
+//                                "disabled" when set), remembering the originals in <userData>/codex-takeover.json.
+//                                Selected pet ids stay, so petpack shows the same pet. enabled:false (--no-takeover)
+//                                only restores a takeover left by a crash. Idempotent.
+//   releasePet()                 restore exactly what was there; idempotent
+//   takeoverActive()             bool
 //   dispose()                    stops the poller
 // }
 // Module-level listPets(), choosePet(), onPetChange(), currentPet(), onCodexEvent(), currentCodexTask() act on the
@@ -46,6 +53,7 @@ import { listSkills, findSkill, packSkill, parseFrontmatter, skillRoots, PACK_MA
 import { installSkill, skillSlug } from './install.js'
 import { readStatus, watchStatus, createStatusTracker, currentTask, compressTitle } from './status.js'
 import { openCodex, codexThreadUrl } from './open.js'
+import { takeOverPet as takeOver, releasePet as release, takeoverState } from './takeover.js'
 
 // The words the Codex app's pet uses, for an OS notification: { title, body }.
 export function codexEventMessage (e = {}) {
@@ -68,6 +76,9 @@ export {
   openCodex, codexThreadUrl
 }
 
+export function takeoverFile (cacheDir) {
+  return cacheDir ? path.join(path.dirname(path.resolve(cacheDir)), 'codex-takeover.json') : null
+}
 export function petChoiceFile (cacheDir) {
   return cacheDir ? path.join(path.dirname(path.resolve(cacheDir)), 'pet-choice.json') : null
 }
@@ -83,6 +94,7 @@ export function createCodex (opts = {}) {
   const home = opts.home || codexHome(base)
   const ctx = { ...base, homes }
   const choiceFile = opts.choiceFile || petChoiceFile(opts.cacheDir)
+  const markerFile = opts.takeoverFile || takeoverFile(opts.cacheDir)
   let flagPet = opts.pet || null
   let chosen = choiceFile ? readPetChoice(choiceFile) : null
   let petPromise = null
@@ -109,7 +121,7 @@ export function createCodex (opts = {}) {
     if (!subs.size && !eventSubs.size && stop) { stop(); stop = null; last = null }
   }
   const petOpts = (extra = {}) => ({ ...ctx, pet: flagPet, choice: chosen,
-    cacheDir: opts.cacheDir, fetch: opts.fetchPets !== false, appAsars: opts.appAsars, ...extra })
+    cacheDir: opts.cacheDir, fetch: opts.fetchPets !== false, appAsars: opts.appAsars, takeoverFile: markerFile, ...extra })
 
   const api = {
     home,
@@ -189,6 +201,17 @@ export function createCodex (opts = {}) {
       return currentTask(ctx)
     },
     openCodex (o = {}) { return openCodex(o) },
+    // One pet on screen: switch Codex's own pet off while petpack shows it (o.enabled === false, i.e. --no-takeover,
+    // only restores a takeover a crash left behind). releasePet() restores exactly what was there.
+    takeOverPet (o = {}) {
+      if (!markerFile) return { ok: false, changed: [], reason: 'no cacheDir/takeoverFile' }
+      if (o.enabled === false) return { ok: true, changed: [], released: release({ markerFile }) }
+      const r = takeOver({ homes, markerFile })
+      petPromise = null
+      return r
+    },
+    releasePet () { return markerFile ? release({ markerFile }) : { ok: true, restored: [] } },
+    takeoverActive () { return Boolean(markerFile && takeoverState(markerFile)) },
     dispose () { subs.clear(); petSubs.clear(); eventSubs.clear(); if (stop) { stop(); stop = null } }
   }
   current = api
@@ -199,6 +222,13 @@ export function createCodex (opts = {}) {
 export function listPets (o) { return current ? current.listPets(o) : Promise.resolve([]) }
 export function choosePet (idOrPath) { return current ? current.choosePet(idOrPath) : Promise.reject(new Error('petpack is starting')) }
 export function onPetChange (cb) { return current ? current.onPetChange(cb) : () => {} }
+export function takeOverPet (o) { return current ? current.takeOverPet(o) : { ok: false, changed: [], reason: 'petpack is starting' } }
+// releasePet({ userData | markerFile | cacheDir }) works without an instance too (uninstall, a later launch).
+export function releasePet (o = {}) {
+  const markerFile = o.markerFile || (o.userData && path.join(o.userData, 'codex-takeover.json')) || (o.cacheDir && takeoverFile(o.cacheDir))
+  if (markerFile) return release({ markerFile })
+  return current ? current.releasePet() : { ok: true, restored: [] }
+}
 export function onCodexEvent (cb) { return current ? current.onCodexEvent(cb) : () => {} }
 export function currentCodexTask () { return current ? current.currentTask() : currentTask({}) }
 export function currentPet () { return current ? current.getPet() : Promise.resolve(null) } // null: not started yet
