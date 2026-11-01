@@ -122,7 +122,8 @@ h2.row::before { display: none; }
 .share-item .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .share-item .k { color: var(--ink-3); font-size: 10.5px; }
 body.mode-off .share-list { opacity: .45; }
-body.mode-ask .share-item .t::after { content: ' · asks'; color: var(--amber); font-size: 10.5px; }
+body.mode-ask .share-item:has(input:checked) .t::after { content: ' · asks'; color: var(--amber); font-size: 10.5px; }
+.share-item:has(input:not(:checked)) .t { color: var(--ink-3); }
 
 /* switch */
 .switch { appearance: none; flex: none; width: 30px; height: 18px; margin: 0; border-radius: 9px; background: rgba(44, 58, 63, .2); position: relative; transition: background .15s; }

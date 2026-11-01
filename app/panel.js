@@ -17,7 +17,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { PANEL, anchorBounds, recallReply, ringBuffer, statusLine, tailRollouts } from './panel-core.js'
-import { MODES, readSharing, writeSharing } from './sharing.js'
+import { MODES, readSharing, sharingFile, writeSharing } from './sharing.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ORIGIN = 'petpack://local'
@@ -69,6 +69,13 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
   const stopTail = tailRollouts(addLine, { intervalMs: 1000 })
 
   function sharing () { return readSharing(userData) }
+  // First run with a settings.json `share` block (L3b's) but no sharing.json yet: start from it.
+  if (!fs.existsSync(sharingFile(userData))) {
+    try {
+      const share = JSON.parse(fs.readFileSync(path.join(userData, 'settings.json'), 'utf8'))?.share
+      if (share && typeof share === 'object') writeSharing(userData, { mode: share.mode === 'never' ? 'off' : share.mode, hidden: share.off })
+    } catch {}
+  }
   function snapshot () {
     const s = state() || {}
     const sh = sharing()
@@ -86,31 +93,43 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
   const onReport = (event, r) => {
     if (!fromPane(event) || !r || typeof r !== 'object') return
     const before = report.errand
-    report = { ...report, ...r }
+    const { recall, ...rest } = r
+    report = { ...report, ...rest }
     if (typeof r.muted === 'boolean') muted = r.muted
     if (!report.errand && before && reply) reply = null
+    // brain.recall()'s own answer ({ busy, message }) replaces the popover's guess.
+    if (recall && typeof recall.message === 'string') {
+      reply = { text: recall.message, busy: Boolean(recall.busy), at: Date.now() }
+      push({ type: 'reply', reply })
+    }
     refresh()
   }
   const onActivity = (event, line) => {
     if (!fromPane(event) || !line) return
-    addLine(typeof line === 'string' ? { source: 'pet', text: line } : { source: 'pet', ...line })
+    const entry = typeof line === 'string' ? { source: 'pet', text: line } : { source: 'pet', ...line }
+    addLine(entry)
+    // brain.recall()'s answer arrives as a 'recall' activity line: it is the pet's reply in the header too.
+    if (entry.kind === 'recall' && entry.text) {
+      reply = { text: String(entry.text).slice(0, 120), busy: /busy/i.test(entry.text), at: Date.now() }
+      push({ type: 'reply', reply })
+    }
   }
   ipcMain.on('petpack:panel-report', onReport)
   ipcMain.on('petpack:activity', onActivity)
   ipcMain.removeHandler('petpack:ask-share')
   ipcMain.handle('petpack:ask-share', async (event, req = {}) => {
     if (!fromPane(event)) throw new Error('not allowed')
-    const sh = sharing()
-    if (sh.mode === 'off' || (req.ref && sh.hidden.includes(req.ref))) return false
-    if (sh.mode === 'free') return true
+    // The brain already applied the rules (askPermission); this only asks the person.
     const id = ++askSeq
-    const ask = { id, title: String(req.title || 'something').slice(0, 120), kind: req.kind || 'item', from: String(req.from || 'a teammate').slice(0, 60) }
-    addLine({ source: 'pet', kind: 'ask', text: `${ask.from} asks for ${ask.kind} "${ask.title}"` })
+    const from = String(req.fromName || req.from || 'a teammate').slice(0, 60)
+    const ask = { id, title: String(req.title || 'something').slice(0, 120), kind: req.kind || 'item', from,
+      text: typeof req.text === 'string' && req.text ? req.text.slice(0, 160) : null }
+    addLine({ source: 'pet', kind: 'ask', text: ask.text || `${from} asks for ${ask.kind} "${ask.title}"` })
     show()
     push({ type: 'ask', ask })
     return new Promise(resolve => {
-      const timer = setTimeout(() => { pending.delete(id); push({ type: 'ask-done', id }); resolve(false) }, 45000)
-      pending.set(id, yes => { clearTimeout(timer); resolve(Boolean(yes)) })
+      const timer = setTimeout(() => { pending.delete(id); push({ type: 'ask-done', id }); resolve(false) }, Number(req.timeoutMs) > 0 ? Number(req.timeoutMs) : 30000)
+      pending.set(id, yes => { clearTimeout(timer); push({ type: 'ask-done', id }); resolve(Boolean(yes)) })
     })
   })
 
@@ -149,16 +168,32 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
     else toPane('petpack:me-changed')
     return petsPayload()
   }
+  // Every item the pet could share (before the share filter), with its source file for the hover.
   async function catalogPayload () {
     const cat = await loadCatalog()
     const opts = { userData, answersDir: path.join(userData, 'answers') }
-    const built = typeof cat.buildCatalog === 'function' ? await cat.buildCatalog(opts) : { items: await cat.getCatalog(opts), index: new Map() }
     const sh = sharing()
-    return built.items.map(item => {
+    if (typeof cat.listShareable === 'function') {
+      return (await cat.listShareable(opts)).map(i => ({ ref: i.id, kind: i.kind, title: i.title,
+        path: i.kind === 'skill' && i.sourcePath && !/\.md$/i.test(i.sourcePath) ? path.join(i.sourcePath, 'SKILL.md') : i.sourcePath || null,
+        on: !sh.hidden.includes(i.id) }))
+    }
+    const built = await cat.buildCatalog(opts)
+    return (built.all || built.items).map(item => {
       const src = built.index?.get?.(item.ref)?.src || {}
       const file = src.dir ? path.join(src.dir, 'SKILL.md') : (src.file || null)
-      return { ref: item.ref, kind: item.kind, title: item.title, summary: item.summary || '', path: file, on: !sh.hidden.includes(item.ref) }
+      return { ref: item.ref, kind: item.kind, title: item.title, path: file, on: !sh.hidden.includes(item.ref) }
     })
+  }
+  // One sharing change, everywhere: sharing.json (the popover), settings.json `share` through main (L3b's catalog
+  // filter reads it), and the live brain (brain.setSharing shape: mode free|ask|never, items { ref: false }).
+  function applySharing (patch) {
+    const sh = writeSharing(userData, patch)
+    try { actions.setShare?.({ mode: sh.mode === 'off' ? 'never' : sh.mode, off: sh.hidden }) } catch (error) { log(`setShare: ${error.message}`) }
+    // { mode: free|ask|off, hidden } as wired in app.js, plus brain.setSharing's own { items } for direct use.
+    toPane('petpack:panel-command', { cmd: 'sharing', sharing: { mode: sh.mode, hidden: sh.hidden,
+      items: Object.fromEntries(sh.hidden.map(ref => [ref, false])) } })
+    return sh
   }
   function setDnd (on) {
     const sh = writeSharing(userData, { dnd: Boolean(on) })
@@ -201,17 +236,15 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
     catalog: () => catalogPayload(),
     setMode: mode => {
       if (!MODES.includes(mode)) throw new Error('unknown sharing mode')
-      writeSharing(userData, { mode })
+      applySharing({ mode })
       addLine({ source: 'pet', kind: 'share', text: mode === 'free' ? 'sharing freely' : mode === 'ask' ? 'will ask you before sharing' : 'not sharing anything' })
-      toPane('petpack:panel-command', { cmd: 'sharing', sharing: sharing() })
       return snapshot()
     },
     setShared: ({ ref, on } = {}) => {
-      const sh = sharing()
-      const hidden = new Set(sh.hidden)
+      if (typeof ref !== 'string' || !ref) throw new Error('no item')
+      const hidden = new Set(sharing().hidden)
       if (on) hidden.delete(ref); else hidden.add(ref)
-      writeSharing(userData, { hidden: [...hidden] })
-      toPane('petpack:panel-command', { cmd: 'sharing', sharing: sharing() })
+      applySharing({ hidden: [...hidden] })
       return snapshot()
     },
     answerAsk: ({ id, yes } = {}) => { const done = pending.get(id); pending.delete(id); done?.(yes); return true },
@@ -220,7 +253,7 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
       const name = report.petName || petName || 'your pet'
       reply = { text: recallReply({ ...report, dnd: s.dnd }, name), at: Date.now() }
       toPane('petpack:panel-command', { cmd: 'recall' })
-      addLine({ source: 'pet', kind: 'recall', text: `come home → ${reply.text}` })
+      addLine({ source: 'pet', kind: 'you', text: 'you: come home!' })
       refresh()
       return snapshot()
     },
@@ -345,7 +378,7 @@ async function selfTest (panel, { dir, userData }) {
   checks.catalogCount = await js('document.querySelectorAll(".share-item").length')
   // Recall.
   await js(`document.getElementById('sec-header').scrollIntoView(); document.getElementById('recall').click(); true`)
-  await wait(500)
+  await wait(1500)
   checks.recallReply = await js(`document.getElementById('reply').textContent`)
   await shot('08-recall')
   // Sharing mode: Ask me first, then one item off.

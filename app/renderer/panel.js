@@ -235,7 +235,7 @@ $('recall').addEventListener('click', async () => {
 let asking = null
 function showAsk (ask) {
   asking = ask
-  $('ask-text').textContent = `${ask.from}'s pet asks for your ${ask.kind} "${ask.title}". Share it?`
+  $('ask-text').textContent = ask.text ? `${ask.text}. Share it?` : `${ask.from}'s pet asks for your ${ask.kind} "${ask.title}". Share it?`
   $('ask').hidden = false
 }
 async function answerAsk (yes) {
@@ -258,7 +258,7 @@ function addTermLine (line) {
   const row = document.createElement('div')
   row.className = `tl ${line.source === 'codex' ? 'codex' : 'pet'} ${line.kind || ''}`
   const ts = document.createElement('span'); ts.className = 'ts'; ts.textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} `
-  const src = document.createElement('span'); src.className = 'src'; src.textContent = line.source === 'codex' ? 'codex ' : 'pet   '
+  const src = document.createElement('span'); src.className = 'src'; src.textContent = line.source === 'codex' ? 'codex ' : line.kind === 'you' ? 'you   ' : 'pet   '
   const tx = document.createElement('span'); tx.className = 'tx'; tx.textContent = line.text
   row.append(ts, src, tx)
   term.querySelector('.caret')?.remove()
@@ -304,6 +304,7 @@ async function loadCatalog () {
 
 bridge.on(msg => {
   if (msg.type === 'state') { state = msg.state; render() } else if (msg.type === 'line') addTermLine(msg.line)
+  else if (msg.type === 'reply') showReply(msg.reply.text)
   else if (msg.type === 'ask') showAsk(msg.ask)
   else if (msg.type === 'ask-done') { if (asking?.id === msg.id) { asking = null; $('ask').hidden = true } }
   else if (msg.type === 'shown') { call('pets').then(p => { pets = p; renderAllPets() }).catch(() => {}); loadCatalog() }
