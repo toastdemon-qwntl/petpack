@@ -79,10 +79,13 @@ function makeAsar (file, name, data) {
 // ---------- home ----------
 
 test('home: CODEX_HOME first, Windows also tries %USERPROFILE%\\.codex', () => {
-  assert.deepEqual(codexHomes({ env: { CODEX_HOME: '/x/codex' }, platform: 'linux', homedir: '/home/u' }), ['/x/codex', '/home/u/.codex'])
-  assert.deepEqual(codexHomes({ env: {}, platform: 'linux', homedir: '/home/u' }), ['/home/u/.codex'])
+  const r = (...p) => path.resolve(...p)
+  assert.deepEqual(codexHomes({ env: { CODEX_HOME: '/x/codex' }, platform: 'linux', homedir: '/home/u' }), [r('/x/codex'), r('/home/u/.codex')])
+  assert.deepEqual(codexHomes({ env: { CODEX_HOME: '~/alt' }, platform: 'linux', homedir: '/home/u' })[0], r('/home/u/alt'))
+  assert.deepEqual(codexHomes({ env: {}, platform: 'linux', homedir: '/home/u' }), [r('/home/u/.codex')])
   const win = codexHomes({ env: { CODEX_HOME: '/x/codex', USERPROFILE: '/users/u' }, platform: 'win32', homedir: '/home/u' })
-  assert.deepEqual(win, ['/x/codex', '/users/u/.codex', '/home/u/.codex'])
+  assert.deepEqual(win, [r('/x/codex'), r('/users/u/.codex'), r('/home/u/.codex')])
+  assert.equal(codexHomes({ env: { USERPROFILE: '/Home/U' }, platform: 'win32', homedir: '/home/u' }).length, 1)
   const h = tmp('home')
   assert.equal(codexHome({ env: { CODEX_HOME: path.join(h, 'missing') }, platform: 'linux', homedir: h }), path.join(h, 'missing'))
   fs.mkdirSync(path.join(h, '.codex'))

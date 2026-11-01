@@ -3,7 +3,8 @@
 // readStatus(opts) -> Promise<{ status, at, session, cwd }>   one look at the rollouts right now
 // watchStatus(cb, opts) -> stop()   polls every opts.intervalMs (1000); calls cb({ status, at, session, cwd }) on the
 //                                   first poll and whenever the status changes. stop.current() is the last status.
-// createStatusTracker(opts) -> { poll(): Promise<status>, files: Map }   the incremental reader both use.
+// createStatusTracker(opts) -> { poll(): Promise<status>, sessions(): [{ session, cwd, status, at }], files: Map }
+//                                   the incremental reader both use; sessions() is the per-rollout view.
 //
 // status: 'working' | 'waiting' | 'done' | 'failed' | 'idle'; at: ms epoch of the event that set it.
 // opts: { homes?, home?, env?, intervalMs?, now?: () => ms }
@@ -198,7 +199,14 @@ export function createStatusTracker (opts = {}) {
     if (!best.at) best.at = now
     return best
   }
-  return { poll, files }
+  // Per-session view of the last poll: [{ session, cwd, status, at }], newest first.
+  function sessions () {
+    const now = nowFn()
+    return [...files].filter(([, st]) => !st.meta?.sub)
+      .sort((a, b) => b[1].mtimeMs - a[1].mtimeMs)
+      .map(([file, st]) => ({ session: path.basename(file), cwd: st.meta?.cwd || null, ...fileStatus(st, now) }))
+  }
+  return { poll, sessions, files }
 }
 
 export async function readStatus (opts = {}) {
