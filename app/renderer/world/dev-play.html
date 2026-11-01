@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>petpack · play</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./pane.css">
+  <link rel="stylesheet" href="./fx.css">
+  <script type="importmap">{"imports":{"three":"../../../node_modules/three/build/three.module.js","three/addons/":"../../../node_modules/three/examples/jsm/"}}</script>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body { min-height: 100svh; overflow: hidden; display: grid; place-items: center;
+      background: radial-gradient(ellipse at 22% 72%, #d1dcc3, transparent 50%),
+        radial-gradient(ellipse at 76% 22%, #d6e4e6, transparent 45%), #edf0e7; }
+    main { display: flex; align-items: center; }
+    .petpack-pane { position: relative !important; inset: auto !important; max-width: none;
+      width: auto; height: auto; aspect-ratio: auto; --pane-inset: 6px; }
+    .world-viewport { width: var(--width); height: var(--height); }
+    .postcard { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center;
+      background: #34483b70; backdrop-filter: blur(8px); cursor: zoom-out; }
+    .postcard[hidden] { display: none; }
+    .postcard img { max-width: 85vw; max-height: 85vh; image-rendering: pixelated; box-shadow: 0 22px 50px #22352650; }
+  </style>
+</head>
+<body>
+  <main aria-label="Two adjoining panes of one village. Touch or drag a pet.">
+    <section class="petpack-pane" data-dock="right"><div class="world-viewport"></div></section>
+    <section class="petpack-pane" data-dock="left"><div class="world-viewport"></div></section>
+  </main>
+  <div class="postcard" hidden><img alt="A pixel postcard from petpack"></div>
+  <script type="module">
+    import { createWorld } from './index.js'
+    import { attachPlay } from './play.js'
+    const params = new URLSearchParams(location.search)
+    const pixelScale = Number(params.get('px')) || 2
+    const viewports = [...document.querySelectorAll('.world-viewport')]
+    const size = () => {
+      const width = Math.max(104, Math.floor(Math.min(520, (innerWidth - 44) / 2, (innerHeight - 80) / .75) / 8) * 8)
+      document.documentElement.style.setProperty('--width', `${width}px`)
+      document.documentElement.style.setProperty('--height', `${width * .75}px`)
+    }
+    size(); addEventListener('resize', size)
+    const worlds = viewports.map((container, seat) => attachPlay(createWorld(container, { seat, pixelScale, autoRender: false }), { container, date: '2026-11-01' }))
+    const roster = [
+      { id: 'pip', displayName: 'Pip', kind: 'cat', color: '#80b8d1', skillCount: 4, memoryCount: 2, techniqueCount: 1, isMe: true, x: 5.8, z: 1.5, status: 'idle' },
+      { id: 'cleo', displayName: 'Cleo', kind: 'cat', color: '#da8d7a', skillCount: 3, memoryCount: 7, techniqueCount: 2, x: 10.1, z: 1.5, status: 'done' },
+      { id: 'moss', displayName: 'Moss', kind: 'sprout', color: '#98ad79', skillCount: 2, memoryCount: 1, techniqueCount: 5, x: -1.8, z: 2.2, status: 'idle' },
+    ]
+    let time = 0, paused = params.has('paused'), frame, last, autoBeat = -1
+    const events = []
+    for (const world of worlds) {
+      world.setTimeOfDay(14)
+      for (const pet of roster) { world.upsertPet(pet.id, pet); world.updatePet(pet.id, { ...pet, snap: true }) }
+      world.onThrow(event => {
+        events.push(event)
+        for (const peer of worlds) if (peer !== world) peer.throwPet(event.id, event)
+      })
+      world.onTouch(event => { for (const peer of worlds) if (peer !== world) peer.touchPet(event.id, event) })
+    }
+    function step(dt = 1 / 60, { render = true } = {}) {
+      time += dt
+      for (const world of worlds) world.renderFrame(dt, time, { render })
+    }
+    function loop(now) {
+      const dt = last === undefined ? 0 : Math.min(.1, (now - last) / 1000)
+      last = now
+      if (!paused) {
+        step(dt)
+        if (!params.has('quiet') && Math.floor(time / 14) !== autoBeat) {
+          autoBeat = Math.floor(time / 14)
+          if (autoBeat > 0) for (const world of worlds) world.gift('cleo', 'pip', { kind: 'memory', label: 'A little shortcut' })
+        }
+      }
+      frame = requestAnimationFrame(loop)
+    }
+    step(0); frame = requestAnimationFrame(loop)
+    const postcard = document.querySelector('.postcard')
+    postcard.addEventListener('click', () => { postcard.hidden = true })
+    addEventListener('keydown', event => {
+      if (event.key.toLowerCase() === 'p') { postcard.querySelector('img').src = worlds[0].photo(); postcard.hidden = false }
+      if (event.key === 'Escape') postcard.hidden = true
+    })
+    window.playDemo = {
+      worlds, events, step,
+      get time() { return time },
+      pause(value = true) { paused = value },
+      throw(id = 'pip', options = { vx: 7, vz: 0 }) { return Promise.all(worlds.map(world => world.throwPet(id, options))) },
+      reset() {
+        for (const world of worlds) {
+          world.resetEffects()
+          for (const pet of roster) world.updatePet(pet.id, { ...pet, snap: true, anim: 'idle', speed: 0 })
+        }
+        step(0)
+      },
+      dispose() { cancelAnimationFrame(frame); removeEventListener('resize', size); worlds.forEach(world => world.dispose()) },
+    }
+  </script>
+</body>
+</html>
