@@ -25,6 +25,9 @@
 //                                                          ("walking to Bea's screen", "Bea is thinking", "got
 //                                                          Bea's pdf skill -> <path>"); callId comes from the args
 //   'lesson'    (item)                                     a working -> done session left a card in our catalog
+//   'remove'    (id)                                       a leftover agent the relay no longer lists (welcome
+//                                                          registry / full layout); it also leaves pets()
+//   'inbox'     ({ id, from, fromName, question })         a teammate's question our catalog can't answer at once
 //   showMe() -> { ok, with, item, kind, question, answer, says, installed, message }: the core journey for real
 //     with our co-work neighbour (else the nearest online peer): walk over, ask about one of their real items,
 //     answer, dot, install, "learned X", walk home, celebrate.
@@ -807,6 +810,11 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         rebuildGarden()
         noteNeighbours(msg)
         if (msg.layout) { layoutV = 0; applyLayout(msg.layout) }
+        // The relay's registry is the truth: anyone (online or napping) it doesn't list is a leftover from before a purge.
+        if (Array.isArray(msg.agents)) {
+          const known = new Set([...msg.agents, ...(msg.peers || []), ...(msg.away || [])].map(a => a?.id).filter(Boolean))
+          for (const id of [...peers.keys()]) if (!known.has(id)) dropPeer(id)
+        }
         emit('online', { room, seat: mySeat })
         sendState(true)
         break
@@ -1038,11 +1046,24 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     if (Array.isArray(msg.across)) acrossWith = (msg.across.find(pair => Array.isArray(pair) && pair.includes(myId)) || []).find(id => id !== myId) || null
     if (next !== flipped) { flipped = next; emit('flip', flipped) }
   }
+  /** Forget a remote agent entirely (relay purge); pets() stops listing it, so every pane's world drops it. */
+  function dropPeer(id) {
+    if (!peers.has(id) || id === myId) return
+    peers.delete(id)
+    seats.delete(id)
+    visitors.delete(id)
+    seatedCache = null
+    emit('remove', id)
+    emit('roster')
+  }
   /** Apply a full room layout wholesale (seats, flips, across pairs, links, neighbours, sits), newer versions only. */
   let layoutV = 0
   function applyLayout(L) {
     const v = Number(L?.layoutVersion ?? L?.v) || 0
     if (!L || !L.seats || v <= layoutV) return false
+    // Online peers the layout doesn't know are leftovers (nappers are vouched for by the welcome registry).
+    const placed = new Set([...Object.keys(L.seats || {}), ...Object.keys(L.sits || {}), ...Object.keys(L.held || {})])
+    for (const p of [...peers.values()]) if (p.online && !p.away && !placed.has(p.id)) dropPeer(p.id)
     layoutV = v
     const before = mySeat
     for (const id of [...seats.keys()]) if (id !== myId) seats.delete(id)
@@ -1131,6 +1152,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     if (!permit.allowed) { send({ t: 'answer', qid: msg.qid, to: msg.from, ok: false, reason: 'declined', text: declinedText() }); return }
     const entry = { id: msg.qid, from: msg.from, fromName, question: String(msg.question || '').slice(0, 600), kind: msg.kind, at: time, answered: false }
     inbox.set(msg.qid, entry)
+    // Nothing in our catalog answers it at once: WIRE can open the question in Codex for the live session.
+    if (!tier1Answer(entry.question, entry.kind, mine.catalog)) emit('inbox', { id: entry.id, from: entry.from, fromName, question: entry.question })
     const asker = msg.from
     // Walk to the meeting landmark beside the asker's arrival side.
     // The asker computes the same landmark from our seat (the relay forwards only qid/question/kind).

@@ -587,6 +587,32 @@ test('demo polish: step events carry the callId, showMe runs the journey for rea
   assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'learned' && m.bloom?.kind === 'memory'), 'a Library flower')
 })
 
+test('relay purge drops leftovers on welcome and full layouts; unanswerable questions raise inbox', async () => {
+  const { brain } = makeBrain({ demo: true, bridge: { answerAsk: () => new Promise(() => {}) } })
+  brain.addBots()
+  const removed = []
+  const inbox = []
+  brain.on('remove', id => removed.push(id))
+  brain.on('inbox', q => inbox.push(q))
+  brain.handle({ t: 'welcome', room: 'r', you: { id: 'me', seat: 0 }, peers: [REX, BEA], away: [], links: [],
+    agents: [{ ...REX, online: true }, { ...BEA, online: true }, { id: 'old', name: 'Old', x: 30, z: 1.5, online: false, away: true }] })
+  assert.ok(brain.pets().some(p => p.id === 'old'))
+  // After a purge the registry no longer lists Old: a reconnect's welcome drops it; bots stay.
+  brain.handle({ t: 'welcome', room: 'r', you: { id: 'me', seat: 0 }, peers: [REX, BEA], away: [], links: [],
+    agents: [{ ...REX, online: true }, { ...BEA, online: true }] })
+  assert.deepEqual(removed, ['old'])
+  assert.equal(brain.pets().some(p => p.id === 'old'), false)
+  assert.equal(brain.pets().filter(p => p.id.includes('~bot-')).length, 3, 'demo bots are local and stay')
+  // A full layout that no longer places Bea drops her.
+  brain.handle({ t: 'layout', v: 500, layoutVersion: 500, seats: { me: 0, rex: 3 }, sits: { me: 'side', rex: 'side' }, flipped: {}, across: [], links: [] })
+  assert.deepEqual(removed, ['old', 'bea'])
+  // A question our catalog can't answer at once goes to the inbox event.
+  brain.handle({ t: 'join', peer: { ...BEA } })
+  brain.handle({ t: 'ask', from: 'bea', qid: 'q7', question: 'what is the wifi password at the venue?', kind: null })
+  for (let i = 0; i < 4; i++) await flush()
+  assert.deepEqual(inbox, [{ id: 'q7', from: 'bea', fromName: 'Bea', question: 'what is the wifi password at the venue?' }])
+})
+
 test('search and meet helpers', () => {
   const owners = [{ id: 'rex', name: 'Rex', online: false, catalog: REX.catalog }]
   const [hit] = searchCatalogs('windows click through', owners, { now: 0 })
