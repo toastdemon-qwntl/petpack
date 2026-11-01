@@ -60,7 +60,12 @@ export const ASK_SCHEMA = {
 const STOP = new Set(('a an and are as at be but by can could do does did for from get got has have how i if in into ' +
   'is it its me my of on or our so that the their them then there these this to too use used using was we what when ' +
   'where which who why will with would you your make made need needs want also just like any some there here should ' +
-  'please help know about way does work works working').split(' '))
+  'please help know about way does work works working out up off one thing things stuff').split(' '))
+
+// Single-word names too common to count as "the question names this item" on their own.
+const GENERIC_NAMES = new Set(('build design research product paper test review deploy debug fix doc docs code data ' +
+  'app web api plan run write read search tool tools note notes board conductor devops frontier ml ui setup config ' +
+  'help rule rules project').split(' '))
 
 function stem (t) {
   if (t.length > 4 && t.endsWith('ies')) return t.slice(0, -3) + 'y'
@@ -77,8 +82,8 @@ export function tokenize (s) {
   return out
 }
 
-// Token overlap of the question with the item's title (weight 1) and summary (weight 0.5), normalised by the
-// question's size, plus 0.15 when the kind matches. Roughly 0..1.
+// Token overlap of the question with the item's title (weight 1) and summary (weight 0.5), normalised by
+// min(question size, 4), plus 0.2 when the kind matches: the same rule as the brain's search and routing.
 export function scoreItem (question, item, kind) {
   const q = question instanceof Set ? question : tokenize(question)
   if (!q.size || !item) return 0
@@ -89,18 +94,39 @@ export function scoreItem (question, item, kind) {
     if (title.has(t)) hits += 1
     else if (summary.has(t)) hits += 0.5
   }
-  let s = hits / q.size
-  if (kind && item.kind === kind) s += 0.15
-  return Math.min(1.15, Math.round(s * 1000) / 1000)
+  let s = hits / Math.min(q.size, 4)
+  if (s > 0 && kind && item.kind === kind) s += 0.2
+  return Math.min(1.5, Math.round(s * 1000) / 1000)
+}
+
+// The question names the item: every token of its name (title) is in the question, e.g. "pdf" in "how do I pull
+// tables out of a PDF?". Names of 1-4 tokens only; a lone generic word ("build", "design") doesn't count.
+export function namesItem (question, item) {
+  const q = question instanceof Set ? question : tokenize(question)
+  const name = tokenize(item?.title)
+  if (!name.size || name.size > 4) return false
+  if (name.size === 1 && GENERIC_NAMES.has([...name][0])) return false
+  if (![...name].some(t => t.length >= 3)) return false
+  for (const t of name) if (!q.has(t)) return false
+  return true
 }
 
 export function rankItems (question, items, kind, n = 3) {
   const q = tokenize(question)
   return (items || [])
-    .map(item => ({ item, score: scoreItem(q, item, kind) }))
+    .map(item => {
+      const named = namesItem(q, item)
+      return { item, score: scoreItem(q, item, kind), named }
+    })
     .filter(r => r.score > 0)
-    .sort((a, b) => b.score - a.score || (b.item.mtime || 0) - (a.item.mtime || 0))
+    .sort((a, b) => Number(b.named) - Number(a.named) || b.score - a.score || (b.item.mtime || 0) - (a.item.mtime || 0))
     .slice(0, n)
+}
+
+// Tier 1 takes the top item when it scores >= 0.5 or the question names it.
+export function tier1Pick (question, items, kind, threshold = TIER1_MIN) {
+  const top = rankItems(question, items, kind, 1)[0]
+  return top && (top.named || top.score >= threshold) ? top : null
 }
 
 // ---------------------------------------------------------------- tier 1
@@ -110,16 +136,22 @@ function excerptOf (text, max = 900) {
   return body.length > max ? body.slice(0, max - 1).trimEnd() + '…' : body
 }
 
-async function tier1 (best, ctx) {
+function firstLines (text, max = 400) {
+  const lines = String(text || '').split(/\r?\n/).map(l => l.replace(/^\s*[-*+]\s+|^#+\s*/, '').trim()).filter(Boolean)
+  const out = lines.slice(0, 2).join(' ')
+  return out.length > max ? out.slice(0, max - 1).trimEnd() + '…' : out
+}
+
+// One or two lines from the item, and the item itself as the dot (pkg) so the asker installs it.
+async function tier1 (best, ctx, prefix = '') {
   const { item } = best
   const r = await readItem(item.ref, 'pkg', ctx)
   if (!r.ok) return null
   let text = r.text
   if (item.kind === 'skill') text = (await readItem(item.ref, 'text', ctx)).text || ''
-  const body = text.replace(/^\s*#\s+.*\n+/, '')
-  const answer = (item.kind === 'skill' || item.kind === 'resource'
-    ? `${item.title}: ${item.summary}\n\n${excerptOf(body)}`
-    : `${item.title}\n\n${excerptOf(body, 1000)}`).slice(0, ANSWER_MAX)
+  const body = excerptOf(text).replace(/^\s*#\s+.*\n+/, '').replace(/^\([^)\n]*AGENTS\.md\)\n+/, '')
+  const line = item.kind === 'skill' || item.kind === 'resource' ? item.summary : firstLines(body)
+  const answer = `${prefix}${item.title}: ${line}`.slice(0, ANSWER_MAX)
   return {
     ok: true,
     tier: 1,
@@ -273,10 +305,11 @@ export function createAnswerer ({ queueMax = 1 } = {}) {
     let built = { items: [], projects: [] }
     try { built = await buildCatalog(ctx) } catch {}
     const ranked = rankItems(question, built.items, kind, 3)
-    if (ranked[0] && ranked[0].score >= (ctx.tier1Threshold ?? TIER1_MIN)) {
+    const pick = tier1Pick(question, built.items, kind, ctx.tier1Threshold ?? TIER1_MIN)
+    if (pick) {
       try {
-        const r = await tier1(ranked[0], ctx)
-        if (r) return done({ ...r, score: ranked[0].score })
+        const r = await tier1(pick, ctx)
+        if (r) return done({ ...r, score: pick.score, named: pick.named })
       } catch {}
     }
     if (ctx.noExec) return done({ ok: false, tier: 1, text: "I don't know that one.", reason: 'no match' })
@@ -299,7 +332,16 @@ export function createAnswerer ({ queueMax = 1 } = {}) {
         timeoutMs,
         effort: ctx.effort || env.PETPACK_ASK_EFFORT || 'low'
       })
-      if (!r.ok) return done({ ok: false, tier: 2, text: "couldn't finish", reason: r.reason, execMs: r.ms })
+      if (!r.ok) {
+        // Exec failed or timed out: hand over the closest item rather than nothing.
+        if (ranked[0]) {
+          try {
+            const t1 = await tier1(ranked[0], ctx, 'Closest thing I have: ')
+            if (t1) return done({ ...t1, score: ranked[0].score, fallback: r.reason, execMs: r.ms })
+          } catch {}
+        }
+        return done({ ok: false, tier: 2, text: "couldn't finish", reason: r.reason, execMs: r.ms })
+      }
       const text = String(r.answer).trim().slice(0, ANSWER_MAX)
       const share = cleanShare(r.share)
       const card = await saveAnswerCard({ question, fromName, answer: text, share }, ctx)
