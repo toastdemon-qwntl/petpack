@@ -184,6 +184,23 @@ test('bots answer tier 1 only, never through answerAsk (exec)', async () => {
   assert.equal(tier1Answer('what is love', null, [item('skill:azure-deploy', 'azure-deploy', 'zip deploy')]), null)
 })
 
+test('demo bot gifts animate and say "learned", but never write into the Codex home', async () => {
+  const installs = []
+  const bridge = { installItem: async (...a) => { installs.push(a); return { installed: true } }, installSkill: async (...a) => { installs.push(a); return { installed: true } } }
+  const says = []
+  const brain = createBrain({ bridge, net: fakeNet(), view: { say: (id, text) => says.push([id, text]) },
+    me: { id: 'me', name: 'Pip', skills: [], catalog: [] }, config: { demo: true, seat: 0, noVisits: true }, random: seeded(3) })
+  brain.addBots()
+  brain.netStatus('solo')
+  await run(brain, 40, 0.1)
+  assert.ok(brain.me.skills.length >= 1, 'a bot gift arrived')
+  assert.ok(says.some(([id, text]) => id === 'me' && /^learned /.test(text)))
+  assert.equal(installs.length, 0)
+  const got = await brain.call('petpack_get', { id: `${[...brain._.agents.keys()].find(k => k.endsWith('bot-fern'))}/skill:pdf-tables` })
+  assert.equal(got.installed, false)
+  assert.equal(installs.length, 0)
+})
+
 test('search and meet helpers', () => {
   const owners = [{ id: 'rex', name: 'Rex', online: false, catalog: REX.catalog }]
   const [hit] = searchCatalogs('windows click through', owners, { now: 0 })

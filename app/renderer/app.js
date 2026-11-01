@@ -44,7 +44,7 @@ try { me = (await bridge.getMe?.()) || {} } catch (error) { console.warn('petpac
 let catalog = []
 try { catalog = (await bridge.getCatalog?.()) || [] } catch { catalog = [] }
 const myId = me.id || `pet-${Math.random().toString(36).slice(2, 10)}`
-const sprite = await spriteUpload(me.spriteUrl)
+const sprite = await spriteUpload(me.spriteUrl, me.atlas)
 
 const startSeat = Number.isInteger(config.seat) ? config.seat : 0
 const world = createWorld(viewport, { seat: startSeat, dock, pixelScale: 2, autoRender: false })
@@ -52,7 +52,7 @@ let net = null
 const brain = createBrain({
   bridge,
   net: { send: msg => net?.send(msg) ?? false },
-  me: { id: myId, name: config.name || me.displayName || me.petName || 'Pip', spriteUrl: me.spriteUrl || null,
+  me: { id: myId, name: config.name || me.displayName || me.petName || 'Pip', spriteUrl: me.spriteUrl || null, atlas: me.atlas || null,
     skills: Array.isArray(me.skills) ? me.skills : [], catalog, sprite },
   config: { demo, seat: config.seat, dock, room: config.room || null },
   view: {
@@ -93,6 +93,7 @@ function syncPets() {
     seen.add(p.id)
     const spriteUrl = p.spriteUrl && !p.spriteUrl.startsWith('data:') ? relayAsset(relayUrl || DEFAULT_RELAY, p.spriteUrl) : p.spriteUrl
     const info = { displayName: p.displayName, color: p.color, kind: p.kind, spriteUrl: spriteUrl || null, skillCount: p.skillCount, isMe: p.isMe }
+    if (p.atlas) info.atlas = p.atlas
     const key = JSON.stringify(info)
     if (shown.get(p.id) !== key) { world.upsertPet(p.id, info); shown.set(p.id, key) }
     world.updatePet(p.id, { x: p.x, z: p.z, facing: p.facing, anim: p.anim, status: p.status, speed: p.speed, snap: true })
@@ -151,22 +152,33 @@ window.addEventListener('keydown', event => {
   else if (event.key === 'ArrowRight') brain.moveSeatRequest(1)
 })
 
-async function spriteUpload(url) {
+/** Peers always get a plain 8x9 sheet: crop the top 9 rows of our atlas and re-encode as WebP (~1 MB). */
+async function spriteUpload(url, atlas) {
   if (!url || typeof url !== 'string') return null
   try {
-    let b64
-    if (url.startsWith('data:')) b64 = url.slice(url.indexOf(',') + 1)
-    else {
-      const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer())
-      let bin = ''
-      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-      b64 = btoa(bin)
-    }
-    const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0))
+    const image = new Image()
+    image.decoding = 'async'
+    image.src = url
+    await image.decode()
+    const cols = Number(atlas?.cols) || 8
+    const rows = Number(atlas?.rows) || Math.max(9, Math.round(image.naturalHeight / (image.naturalWidth / cols / 192 * 208)))
+    const cellW = Number(atlas?.cellW) || Math.floor(image.naturalWidth / cols)
+    const cellH = Number(atlas?.cellH) || Math.floor(image.naturalHeight / rows)
+    const canvas = document.createElement('canvas')
+    canvas.width = cellW * 8
+    canvas.height = cellH * 9
+    const ctx = canvas.getContext('2d')
+    ctx.imageSmoothingEnabled = false
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height)
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', 0.9))
+    if (!blob) return null
+    const raw = new Uint8Array(await blob.arrayBuffer())
+    let bin = ''
+    for (let i = 0; i < raw.length; i += 0x8000) bin += String.fromCharCode(...raw.subarray(i, i + 0x8000))
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', raw))
     const sha = [...digest].map(b => b.toString(16).padStart(2, '0')).join('')
-    return { sha, b64 }
-  } catch { return null }
+    return { sha, b64: btoa(bin) }
+  } catch (error) { console.warn('petpack sprite upload skipped', error?.message || error); return null }
 }
 
 window.addEventListener('pagehide', () => { net?.close() })

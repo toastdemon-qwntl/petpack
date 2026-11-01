@@ -200,6 +200,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   const myId = me.id || 'me'
   const mine = makeAgent({ id: myId, name: me.name || 'Pip', color: me.color || colorFor(myId), kind: 'cat',
     home: mySeat, isMe: true, spriteUrl: me.spriteUrl || null, skills: me.skills || [], catalog: normalizeItems(me.catalog) })
+  mine.atlas = me.atlas || null // real Codex sheets may be 8x11; the world crops by this grid
   agents.set(myId, mine)
   seats.set(myId, mySeat)
   let codexStatus = 'idle'
@@ -440,7 +441,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     return { t: 'hello', v: 2, id: myId, room, seat: welcomed || Number.isInteger(config.seat) ? mySeat : null,
       dock: config.dock || 'right', name: mine.name, color: mine.color, status: mine.status,
       skills: mine.skills.map(s => ({ id: s.id, name: s.name, description: s.description || '' })),
-      catalog: mine.catalog, sprite: me.sprite || null, answers: mine.lastAnswer, x: round(mine.x), z: round(mine.z) }
+      catalog: mine.catalog, sprite: me.sprite || null, answers: config.answers !== false,
+      x: round(mine.x), z: round(mine.z), facing: mine.facing, anim: renderAnim(mine) }
   }
   function upsertPeer(p, isOnline = true) {
     if (!p || !p.id || p.id === myId) return null
@@ -480,6 +482,10 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         seats.clear()
         for (const p of msg.peers || []) upsertPeer(p, true)
         for (const p of msg.away || []) upsertPeer(p, false)
+        for (const [id, seat] of Object.entries(msg.seats || {})) {
+          const peer = peers.get(id)
+          if (peer && Number.isInteger(seat)) { peer.seat = seat; if (peer.online) seats.set(id, seat) }
+        }
         if (Number.isInteger(firstSeat)) moveSeat(firstSeat, 'welcome', !welcomed && firstSeat !== mySeat)
         seats.set(myId, mySeat)
         seatedCache = null
@@ -503,7 +509,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       }
       case 'leave': {
         const peer = peers.get(msg.id)
-        if (peer) { peer.online = false; peer.lastSeen = wall(); seats.delete(msg.id); seatedCache = null; emit('roster') }
+        if (peer) { peer.online = false; peer.lastSeen = msg.lastSeen || wall(); seats.delete(msg.id); seatedCache = null; emit('roster') }
         break
       }
       case 'state': {
@@ -603,7 +609,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     inbox.set(msg.qid, entry)
     const asker = msg.from
     // Walk to the meeting landmark beside the asker's arrival side.
-    const landmark = msg.meet && Number.isFinite(msg.meet.x) ? msg.meet : meetLandmark(msg.kind, chunkOf(mine.x))
+    // The asker computes the same landmark from our seat (the relay forwards only qid/question/kind).
+    const landmark = msg.meet && Number.isFinite(msg.meet.x) ? msg.meet : meetLandmark(msg.kind, mySeat)
     mine.answering++
     mine.sceneUntil = 0
     startJob(mine, 'meet', async j => {
@@ -641,13 +648,14 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     send({ t: 'answer', qid: id, to: entry.from, ok: true, text: String(text || '').slice(0, 1200), share })
     return { ok: true }
   }
-  async function receiveGift(msg) {
+  async function receiveGift(msg, { install = true } = {}) {
     const skill = msg.skill || {}
     const giverName = peers.get(msg.from)?.name || agents.get(msg.from)?.name || 'a teammate'
     const log = giftLog.get(myId) || { last: -Infinity, count: 0 }
     if (log.count > 8) return
     let result = null
-    try {
+    // Demo bots only animate: their gifts never write into the real Codex home.
+    if (install) try {
       result = bridge.installItem ? await bridge.installItem({ kind: 'skill', ...skill }, giverName)
         : await bridge.installSkill?.(skill, giverName)
     } catch (error) { result = { installed: false, reason: String(error?.message || error) } }
@@ -750,7 +758,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         if (md) text = decode(md.b64)
       }
       const out = { kind: item.kind, title: item.title, owner: owner.name, text }
-      if (item.kind === 'skill' && result.pkg) {
+      if (agents.get(owner.id)?.isBot) { out.installed = false; out.reason = 'demo bot items are not installed' }
+      else if (item.kind === 'skill' && result.pkg) {
         try {
           const installed = bridge.installItem ? await bridge.installItem({ kind: 'skill', ...result.pkg, ref: item.ref }, owner.name)
             : await bridge.installSkill?.(result.pkg, owner.name)
@@ -773,7 +782,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         content = { text: r.text, pkg: r.pkg }
       }
       let result
-      try {
+      if (agents.get(owner.id)?.isBot) result = { installed: false, reason: 'demo bot items are not installed' }
+      else try {
         result = bridge.installItem ? await bridge.installItem({ ...item, text: content.text, pkg: content.pkg, owner: owner.name }, owner.name)
           : await bridge.installSkill?.(content.pkg, owner.name)
       } catch (error) { result = { installed: false, reason: String(error?.message || error) } }
@@ -814,7 +824,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     const state = {
       onAnswer(msg) {
         if (answer) return
-        if (msg.ok === false && /busy/i.test(msg.reason || msg.text || '') && !retried) {
+        if (msg.ok === false && /busy|away/i.test(msg.reason || '') && !retried) {
           pendingAsk.delete(qid)
           cancelJob(agent)
           askPeer(agent, { question, to: undefined, kind }, { retried: true, exclude: [...exclude, target.id] }).then(settle)
@@ -919,7 +929,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       } else if (receiverId === myId) {
         await sleep(1.4)
         const item = agent.catalog.find(i => i.kind === 'skill' && i.title === skill.name)
-        await receiveGift({ from: agent.id, skill: item ? botSkillPkg(agent, item) : { ...skill, files: [] } })
+        await receiveGift({ from: agent.id, skill: item ? botSkillPkg(agent, item) : { ...skill, files: [] } }, { install: false })
       } else if (agent.isMe) {
         let pkg = null
         try { pkg = await bridge.packSkill?.(skill.id) } catch { pkg = null }
@@ -1058,7 +1068,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   function pets() {
     const out = []
     for (const a of agents.values()) {
-      out.push({ id: a.id, displayName: a.name, color: a.color, kind: a.kind, spriteUrl: a.spriteUrl, isMe: a.isMe,
+      out.push({ id: a.id, displayName: a.name, color: a.color, kind: a.kind, spriteUrl: a.spriteUrl, atlas: a.atlas || null, isMe: a.isMe,
         skillCount: a.skills.length, x: a.x, z: a.z, facing: a.facing, speed: a.speed, anim: renderAnim(a), status: a.status })
     }
     for (const p of peers.values()) {
