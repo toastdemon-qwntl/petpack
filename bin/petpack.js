@@ -20,6 +20,8 @@ const HELP = `petpack ${VERSION}: your Codex pet, docked at the edge of your scr
   ${NPX} mcp              run the MCP server Codex talks to (stdio)
   ${NPX} mcp install      register that server with Codex
   ${NPX} uninstall        remove petpack from Codex and delete its settings (skills it installed stay)
+  ${NPX} doctor           check everything petpack needs, with a fix for anything missing
+  ${NPX} pets             which Codex pet petpack shows, and every pet it found (--choose <name> picks one)
 
 Options:
   --dock left|right    screen edge to dock to (remembered; default right)
@@ -217,6 +219,8 @@ checkNode()
 if (argv[0] === 'mcp') await runMcp(argv.slice(1))
 else if (argv[0] === 'uninstall') await uninstall(argv.slice(1))
 else if (argv[0] === 'runtime') await printRuntime()
+else if (argv[0] === 'doctor') process.exit((await (await importRoot('app/mcp/doctor.js')).runDoctor(argv.slice(1))).ok ? 0 : 1)
+else if (argv[0] === 'pets') process.exit(Number(await (await importRoot('app/codex/pets-cli.js')).runPetsCommand(argv.slice(1))) || 0)
 else if (argv[0] === '--help' || argv[0] === '-h' || argv[0] === 'help') console.log(HELP)
 else if (argv[0] === '--version' || argv[0] === '-v') console.log(VERSION)
 else await launch(argv)
