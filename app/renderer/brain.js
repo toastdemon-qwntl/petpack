@@ -453,14 +453,15 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     const key = `${anim}|${mine.status}|${mine.facing}`
     const moving = mine.speed > 0.01
     const gap = moving ? 0.1 : 1
+    if (moving !== lastSent.moving) force = true // every start and stop goes out at once
     if (!force && time - lastSent.at < gap && key === lastSent.key) return
     if (!force && !moving && key === lastSent.key && time - lastSent.at < 1) return
-    lastSent = { at: time, key }
-    const pose = { x: round(mine.x), z: round(mine.z), facing: mine.facing, anim, status: mine.status }
+    lastSent = { at: time, key, moving }
+    const pose = { x: round(mine.x), z: round(mine.z), facing: mine.facing, anim, status: mine.status, m: moving ? 1 : 0 }
     // The timestamped pose travels as fx (forwarded at once, fields intact) so every pane, the owner's
     // included, can draw it on one shared timeline; state keeps the relay's own bookkeeping current.
     send({ t: 'fx', kind: 'pose', ts: wall(), ...pose })
-    if (force || !moving || time - lastStateAt >= 0.5) { lastStateAt = time; send({ t: 'state', ...pose }) }
+    if (force || !moving || time - lastStateAt >= 0.5) { lastStateAt = time; const { m, ...state } = pose; send({ t: 'state', ...state }) }
   }
   let lastStateAt = -Infinity
   // ---- one shared timeline: every pane draws every pet at (synced now - DISPLAY_DELAY) ----
@@ -484,8 +485,10 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     if (rtt < 0 || rtt > 10000) return
     peer.clock.samples.push({ rtt, offset: p.t1 - (p.t0 + t2) / 2 })
     if (peer.clock.samples.length > 8) peer.clock.samples.shift()
-    // The lowest round trip gives the tightest offset estimate (NTP-style).
-    peer.clock.offset = peer.clock.samples.reduce((a, b) => (b.rtt < a.rtt ? b : a)).offset
+    // The lowest round trip gives the tightest offset estimate (NTP-style). Inside its own uncertainty
+    // (half the round trip) the OS clocks are already closer than we can measure: keep them.
+    const best = peer.clock.samples.reduce((a, b) => (b.rtt < a.rtt ? b : a))
+    peer.clock.offset = Math.abs(best.offset) > best.rtt / 2 ? best.offset : 0
   }
   function onPose(from, p) {
     const peer = peers.get(from)
@@ -530,8 +533,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     const last = list.at(-1)
     if (last && ts <= last.ts) return // stale or reordered
     // After a 1 Hz rest, hold the old spot until just before the new sample, so a start isn't smeared.
-    if (last && ts - last.ts > 300) list.push({ ...last, ts: ts - 100 })
-    list.push({ ts, x: s.x, z: s.z, facing: s.facing === -1 ? -1 : 1, anim: s.anim || 'idle' })
+    if (last && ts - last.ts > 300) list.push({ ...last, ts: ts - 100, moving: false })
+    list.push({ ts, x: s.x, z: s.z, facing: s.facing === -1 ? -1 : 1, anim: s.anim || 'idle', moving: s.m === 1 })
     if (list.length > 40) list.splice(0, list.length - 40)
   }
   function handle(msg) {
@@ -1199,6 +1202,13 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     let i = list.length - 1
     while (i > 0 && list[i - 1].ts > at) i--
     const b = list[i], a = list[i - 1]
+    if (a && at > b.ts && b.moving && a.moving) {
+      // A late pose: keep walking on the last heading for up to 200 ms rather than stall at the seam.
+      const span = Math.max(1, b.ts - a.ts)
+      const ahead = Math.min(200, at - b.ts) / span
+      const d = Math.hypot(b.x - a.x, b.z - a.z)
+      return { x: b.x + (b.x - a.x) * ahead, z: b.z + (b.z - a.z) * ahead, facing: b.facing, anim: 'run', speed: Math.min(20, d / (span / 1000)) }
+    }
     if (!a || at >= b.ts) return { x: b.x, z: b.z, facing: b.facing, anim: b.anim, speed: 0 }
     if (at <= a.ts) return { x: a.x, z: a.z, facing: a.facing, anim: a.anim, speed: 0 }
     const span = Math.max(1e-6, b.ts - a.ts)
