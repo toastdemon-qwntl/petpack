@@ -359,6 +359,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     agent.job = job
     agent.mode = mode
     agent.jobWith = withName // whom this job helps (recall says "busy helping Bea")
+    agent.lifeAct = null // a job's own moments (wave, gifts) are not LIFE acts
     Promise.resolve().then(() => fn(job)).catch(error => console.warn('petpack job', mode, error)).finally(() => {
       if (agent.job === job) { agent.job = null; agent.mode = 'home'; agent.hurry = false }
     })
@@ -633,9 +634,25 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     }
     sendState(true)
   }
+  // Codex pet parity for our own pet (the Codex app's rows): working -> the work pose ('review' row; the atlas's
+  // 'running' row 7 needs a world anim name first), waiting -> 'waiting' (+ red clock bubble and knock), done ->
+  // 'jump' then 'wave', failed -> 'failed', idle -> 'idle'. Walking is the world's 'run' rows from speed.
   function renderAnim(agent) {
-    if (agent.anim && time < agent.animUntil) return agent.anim
+    if (agent.anim && time < agent.animUntil) {
+      // LIFE chooses where our pet is (station, bench, pond); Codex status chooses the row, like the Codex app's
+      // pet. Only LIFE's celebration hop passes through. Brain moments (greet, gifts, visits) are not LIFE acts.
+      if (agent.isMe && agent.lifeAct && agent.anim === agent.lifeAct.anim) {
+        const s = agent.status
+        if (s === 'working') return 'review'
+        if (s === 'waiting') return 'waiting'
+        if (s === 'failed') return 'failed'
+        if (s === 'done' && agent.anim === 'jump') return 'jump'
+        return 'idle'
+      }
+      return agent.anim
+    }
     if (agent.mode === 'meet' && agent.answering) return 'review'
+    if (agent.status === 'working') return 'review'
     if (agent.status === 'waiting') return 'waiting'
     if (agent.status === 'failed') return 'failed'
     return 'idle'

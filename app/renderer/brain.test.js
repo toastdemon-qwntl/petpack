@@ -498,6 +498,21 @@ test('co-work: nextTo (pending until online), neighbours, one handshake, and vis
   assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'collab' && m.dst === 'bea'))
 })
 
+test('Codex pet parity: LIFE places our pet, Codex status picks the row', async () => {
+  const { brain } = makeBrain()
+  const mine = brain._.mine
+  const act = anim => { mine.lifeAct = { anim, started: true }; mine.anim = anim; mine.animUntil = brain.time + 10 }
+  const row = () => brain.hello().anim
+  brain.setStatus('working'); act('wave'); assert.equal(row(), 'review', 'a working pet shows the work pose at any station')
+  mine.anim = null; assert.equal(row(), 'review', 'between stations too')
+  brain.setStatus('waiting'); act('idle'); assert.equal(row(), 'waiting')
+  brain.setStatus('failed'); act('review'); assert.equal(row(), 'failed')
+  brain.setStatus('idle'); act('review'); assert.equal(row(), 'idle', 'fishing while idle is not working')
+  brain.setStatus('done'); assert.equal(row(), 'jump', 'done hops first')
+  act('jump'); assert.equal(row(), 'jump', "LIFE's celebration hop passes")
+  await brain.call('codex_link', { type: 'connected' }); assert.equal(row(), 'wave', 'greets on Codex connect')
+})
+
 test('search and meet helpers', () => {
   const owners = [{ id: 'rex', name: 'Rex', online: false, catalog: REX.catalog }]
   const [hit] = searchCatalogs('windows click through', owners, { now: 0 })
