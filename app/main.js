@@ -665,8 +665,9 @@ app.whenReady().then(async () => {
   const stopStatus = startStatus()
   const stopEvents = startCodexEvents()
   app.on('before-quit', () => { if (!releasing) try { stopStatus?.(); stopEvents?.(); codex.dispose(); codexLink?.close() } catch {} })
-  if (!SMOKE && codex.takeOverPet) { // the actual Codex pet comes over to petpack while it runs
-    Promise.resolve().then(() => codex.takeOverPet()).then(() => { petTaken = true })
+  if (!SMOKE && codex.takeOverPet) { // the actual Codex pet comes over to petpack while it runs (--no-takeover: not)
+    const enabled = !flags['no-takeover']
+    Promise.resolve().then(() => codex.takeOverPet({ enabled })).then(r => { petTaken = enabled && r?.ok !== false; log('takeover', r) })
       .catch(error => console.error(`petpack: couldn't take over the Codex pet (${error.message})`))
   }
   await startCodexLink()
