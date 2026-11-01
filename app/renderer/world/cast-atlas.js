@@ -5,15 +5,31 @@ const COLS = 8, ROWS = 9
 const ART_W = 48, ART_H = 52
 const rowForAnim = { idle: 0, wave: 3, jump: 4, failed: 5, waiting: 6, review: 8 }
 
-/** Premultiplied-alpha box filtering prevents pale/black halos around small pets. */
-export function preparePetAtlas(image) {
-  const width = image.naturalWidth ?? image.width, height = image.naturalHeight ?? image.height
-  const cellW = Math.floor(width / COLS), cellH = Math.floor(height / ROWS)
-  // Codex cells have a 12:13 aspect. Allow integer rounding on either axis,
-  // including sheets with incomplete trailing pixels outside the 8×9 grid.
-  if (!(cellW > 0 && cellH > 0) || Math.abs(cellW * ART_H - cellH * ART_W) > ART_W + ART_H) {
-    throw new Error(`Expected an 8×9 Codex pet atlas; received ${width}×${height}`)
+function sourceGrid(width, height, hint) {
+  // Keep the normalized texture at 8×9. The final two rows of 8×11 sheets
+  // are extras, not part of the standard animation contract.
+  const nearCellAspect = (w, h) => Math.abs(w * ART_H - h * ART_W) <= ART_W + ART_H
+  let rows = ROWS
+  if (hint != null) {
+    if (hint.cols !== COLS || ![ROWS, 11].includes(hint.rows)) throw new Error('Unsupported Codex pet atlas grid')
+    rows = hint.rows
+  } else if (!nearCellAspect(width / COLS, height / ROWS) && nearCellAspect(width / COLS, height / 11)) {
+    rows = 11
   }
+  const cellW = hint?.cellW ?? Math.floor(width / COLS)
+  const cellH = hint?.cellH ?? Math.floor(height / rows)
+  if (!Number.isInteger(cellW) || !Number.isInteger(cellH) || cellW <= 0 || cellH <= 0 ||
+      cellW * COLS > width || cellH * rows > height ||
+      (hint == null && !nearCellAspect(cellW, cellH))) {
+    throw new Error(`Expected an 8×9 or 8×11 Codex pet atlas; received ${width}×${height}`)
+  }
+  return { cellW, cellH }
+}
+
+/** Premultiplied-alpha box filtering prevents pale/black halos around small pets. */
+export function preparePetAtlas(image, hint) {
+  const width = image.naturalWidth ?? image.width, height = image.naturalHeight ?? image.height
+  const { cellW, cellH } = sourceGrid(width, height, hint)
   const source = document.createElement('canvas')
   source.width = cellW * COLS; source.height = cellH * ROWS
   const context = source.getContext('2d', { willReadFrequently: true })

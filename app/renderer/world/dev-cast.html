@@ -51,14 +51,21 @@
     import { makeTestAtlas, makeAtlasFixtures } from './atlas.js'
 
     const query = new URLSearchParams(location.search)
+    const gridMode = query.get('atlases') === 'grids'
     const atlasMode = query.has('atlases')
     if (atlasMode) {
       document.body.classList.add('atlas-fixtures')
       document.querySelector('.eyebrow').textContent = 'petpack / bring your own pet'
       document.querySelector('h1').innerHTML = 'Any scale.<br>The same little friend.'
-      document.querySelector('header p').textContent = 'Codex atlases at half, original, double and uneven sizes. Missing or broken artwork gets a local pet in your colour.'
-      document.querySelector('.swatches').textContent = 'WebP · PNG · data URLs · blob URLs · sparse animation rows'
-      document.querySelector('#sheet canvas').setAttribute('aria-label', 'Eight sprite compatibility fixtures, including two built-in fallbacks')
+      document.querySelector('header p').textContent = gridMode
+        ? '8×9 and 8×11 Codex sheets at half and original scale. Only the top nine animation rows play, with automatic detection or a supplied grid.'
+        : 'Codex atlases at half, original, double and uneven sizes. Missing or broken artwork gets a local pet in your colour.'
+      document.querySelector('.swatches').textContent = gridMode
+        ? '8×9 · 8×11 · grid hints · padded sheets · extra rows ignored'
+        : 'WebP · PNG · data URLs · blob URLs · sparse animation rows'
+      document.querySelector('#sheet canvas').setAttribute('aria-label', gridMode
+        ? 'Eight synthetic 8×9 and 8×11 Codex sheets at two scales, with automatic detection and grid hints'
+        : 'Eight sprite compatibility fixtures, including two built-in fallbacks')
     }
     const pixelScale = Math.max(1, Math.min(4, Number(query.get('px')) || 2))
     const sheet = document.querySelector('#sheet')
@@ -157,7 +164,7 @@
     }
     try {
       if (atlasMode) {
-        fixtureSet = await makeAtlasFixtures()
+        fixtureSet = await makeAtlasFixtures({ grids: gridMode })
         for (const [i, fixture] of fixtureSet.fixtures.entries()) {
           const pet = await createSpritePet(fixture)
           addCharacter(pet, i % 4, Math.floor(i / 4), fixture)

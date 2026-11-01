@@ -15,7 +15,7 @@ let chromium
 try { ({ chromium } = require('playwright')) }
 catch { ({ chromium } = require(join(homedir(), '.local/lib/node_modules/playwright'))) }
 const baseUrl = process.env.CAST_BASE_URL || 'http://127.0.0.1:8113'
-const output = process.env.CAST_SHOTS || '/data/lindell/tmp/petpack/shots/r2-cast/round4'
+const output = process.env.CAST_SHOTS || '/data/lindell/tmp/petpack/shots/r2-cast/round5'
 await mkdir(output, { recursive: true })
 const report = { baseUrl, checks: [], screenshots: [], consoleErrors: [], pageErrors: [], warnings: [], networkDiagnostics: [] }
 const check = (name, passed, detail) => report.checks.push({ name, passed: !!passed, ...(detail === undefined ? {} : { detail }) })
@@ -215,6 +215,96 @@ try {
     await page.evaluate(() => { window.castDemo.advance(2); window.castDemo.render() })
     await page.screenshot({ path: join(output, `atlases-${width}x${height}.png`) })
     report.screenshots.push(`atlases-${width}x${height}.png`)
+  }
+
+  const applicationWarnings = () => report.warnings.filter(w => w.startsWith('petpack:')).length
+  const beforeGridWarnings = applicationWarnings()
+  await page.goto(`${baseUrl}/app/renderer/world/dev-cast.html?atlases=grids&paused`)
+  await page.waitForFunction(() => document.documentElement.dataset.ready === 'true')
+  check('Eight 8×9/8×11 grid fixtures render without fallback warnings',
+    await page.evaluate(() => window.castDemo.characters.length === 8) && applicationWarnings() === beforeGridWarnings)
+  const gridResults = await page.evaluate(async () => {
+    const { createSpritePet, preparePetAtlas } = await import('./sprite-pet.js')
+    const { makeSyntheticAtlas, GRID_ATLAS_FRAMES } = await import('./atlas.js')
+    const results = []
+    const sprite = pet => pet.object3d.getObjectByName('Pixel billboard')
+    const pixels = pet => {
+      const image = sprite(pet).material.map.image
+      return image.getContext('2d').getImageData(0, 0, image.width, image.height).data
+    }
+    const reference = pixels(window.castDemo.characters.find(item => item.fixture.id === '9-full').pet)
+    const samePixels = pet => pixels(pet).every((v, i) => v === reference[i])
+    for (const { pet, fixture, state } of window.castDemo.characters) {
+      const image = sprite(pet).material.map.image
+      results.push({ name: `${fixture.id}: imported top9 pixels equal standard8×9`, passed:
+        pet.object3d.name === 'Codex pet' && image.width === 384 && image.height === 468 && samePixels(pet) })
+      // Exercise the consumer's row selection, including the final standard row.
+      // The extra rows are solid magenta, so wrong extraction cannot pass equality.
+      let animations = true
+      for (const [anim, facing, row] of [['idle', 1, 0], ['run', 1, 1], ['run', -1, 2], ['wave', 1, 3],
+        ['jump', 1, 4], ['failed', 1, 5], ['waiting', 1, 6], ['review', 1, 8]]) {
+        pet.set({ anim, facing, moving: true })
+        const visited = new Set([sprite(pet).userData.frame.column])
+        for (let i = 0; i < 60; i++) {
+          pet.update(.05)
+          const frame = sprite(pet).userData.frame
+          animations &&= frame.row === row && frame.column < GRID_ATLAS_FRAMES[row]
+          visited.add(frame.column)
+        }
+        animations &&= visited.size === GRID_ATLAS_FRAMES[row]
+      }
+      results.push({ name: `${fixture.id}: all standard animations select only present frames`, passed: animations })
+      pet.set(state)
+    }
+
+    const spriteUrl = window.castDemo.fixtures.find(f => f.id === '11-full').spriteUrl
+    const hint = { cols: 8, rows: 11, cellW: 192, cellH: 208 }
+    const pending = createSpritePet({ spriteUrl, atlas: hint })
+    hint.rows = 9 // The loader must use the metadata from the call, even while loading.
+    const [a, b, c] = await Promise.all([pending,
+      createSpritePet({ spriteUrl, atlas: { cellH: 208, rows: 11, cellW: 192, cols: 8 } }),
+      createSpritePet({ spriteUrl, atlas: { cols: 8, rows: 9 } })])
+    results.push({ name: 'Concurrent equivalent hints share artwork and snapshot caller metadata', passed:
+      samePixels(a) && sprite(a).material.map.image === sprite(b).material.map.image && sprite(a).material.map !== sprite(b).material.map })
+    results.push({ name: 'Explicit grid overrides detection without contaminating another cached layout', passed:
+      c.object3d.name === 'Codex pet' && sprite(c).material.map.image !== sprite(a).material.map.image && !samePixels(c) })
+    a.dispose(); c.dispose(); a.dispose()
+    results.push({ name: 'Disposing another layout leaves the surviving hinted pet intact', passed: samePixels(b) })
+    b.dispose()
+
+    for (const atlas of [{ cols: 7, rows: 11 }, { cols: 8, rows: 10 }, { cols: 8, rows: 11, cellW: 200 },
+      { cols: 8, rows: 11, cellH: 0 }, { cols: 8, rows: 11, cellH: 300 }]) {
+      const pet = await createSpritePet({ spriteUrl, atlas, color: '#bf866a' })
+      results.push({ name: `Invalid grid ${JSON.stringify(atlas)} resolves a fallback`, passed: pet.object3d.name === 'blob pet' })
+      pet.dispose()
+    }
+    const extraOnly = makeSyntheticAtlas({ height: 2288, rows: 11, frames: Array(9).fill(0) })
+    const fallback = await createSpritePet({ spriteUrl: extraOnly.toDataURL('image/png') })
+    results.push({ name: 'Artwork only in rows9–10 never becomes a standard animation', passed: fallback.object3d.name === 'blob pet' })
+    fallback.dispose(); extraOnly.width = extraOnly.height = 1
+    const runOnly = makeSyntheticAtlas({ width: 768, height: 1144, rows: 11, frames: [0, 0, 0, 0, 0, 0, 0, 8, 0] })
+    const runner = await createSpritePet({ spriteUrl: runOnly.toDataURL('image/png') })
+    runner.set({ anim: 'run', moving: true })
+    const visited = new Set()
+    let row7 = true
+    for (let i = 0; i < 40; i++) { runner.update(.05); const frame = sprite(runner).userData.frame; row7 &&= frame.row === 7; visited.add(frame.column) }
+    results.push({ name: '8×11 missing directional rows fall back to all eight row7 frames', passed: row7 && visited.size === 8 })
+    runner.dispose(); runOnly.width = runOnly.height = 1
+    const rounded = makeSyntheticAtlas({ width: 1543, height: 2298, rows: 11, frames: GRID_ATLAS_FRAMES })
+    const prepared = preparePetAtlas(rounded)
+    const roundedPixels = prepared.texture.image.getContext('2d').getImageData(0, 0, 384, 468).data
+    results.push({ name: '8×11 floor cells ignore incomplete trailing pixels', passed: roundedPixels.every((v, i) => v === reference[i]) })
+    prepared.texture.dispose(); rounded.width = rounded.height = 1
+    window.castDemo.render()
+    return results
+  })
+  gridResults.forEach(result => check(result.name, result.passed))
+  check('Invalid hint and extra-only fixtures each warn once', applicationWarnings() === beforeGridWarnings + 6)
+  for (const [width, height] of [[1440, 900], [2560, 1600]]) {
+    await page.setViewportSize({ width, height })
+    await page.evaluate(() => { window.castDemo.advance(2); window.castDemo.render() })
+    await page.screenshot({ path: join(output, `grids-${width}x${height}.png`) })
+    report.screenshots.push(`grids-${width}x${height}.png`)
   }
   const beforeDefaultWarnings = report.warnings.length
   await page.setViewportSize({ width: 1440, height: 900 })

@@ -28,16 +28,20 @@ function loadImage(url) {
   })
 }
 
-async function acquireAtlas(url) {
+async function acquireAtlas(url, hint) {
   if (typeof url !== 'string' || !url.trim()) throw new Error('A spriteUrl is required for a sprite pet')
   // Keep relative/local app URLs working, and reject malformed URLs before an
   // image request. Do not echo URLs: they may contain a private relay token.
   const parsed = new URL(url, document.baseURI)
   if (!['data:', 'blob:', 'http:', 'https:', 'file:'].includes(parsed.protocol)) throw new Error('Unsupported pet atlas URL')
-  let entry = atlases.get(url)
+  // Snapshot just the layout fields; callers may reuse or mutate their metadata.
+  // Distinct hints for one URL must never share normalized artwork.
+  const grid = hint == null ? undefined : { cols: hint.cols, rows: hint.rows, cellW: hint.cellW, cellH: hint.cellH }
+  const key = JSON.stringify([url, grid])
+  let entry = atlases.get(key)
   if (!entry) {
-    entry = { users: 0, ready: loadImage(url).then(preparePetAtlas) }
-    atlases.set(url, entry)
+    entry = { users: 0, ready: loadImage(url).then(image => preparePetAtlas(image, grid)) }
+    atlases.set(key, entry)
   }
   entry.users++
   let released = false
@@ -45,7 +49,7 @@ async function acquireAtlas(url) {
     if (released) return
     released = true
     if (--entry.users === 0) {
-      if (atlases.get(url) === entry) atlases.delete(url)
+      if (atlases.get(key) === entry) atlases.delete(key)
       entry.ready.then(atlas => atlas.texture.dispose(), () => {})
     }
   }
@@ -53,10 +57,10 @@ async function acquireAtlas(url) {
   catch (error) { release(); throw error }
 }
 
-export async function createSpritePet({ spriteUrl, color = '#79b9dc' } = {}) {
+export async function createSpritePet({ spriteUrl, color = '#79b9dc', atlas: hint } = {}) {
   let atlas
   try {
-    atlas = await acquireAtlas(spriteUrl)
+    atlas = await acquireAtlas(spriteUrl, hint)
     return createAtlasCharacter(atlas, { color })
   } catch {
     atlas?.release()
