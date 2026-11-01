@@ -2,6 +2,7 @@
 import { BrowserWindow, Menu, Tray, dialog, nativeImage } from 'electron'
 import path from 'node:path'
 import zlib from 'node:zlib'
+import { createPanel } from './panel.js'
 
 // A 16x16 pixel pet head (two ears, two eyes), drawn as rows: '#' body, '.' clear.
 const ART = [
@@ -90,11 +91,15 @@ function petMenu(pets, choose, chooseFolder) {
 
 /**
  * state(): { room, seat (int|null), dock ('left'|'right'), align (DIP), codex ('registered'|'unregistered'|'missing'|null) }
- * actions: copyRoom(), setSeat(seat|null), setDock(side), nudge(dy | 'reset'), registerCodex(), quit()
+ * actions: copyRoom(), setSeat(seat|null), setDock(side), nudge(dy | 'reset'), registerCodex(), quit(), setRoom?(code|null)
  * onPetChange(pet): optional; called after the person picks a pet. Without it the tray reloads petpack's windows,
  *   which re-runs getMe() and re-sends the sprite to the room.
+ * pane(): optional, the docked pane BrowserWindow (the popover sends it recall/DND/mute/party); userData: optional.
+ *
+ * Clicking the icon opens the popover (app/panel.js); right-click opens this native menu. Linux trays mostly can't
+ * tell clicks apart, so there the menu stays the click target and starts with "Open petpack…".
  */
-export function createTray({ state, actions, onPetChange }) {
+export function createTray({ state, actions, onPetChange, pane, userData }) {
   let tray
   try {
     tray = new Tray(trayImage())
@@ -103,6 +108,18 @@ export function createTray({ state, actions, onPetChange }) {
     return { refresh() {}, destroy() {} }
   }
   tray.setToolTip('petpack')
+  const nativeMenuOnClick = process.platform === 'linux'
+  let panel = null
+  try {
+    panel = createPanel({ tray, state, actions, pane, userData, onPetChange: pet => { onPetChange?.(pet); loadPets() } })
+  } catch (error) {
+    console.error(`petpack: no tray popover (${error.message})`)
+  }
+  if (panel && !nativeMenuOnClick) {
+    tray.on('click', () => panel.toggle())
+    tray.on('right-click', () => { if (!tray.isDestroyed()) tray.popUpContextMenu(build()) })
+  }
+  if (panel && (process.argv.includes('--panel') || process.env.PETPACK_PANEL === 'open')) setTimeout(() => panel.show(), 1500)
   let pets = { list: [], current: null }
   let retries = 0
   async function loadPets() {
@@ -149,6 +166,7 @@ export function createTray({ state, actions, onPetChange }) {
         ? [{ label: 'Codex not found', enabled: false }]
         : [{ label: 'Register', click: () => actions.registerCodex() }]
     return Menu.buildFromTemplate([
+      ...(panel ? [{ label: 'Open petpack…', click: () => panel.show() }, { type: 'separator' }] : []),
       { label: s.room ? `Room ${s.room} (copy)` : 'Room: everyone on this network', enabled: Boolean(s.room),
         click: () => actions.copyRoom() },
       { type: 'separator' },
@@ -174,8 +192,14 @@ export function createTray({ state, actions, onPetChange }) {
       { label: 'Quit petpack', click: () => actions.quit() },
     ])
   }
-  const refresh = () => { if (!tray.isDestroyed()) tray.setContextMenu(build()) }
+  // macOS/Windows: the click opens the popover, so the menu is only popped on right-click (setContextMenu would take
+  // the left click too). Linux: the menu is the click target.
+  const refresh = () => {
+    if (tray.isDestroyed()) return
+    if (!panel || nativeMenuOnClick) tray.setContextMenu(build())
+    panel?.refresh()
+  }
   refresh()
   loadPets()
-  return { refresh, refreshPets: loadPets, destroy: () => tray.destroy() }
+  return { refresh, refreshPets: loadPets, panel, destroy: () => { panel?.destroy(); tray.destroy() } }
 }

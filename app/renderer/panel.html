@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>petpack</title>
+<link rel="stylesheet" href="/app/renderer/panel.css">
+</head>
+<body>
+<div class="glass">
+  <header id="sec-header" class="head">
+    <div class="pet-frame"><canvas id="me" width="64" height="64"></canvas></div>
+    <div class="who">
+      <div class="name" id="pet-name">Your pet</div>
+      <div class="status"><span class="dot" id="status-dot"></span><span id="status-text">idle</span></div>
+    </div>
+    <button id="recall" class="btn primary" title="Call your pet home">Come home</button>
+    <div id="reply" class="reply" aria-live="polite"></div>
+  </header>
+
+  <div id="ask" class="ask" hidden>
+    <div class="ask-text" id="ask-text"></div>
+    <div class="ask-actions"><button class="btn" id="ask-no">Not now</button><button class="btn primary" id="ask-yes">Share</button></div>
+  </div>
+
+  <main class="scroll" id="scroll">
+    <section id="sec-pets" class="sec">
+      <h2>Pet</h2>
+      <div class="pet-grid" id="pet-grid"></div>
+      <div class="row gap">
+        <button class="btn" id="choose-folder">Choose folder…</button>
+        <label class="check"><input type="checkbox" id="follow-codex"><span>Follow Codex's pet</span></label>
+      </div>
+    </section>
+
+    <section id="sec-sharing" class="sec">
+      <h2>Sharing</h2>
+      <div class="seg" id="mode" role="radiogroup" aria-label="Sharing">
+        <button data-mode="free" role="radio">Share freely</button>
+        <button data-mode="ask" role="radio">Ask me first</button>
+        <button data-mode="off" role="radio">Don't share</button>
+      </div>
+      <ul class="share-list" id="share-list"><li class="muted">Looking at what your pet knows…</li></ul>
+    </section>
+
+    <section id="sec-room" class="sec">
+      <h2>Room</h2>
+      <div class="row">
+        <code class="room-code" id="room-code">dde-ldn</code>
+        <button class="btn small" id="room-copy">Copy</button>
+        <button class="btn small" id="room-change">Change</button>
+        <span class="spacer"></span>
+        <span class="online" id="online"><span class="pix-dot"></span><span id="online-n">–</span> online</span>
+      </div>
+      <form class="row room-edit" id="room-form" hidden>
+        <input id="room-input" maxlength="48" spellcheck="false" autocomplete="off" placeholder="room code">
+        <button class="btn small primary" type="submit">Join</button>
+        <button class="btn small" type="button" id="room-cancel">Cancel</button>
+      </form>
+      <div class="row">
+        <span class="label">Dock</span>
+        <div class="seg small" id="dock">
+          <button data-dock="left">Left</button>
+          <button data-dock="right">Right</button>
+        </div>
+        <span class="spacer"></span>
+        <span class="label">Align</span>
+        <button class="btn small icon" id="align-up" title="Move the pane up">▲</button>
+        <button class="btn small icon" id="align-down" title="Move the pane down">▼</button>
+      </div>
+    </section>
+
+    <section id="sec-dnd" class="sec">
+      <label class="row toggle-row">
+        <span class="moon" aria-hidden="true"></span>
+        <span class="grow"><span class="title">Do Not Disturb</span><span class="sub">Pane tucked away, your pet stays home, no asks, no sounds</span></span>
+        <input type="checkbox" class="switch" id="dnd">
+      </label>
+    </section>
+
+    <section id="sec-activity" class="sec">
+      <h2 class="row"><span>Activity</span><span class="spacer"></span><button class="btn small ghost" id="term-toggle" aria-expanded="true">Hide</button></h2>
+      <div class="term-wrap" id="term-wrap"><div class="term" id="term" role="log" aria-live="off"></div></div>
+    </section>
+  </main>
+
+  <footer id="sec-footer" class="foot">
+    <button class="fbtn" id="mute" title="Sound on/off"><span class="ico ico-sound"></span><span id="mute-label">Mute</span></button>
+    <button class="fbtn" id="party" title="Conga line"><span class="ico ico-party"></span>Party</button>
+    <button class="fbtn" id="collapse" title="Tuck the pane away"><span class="ico ico-collapse"></span>Collapse</button>
+    <button class="fbtn" id="quit" title="Quit petpack"><span class="ico ico-quit"></span>Quit</button>
+  </footer>
+</div>
+<script type="module" src="/app/renderer/panel.js"></script>
+</body>
+</html>
