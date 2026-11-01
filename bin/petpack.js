@@ -196,14 +196,15 @@ async function launch(args) {
   }
   const stderrTail = filterStderr(child.stderr)
   let closed = false
+  let stopping = false
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.on(signal, () => { if (!closed) child.kill(signal) })
+    process.on(signal, () => { stopping = true; if (!closed) child.kill(signal) })
   }
   child.on('error', error => { console.error(`petpack: couldn't start Electron: ${error.message}`); process.exit(1) })
   child.on('close', async (code, signal) => {
     closed = true
     const status = code ?? (signal ? 1 : 0)
-    if (status !== 0 && !DEBUG) {
+    if (status !== 0 && !stopping && !signal && !DEBUG) { // a crash, not Ctrl+C: show what Electron said
       const tail = stderrTail()
       if (tail.length) console.error(tail.join('\n'))
     }

@@ -122,7 +122,7 @@ function fromNpm(log) {
     { stdio: ['ignore', 'ignore', 'inherit'], shell: WIN && cmd === 'npm.cmd', windowsHide: true })
     if (result.status !== 0) throw new Error(`npm install electron@${version} failed (exit ${result.status})`)
   }
-  return electronFrom(anchor, `electron@${version} (npm, cached)`, log)
+  return electronFrom(anchor, `electron@${version} (npm, cached)`, () => {})
 }
 
 /** Windows: unzip the cached Electron zip with tar.exe when the extract-zip binding is blocked. */
