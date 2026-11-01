@@ -94,6 +94,7 @@ function config() {
     profile: PROFILE || null, version: VERSION, platform: process.platform,
     pane: { ...paneSize(paneScale), scale: paneScale }, debug: DEBUG,
     sharing: brainSharing(), dnd: Boolean(traySharing()?.dnd), sit: settings.sit === 'across' ? 'across' : 'side',
+    helpVisits: settings.helpVisits === true,
     nextTo: typeof flags['next-to'] === 'string' && flags['next-to'].trim() ? flags['next-to'].trim() : null,
     // Device registry fingerprint (hello.device): this machine + profile, hashed; the relay keys agents by id first.
     device: crypto.createHash('sha256').update(`${os.hostname()}|${PROFILE || ''}`).digest('hex').slice(0, 32),
@@ -543,6 +544,11 @@ function trayActions() {
     setSeat: seat => { settings.seat = seat; saveSettings(); refreshTray(); win?.webContents.reload() },
     // "Answer teammates in Codex" (default on): questions we can't answer at once open in the Codex app.
     setAnswerInCodex: on => { settings.answerInCodex = Boolean(on); saveSettings(); refreshTray() },
+    // "Help stuck teammates" (opt-in, default off): the live brain follows at once, no reload.
+    setHelpVisits: on => {
+      settings.helpVisits = Boolean(on); saveSettings(); refreshTray()
+      if (win && !win.isDestroyed()) win.webContents.send('petpack:panel-command', { cmd: 'helpVisits', on: settings.helpVisits })
+    },
     // "Show me" (L2 brain.showMe): the pane opens and our pet comes to the front.
     showMe: () => {
       if (!win || win.isDestroyed()) return
@@ -728,7 +734,7 @@ app.whenReady().then(async () => {
   if (process.platform === 'win32') setInterval(() => win && raiseToTop(win), 10000)
   if (SMOKE) { runSmoke().catch(error => { console.error(error); app.exit(1) }); return }
   tray = createTray({ state: () => ({ room: settings.room, seat: settings.seat, dock: settings.dock, sit: settings.sit === 'across' ? 'across' : 'side', answerInCodex: settings.answerInCodex === true,
-    align: settings.align, codex: codexState }), actions: trayActions(), pane: () => win, userData: USER_DATA,
+    helpVisits: settings.helpVisits === true, align: settings.align, codex: codexState }), actions: trayActions(), pane: () => win, userData: USER_DATA,
     // A new pet from the tray: the page re-reads getMe() and re-sends its sprite (no reload, the walk goes on).
     onPetChange: () => { petFace = null; if (win && !win.isDestroyed()) win.webContents.send('petpack:me-changed') } })
   if (codexLink) { codexState = codexLink.state().status === 'unregistered' ? 'unregistered' : 'registered'; refreshTray() }

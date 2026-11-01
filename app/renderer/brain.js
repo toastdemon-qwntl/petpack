@@ -28,6 +28,8 @@
 //   'remove'    (id)                                       a leftover agent the relay no longer lists (welcome
 //                                                          registry / full layout); it also leaves pets()
 //   'inbox'     ({ id, from, fromName, question })         a teammate's question our catalog can't answer at once
+//   'leader'    (id | null, previousId | null)             today's most helpful agent changed: pets() marks it trophy: true
+//   'helped'    ({ day, answers, shares, at })             our own help count went up: persist it for a restart
 //   showMe() -> { ok, with, item, kind, question, answer, says, installed, message }: the core journey for real
 //     with our co-work neighbour (else the nearest online peer): walk over, ask about one of their real items,
 //     answer, dot, install, "learned X", walk home, celebrate.
@@ -37,6 +39,13 @@
 //
 // API for WIRE (besides tick/handle/call/pets/hello/on):
 //   recall() -> { busy, message }        free: walks home now; busy: "busy helping Bea, back soon", home after
+//   leaderboard(limit = 5) -> [{ id, name, answers, shares, total, at, isMe }]  today's helpers, most helpful first
+//     (answers given + items served or gifted; each agent reports its own over fx 'score'); leader getter.
+//     config.helped { day, answers, shares, at } seeds today's own count.
+//   setHelpVisits(on) -> on; helpVisits  opt-in: while our Codex is idle/done, our pet visits a teammate whose Codex
+//                                        has been failed 8 s or waiting 45 s (nearest first, 5 min apart per person),
+//                                        offers a hand, brings a freely shared skill, stays until they move on (40 s
+//                                        at most). config.helpVisits seeds it.
 //   setDnd(on) -> on; dnd                no visits/gifts, pet stays home, asks get "<name> is heads-down right now";
 //                                        pets() carries dnd per pet (draw a small DND sign over those pets)
 //   setSharing({ mode: 'free'|'ask'|'never', items: { [ref]: true|false } }); sharing
@@ -494,6 +503,137 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     learnedCount.set(id, before + by)
     if (hatLevel(before + by) !== hatLevel(before)) emit('hat', id, hatLevel(before + by))
   }
+  // ---- leaderboard: who helped most today (answers given + items shared); the top helper wears a trophy ----
+  // Each agent counts its own help and tells the room (fx 'score'); everyone repeats theirs when someone joins.
+  const pad2 = n => String(n).padStart(2, '0')
+  const dayKey = () => { const d = new Date(wall()); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` }
+  const helpCount = v => Math.max(0, Math.min(9999, Math.floor(Number(v)) || 0))
+  const scores = new Map() // id -> { day, answers, shares, at /* wall ms of the last help */ }
+  let leaderId = null
+  let scoreSentAt = -Infinity
+  let leaderCheckAt = 0
+  function todayScore(id) {
+    const s = scores.get(id)
+    return s && s.day === dayKey() ? s : null
+  }
+  /** Our pet (or a demo bot) helped someone: kind 'answer' (answered an ask) or 'share' (served or gave an item). */
+  function creditHelp(agentId, kind) {
+    const agent = agents.get(agentId)
+    if (!agent) return
+    const s = todayScore(agentId) || { day: dayKey(), answers: 0, shares: 0, at: 0 }
+    if (kind === 'answer') s.answers++
+    else s.shares++
+    s.at = wall()
+    scores.set(agentId, s)
+    if (agent.isMe) { emit('helped', { ...s }); sendScore() }
+    updateLeader()
+  }
+  function sendScore() {
+    const s = todayScore(myId)
+    if (!s || !online) return
+    scoreSentAt = time
+    send({ t: 'fx', kind: 'score', day: s.day, answers: s.answers, shares: s.shares, at: s.at })
+  }
+  function noteScore(id, p) {
+    if (!id || id === myId || agents.has(id) || typeof p?.day !== 'string') return
+    scores.set(id, { day: p.day.slice(0, 10), answers: helpCount(p.answers), shares: helpCount(p.shares), at: Number(p.at) || 0 })
+    updateLeader()
+  }
+  /** Today's helpers, most helpful first (ties: whoever got there first). */
+  function leaderboard(limit = 5) {
+    const day = dayKey()
+    const rows = []
+    for (const [id, s] of scores) {
+      if (s.day !== day) continue
+      const a = agents.get(id)
+      const p = peers.get(id)
+      if (!a && !p) continue
+      if (a?.isBot && online && !demo) continue // solo stand-ins never compete with the real team
+      const total = s.answers + s.shares
+      if (total > 0) rows.push({ id, name: a ? a.name : p.name, answers: s.answers, shares: s.shares, total, at: s.at, isMe: id === myId })
+    }
+    rows.sort((x, y) => y.total - x.total || x.at - y.at || (x.id < y.id ? -1 : 1))
+    return rows.slice(0, Math.max(1, limit))
+  }
+  function updateLeader() {
+    const top = leaderboard(1)[0] || null
+    const next = top?.id || null
+    if (next === leaderId) return
+    const previous = leaderId
+    leaderId = next
+    emit('leader', next, previous)
+    // A fresh win gets a bubble on every pane (same scores, same leader); a late score arriving quietly doesn't.
+    if (top && wall() - top.at < 15000) emit('say', top.id, 'most helpful today!')
+  }
+
+  // ---- help visits (opt-in): our Codex is free and a teammate's is stuck, so our pet goes and keeps theirs company ----
+  const HELP_AFTER_FAILED = 8 // s their Codex has been failed before we go
+  const HELP_AFTER_WAITING = 45 // s their Codex has been waiting on its person
+  const HELP_COOLDOWN = 300 // s between visits to the same teammate
+  const HELP_STAY = 40 // s at most beside them
+  let helpVisits = !!config.helpVisits
+  let helpCheckAt = 0
+  const stuckSince = new Map() // peer id -> brain time their Codex turned waiting/failed
+  const helpedAt = new Map() // peer id -> brain time of our last help visit
+  const isStuck = status => status === 'waiting' || status === 'failed'
+  function setHelpVisits(on) {
+    helpVisits = !!on
+    if (!helpVisits && mine.job?.mode === 'help') {
+      cancelJob(mine)
+      startJob(mine, 'return', j => goHome(mine, j))
+    }
+    return helpVisits
+  }
+  /** The stuck teammate to help, nearest seat first, or null. */
+  function stuckPeer() {
+    let best = null
+    for (const p of peers.values()) {
+      if (!p.online || p.away || p.dnd || !isStuck(p.status)) { stuckSince.delete(p.id); continue }
+      if (!stuckSince.has(p.id)) stuckSince.set(p.id, time)
+      if (time - stuckSince.get(p.id) < (p.status === 'failed' ? HELP_AFTER_FAILED : HELP_AFTER_WAITING)) continue
+      if (time - (helpedAt.get(p.id) ?? -Infinity) < HELP_COOLDOWN) continue
+      const d = Number.isInteger(p.seat) ? Math.abs(p.seat - mySeat) : 999
+      if (!best || d < best.d) best = { peer: p, d }
+    }
+    return best?.peer || null
+  }
+  function maybeHelp() {
+    if (!helpVisits || !online || dnd || recallPending || replaced || time < helpCheckAt) return
+    helpCheckAt = time + 1
+    if (codexStatus !== 'idle' && codexStatus !== 'done') return
+    if (mine.job && mine.job.mode !== 'visit') return // a casual stroll gives way; real errands don't
+    const peer = stuckPeer()
+    if (!peer) return
+    helpedAt.set(peer.id, time)
+    startJob(mine, 'help', job => helpVisit(mine, peer, job), peer.name)
+  }
+  /** Walk over, offer a hand, bring a freely shared skill they don't have, stay until their Codex moves on. */
+  async function helpVisit(agent, peer, job) {
+    fx('seek', { src: agent.id, dst: peer.id })
+    const ok = await walkTo(agent, sideSpot(agent, () => member(peer.id)), job, { timeout: 45 })
+    if (job.cancelled) return
+    agent.faceTo = peer.id
+    if (ok) {
+      setAnim(agent, 'wave', 1.4)
+      fx('say', { src: agent.id, text: 'need a hand?' })
+      await sleep(1.8, job)
+      if (job.cancelled) return
+      fx('collab', { src: agent.id, dst: peer.id, dot: 'skill' })
+      await offerSkill(agent, member(peer.id) || peer, job)
+      const started = time
+      const them = () => member(peer.id)
+      while (!job.cancelled && them()?.online && isStuck(them()?.status) && time - started < HELP_STAY) await sleep(0.5, job)
+      if (job.cancelled) return
+      if (them() && !isStuck(them().status)) {
+        setAnim(agent, 'jump', 1.1)
+        fx('say', { src: agent.id, text: 'nice one!' })
+        await sleep(1.4, job)
+        if (job.cancelled) return
+      }
+    }
+    await goHome(agent, job)
+  }
+
   function plant(entry) {
     if (!entry?.seed || garden.has(entry.seed)) return false
     const bloom = { kind: KINDS.includes(entry.kind) ? entry.kind : 'skill', seed: String(entry.seed), color: entry.color }
@@ -817,14 +957,16 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         }
         emit('online', { room, seat: mySeat })
         sendState(true)
+        sendScore()
         break
       }
       case 'join': {
         const peer = upsertPeer(msg.peer, true)
         if (peer) {
           peer.joinedAt = time
-          // A newcomer gets a welcome gift 4 s after joining.
+          // A newcomer gets a welcome gift 4 s after joining, and hears today's scores.
           mine.giftReadyAt = time + 4
+          setTimeoutSafe(sendScore, 1000 + random() * 2000)
           rehomeBots()
           emit('roster')
           emit('arrive', peer.id)
@@ -907,6 +1049,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         const { t, v, kind, from, id, ...payload } = msg
         if (kind === 'pose') { onPose(from, payload); break }
         if (kind === 'clock') { onClock(from, payload); break }
+        if (kind === 'score') { noteScore(from, payload); break }
         if (!payload.src) payload.src = from
         showFx(kind, payload)
         break
@@ -1004,20 +1147,25 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       if (job.cancelled) return
       const kind = KINDS.includes(kindAt(nb.seat ?? mySeat)) ? kindAt(nb.seat ?? mySeat) : 'skill'
       fx('collab', { src: agent.id, dst: nb.id, dot: kind })
-      // Bring a dot for real: a skill they don't have yet that we share freely.
-      const gift = agent.skills.find(s => !(nb.skills || []).some(k => k.name === s.name) &&
-        ruleFor(mine.catalog.find(i => i.kind === 'skill' && i.title === s.name)?.ref) === 'free')
-      if (gift && receiverCanTake(nb.id)) {
-        await sleep(3, job)
-        if (job.cancelled) return
-        fx('gift', { src: agent.id, dst: nb.id, label: gift.name, dot: 'skill', seed: `${agent.id}/skill:${gift.name}` })
-        let pkg = null
-        try { pkg = await bridge.packSkill?.(gift.id) } catch { pkg = null }
-        send({ t: 'gift', to: nb.id, gid: uid('g'), skill: pkg || { id: gift.id, name: gift.name, description: gift.description || '', files: [] } })
-      }
+      await offerSkill(agent, nb, job)
+      if (job.cancelled) return
     }
     await sleep(6 + random() * 4, job)
     if (!job.cancelled) await goHome(agent, job)
+  }
+  /** Bring a dot for real: a skill they don't have yet that we share freely. -> true when one was given. */
+  async function offerSkill(agent, nb, job) {
+    const gift = agent.skills.find(s => !(nb.skills || []).some(k => k.name === s.name) &&
+      ruleFor(mine.catalog.find(i => i.kind === 'skill' && i.title === s.name)?.ref) === 'free')
+    if (!gift || !receiverCanTake(nb.id)) return false
+    await sleep(3, job)
+    if (job.cancelled) return false
+    fx('gift', { src: agent.id, dst: nb.id, label: gift.name, dot: 'skill', seed: `${agent.id}/skill:${gift.name}` })
+    let pkg = null
+    try { pkg = await bridge.packSkill?.(gift.id) } catch { pkg = null }
+    send({ t: 'gift', to: nb.id, gid: uid('g'), skill: pkg || { id: gift.id, name: gift.name, description: gift.description || '', files: [] } })
+    creditHelp(agent.id, 'share')
+    return true
   }
 
   /** An away agent: it stays in the world, napping at x/z, and never moves until its owner is back. */
@@ -1052,7 +1200,10 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     peers.delete(id)
     seats.delete(id)
     visitors.delete(id)
+    scores.delete(id)
+    stuckSince.delete(id)
     seatedCache = null
+    updateLeader()
     emit('remove', id)
     emit('roster')
   }
@@ -1140,6 +1291,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     }
     send({ t: 'fetched', fid: msg.fid, to: msg.from, ok: result.ok, sha: result.sha || item?.sha || '',
       text: result.text, pkg: result.pkg, reason: result.reason })
+    if (result.ok) creditHelp(myId, 'share')
   }
   function answerTimeoutText(name) { return `${name} couldn't finish in time.` }
   async function receiveAsk(msg) {
@@ -1191,6 +1343,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     const share = result?.share || (result?.item ? { kind: result.item.kind, title: result.item.title, ref: result.item.ref } : null)
     send({ t: 'answer', qid: msg.qid, to: asker, ok: result?.ok !== false, text: String(result?.text || '').slice(0, 1200),
       share, pkg: result?.pkg, reason: result?.reason })
+    if (result?.ok !== false) creditHelp(myId, 'answer')
   }
   function answerInbox(id, text, item) {
     const entry = inbox.get(id)
@@ -1200,6 +1353,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     mine.lastAnswer++
     const share = item ? (typeof item === 'string' ? mine.catalog.find(i => i.ref === item || i.title === item) || null : item) : null
     send({ t: 'answer', qid: id, to: entry.from, ok: true, text: String(text || '').slice(0, 1200), share })
+    creditHelp(myId, 'answer')
     return { ok: true }
   }
   async function receiveGift(msg, { install = true } = {}) {
@@ -1340,7 +1494,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
    *  sign over it. WIRE folds the pane and mutes sound on the 'dnd' event. */
   function setDnd(on) {
     dnd = !!on
-    if (dnd && mine.job?.mode === 'visit') cancelJob(mine)
+    if (dnd && (mine.job?.mode === 'visit' || mine.job?.mode === 'help')) cancelJob(mine)
     if (dnd && !mine.job && chunkOf(mine.x) !== mySeat) recall()
     emit('dnd', dnd)
     sendState(true)
@@ -1483,7 +1637,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       const list = members().filter(m => !m.isBot || demo || !online)
       return {
         room: room || (online ? null : 'solo'),
-        me: { name: mine.name, pet: mine.name, seat: mySeat, status: mine.status, online, dnd, sharing: sharing.mode },
+        me: { name: mine.name, pet: mine.name, seat: mySeat, status: mine.status, online, dnd, sharing: sharing.mode, helpVisits },
+        helpers_today: leaderboard(5).map(({ name, answers, shares, isMe }) => ({ name, answers, shares, ...(isMe ? { you: true } : {}) })),
         peers: list.map(m => ({
           name: m.name, pet: m.name, seat: m.seat, status: m.online ? m.status || 'idle' : 'away',
           where: !m.online ? 'away' : m.seat === mySeat - 1 ? 'left' : m.seat === mySeat + 1 ? 'right' : 'far',
@@ -1731,6 +1886,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       await sleep(1.2, job) // thinking
       bot.answering = Math.max(0, bot.answering - 1)
       answeredAt = time
+      creditHelp(bot.id, 'answer')
       const pending = pendingAsk.get(qid)
       pending?.onAnswer({ qid, from: bot.id, ok: true, text: result.text, share: result.item ? { kind: result.item.kind, title: result.item.title, ref: result.item.ref } : null })
       await holdForScene(bot, job, () => answeredAt)
@@ -1773,6 +1929,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       const receiver = member(receiverId)
       if (!receiver) return
       fx('gift', { src: agent.id, dst: receiverId, label: skill.name, dot: 'skill', seed: `${agent.id}/skill:${skill.name}` })
+      creditHelp(agent.id, 'share')
       if (receiver.local && agents.get(receiverId)?.isBot) {
         const bot = agents.get(receiverId)
         await sleep(1.4)
@@ -1932,8 +2089,11 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       if (agent.isBot) { autoGift(agent); botErrand(agent); maybeVisit(agent) }
     }
     if (online || bots().length) autoGift(mine)
+    maybeHelp()
     if (!config.noVisits) maybeVisit(mine)
     sendState()
+    if (online && time - scoreSentAt > 60) sendScore()
+    if (time >= leaderCheckAt) { leaderCheckAt = time + 30; updateLeader() } // midnight clears the trophy
     syncClocks()
     // Idle with no Codex activity for 3 min: the pet naps until something happens.
     if (mine.job || codexStatus === 'working' || codexStatus === 'waiting') { lastActivity = time; if (sleeping) wake() }
@@ -1960,13 +2120,13 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     for (const a of agents.values()) {
       const s = a.hist.length ? sampleAt(a.hist, at) : { x: a.x, z: a.z, facing: a.facing, anim: renderAnim(a), speed: 0 }
       out.push({ id: a.id, displayName: a.name, color: a.color, kind: a.kind, spriteUrl: a.spriteUrl, atlas: a.atlas || null, isMe: a.isMe,
-        local: true, skillCount: a.skills.length, ...s, status: a.status, dnd: a.isMe ? dnd : false })
+        local: true, skillCount: a.skills.length, ...s, status: a.status, dnd: a.isMe ? dnd : false, trophy: a.id === leaderId })
     }
     for (const p of peers.values()) {
       if ((!p.online && !p.away) || !p.samples.length) continue
       const s = sampleAt(p.samples, at)
       out.push({ id: p.id, displayName: p.name, color: p.color, kind: 'cat', spriteUrl: p.sprite || null, isMe: false,
-        local: false, skillCount: p.skills.length, ...s, status: p.status, dnd: !!p.dnd, away: !!p.away })
+        local: false, skillCount: p.skills.length, ...s, status: p.status, dnd: !!p.dnd, away: !!p.away, trophy: p.id === leaderId })
     }
     return out
   }
@@ -2007,12 +2167,19 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
 
   if (config.sharing) setSharing(config.sharing)
   if (config.dnd) dnd = true
+  // Today's count survives a restart (WIRE keeps it); yesterday's starts again at zero.
+  if (config.helped && config.helped.day === dayKey()) {
+    scores.set(myId, { day: config.helped.day, answers: helpCount(config.helped.answers), shares: helpCount(config.helped.shares), at: Number(config.helped.at) || 0 })
+    updateLeader()
+  }
   return {
     tick, handle, call, setStatus, netStatus, hello, pets, addBots, removeBots, dressBots, setMe, refreshCatalog, on,
     moveSeatRequest(delta) { if (online) send({ t: 'seat', op: 'move', to: mySeat + delta }) },
     isSeated(chunk) { for (const [id, seat] of seats) if (id !== myId && seat === chunk) return true; return false },
     party: () => maybeConga(true),
     recall, setDnd, get dnd() { return dnd },
+    setHelpVisits, get helpVisits() { return helpVisits },
+    leaderboard, get leader() { return leaderId },
     setSharing, get sharing() { return { ...sharing, items: { ...sharing.items } } },
     decide, get permissions() { return [...permissions.values()].map(({ finish, ...p }) => p) },
     find, errand: errandStatus,

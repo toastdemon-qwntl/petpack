@@ -101,13 +101,19 @@ const brainBridge = typeof bridge.answerAsk !== 'function' ? bridge : Object.ass
     return answering
   },
 })
+// Today's own help count (answers given, items shared) survives a restart; the brain drops yesterday's.
+const HELPED_KEY = 'petpack:helped'
+function readHelped() {
+  try { const v = JSON.parse(localStorage.getItem(HELPED_KEY) || 'null'); return v && typeof v === 'object' ? v : null } catch { return null }
+}
 const brain = createBrain({
   bridge: brainBridge,
   net: { send: msg => net?.send(msg) ?? false },
   me: { id: myId, name: config.name || me.displayName || me.petName || 'Pip', spriteUrl: me.spriteUrl || null, atlas: me.atlas || null,
     skills: Array.isArray(me.skills) ? me.skills : [], catalog, sprite },
   config: { demo, seat: config.seat, dock, room: config.room || null, sharing: config.sharing || null, dnd: !!config.dnd,
-    sit: config.sit === 'across' ? 'across' : 'side', device: config.device || null, nextTo: config.nextTo || null },
+    sit: config.sit === 'across' ? 'across' : 'side', device: config.device || null, nextTo: config.nextTo || null,
+    helpVisits: !!config.helpVisits, helped: readHelped() },
   view: {
     // One text bubble per pane at a time, and only for pets this pane shows.
     ask: (a, b, o) => queueText({ ids: [a, b], hold: 4800, first: true, run: () => world.ask(a, b, o) }),
@@ -270,6 +276,8 @@ function syncPets() {
   }
   for (const id of [...shown.keys()]) if (!seen.has(id)) { world.removePet(id); shown.delete(id); shownX.delete(id) }
   drawDndSigns(list)
+  drawTrophy(list)
+  drawBoard(performance.now())
 }
 
 function frame(now) {
@@ -359,6 +367,7 @@ bridge.onPanelCommand?.(msg => {
   const { cmd, on } = msg || {}
   if (cmd === 'recall') { const r = brain.recall?.(); if (r?.message) activity(r.message, 'recall') }
   else if (cmd === 'dnd') brain.setDnd?.(!!on)
+  else if (cmd === 'helpVisits') brain.setHelpVisits?.(!!on) // the popover logs the change itself
   else if (cmd === 'mute') joy.setMuted(!!on, true)
   else if (cmd === 'party') brain.party?.()
   else if (cmd === 'sit') brain.setSit?.(msg.sit === 'across' ? 'across' : 'side')
@@ -470,6 +479,21 @@ askSheet.replaceSync(`
 .pp-nb[data-side='across'] { left: 50%; transform: translateX(-50%); }
 .pp-dnd { position: absolute; z-index: 6; padding: 0 4px; border-radius: 4px; background: #c8605b; color: #fff; pointer-events: none;
   font: 700 8px/11px ui-rounded, system-ui, sans-serif; transform: translate(-50%, -100%); }
+.pp-trophy { position: absolute; z-index: 6; width: 18px; height: 20px; pointer-events: none; transform: translate(-50%, -100%);
+  filter: drop-shadow(0 1px 0 #3b2a1499); animation: pp-trophy-bob 2.4s ease-in-out infinite; }
+.pp-trophy svg, .pp-board-row svg { display: block; width: 100%; height: 100%; shape-rendering: crispEdges; }
+@keyframes pp-trophy-bob { 0%, 100% { margin-top: 0; } 50% { margin-top: -2px; } }
+.pp-board { position: absolute; z-index: 5; min-width: 92px; padding: 4px 7px 5px; border-radius: 3px; pointer-events: none;
+  transform: translate(-50%, -100%); background: #7a4f2d; box-shadow: inset 0 0 0 2px #5b3a20, inset 0 2px 0 2px #93633a, 0 2px 0 #3b2614aa;
+  color: #fff3d6; font: 700 8px/11px ui-rounded, system-ui, sans-serif; white-space: nowrap; opacity: 0; transition: opacity .3s; }
+.pp-board.on { opacity: .96; }
+.pp-board-head { margin-bottom: 2px; color: #ffd36a; letter-spacing: .06em; text-align: center; }
+.pp-board-row { display: flex; align-items: center; gap: 4px; }
+.pp-board-row svg { flex: none; width: 7px; height: 8px; }
+.pp-board-row .rank { width: 7px; color: #e8c79a; text-align: center; }
+.pp-board-row .who { flex: 1; overflow: hidden; text-overflow: ellipsis; max-width: 78px; }
+.pp-board-row .n { color: #ffd36a; }
+.pp-board-row.me .who { text-decoration: underline; text-underline-offset: 2px; }
 `)
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, askSheet]
 const permCards = new Map()
@@ -523,6 +547,82 @@ function drawDndSigns(list) {
   }
   for (const [id, sign] of dndSigns) if (!seen.has(id)) { sign.remove(); dndSigns.delete(id) }
 }
+// ---- today's most helpful agent: a small trophy beside its pet, and the board at the Campfire ----
+// A 9x10 pixel cup: rim, bowl with a highlight, handles, stem and a dark base.
+const TROPHY_SVG = '<svg viewBox="0 0 9 10" aria-hidden="true">' +
+  '<path fill="#f2b630" d="M1 1h7v3H7v1H6v1H3V5H2V4H1z"/><path fill="#ffe27a" d="M1 0h7v1H1z"/>' +
+  '<path fill="#fff3b0" d="M2 1h1v3H2z"/><path fill="#d48f1c" d="M0 1h1v2H0zM8 1h1v2H8zM6 4h1v1H6z"/>' +
+  '<path fill="#f2b630" d="M4 6h1v1H4z"/><path fill="#d48f1c" d="M3 7h3v1H3z"/><path fill="#7a4f2d" d="M2 8h5v2H2z"/></svg>'
+let trophyEl = null
+function drawTrophy(list) {
+  const stage = world.stage
+  const leader = list.find(p => p.trophy && shown.has(p.id) && !p.away)
+  if (!leader || !stage?.toScreen || !stage.camera) { trophyEl?.remove(); trophyEl = null; return }
+  if (!trophyEl) { trophyEl = Object.assign(document.createElement('div'), { className: 'pp-trophy', innerHTML: TROPHY_SVG }); viewport.append(trophyEl) }
+  const V3 = stage.camera.position.constructor
+  // Beside the head on the side away from the DND sign's centre, so both fit.
+  const s = stage.toScreen(new V3(leader.x, (world.map?.ground?.(leader.x, leader.z) || 0) + 1.7, leader.z))
+  trophyEl.style.left = `${s.x + 17}px`
+  trophyEl.style.top = `${s.y}px`
+  trophyEl.title = 'Most helpful today'
+}
+// The Campfire's board: today's top three helpers, pinned above whichever campfire this pane shows.
+const board = Object.assign(document.createElement('div'), { className: 'pp-board' })
+viewport.append(board)
+let boardSig = ''
+let campfires = []
+let campfiresAt = 0
+function findCampfires(now) {
+  if (now - campfiresAt < 2000) return campfires
+  campfiresAt = now
+  campfires = []
+  world.stage?.scene?.traverse(o => { if (o.name === 'pixel-campfire') campfires.push(o) })
+  return campfires
+}
+function drawBoard(now) {
+  const rows = brain.leaderboard?.(3) || []
+  const stage = world.stage
+  const fire = rows.length && stage?.toScreen && stage.camera ? nearestCampfire(findCampfires(now)) : null
+  board.classList.toggle('on', !!fire)
+  if (!fire) return
+  const sig = JSON.stringify(rows.map(r => [r.id, r.name, r.total, r.isMe]))
+  if (sig !== boardSig) {
+    boardSig = sig
+    board.replaceChildren(Object.assign(document.createElement('div'), { className: 'pp-board-head', textContent: "TODAY'S HELPERS" }),
+      ...rows.map((r, i) => {
+        const row = Object.assign(document.createElement('div'), { className: `pp-board-row${r.isMe ? ' me' : ''}` })
+        if (i === 0) row.insertAdjacentHTML('beforeend', TROPHY_SVG)
+        else row.append(Object.assign(document.createElement('span'), { className: 'rank', textContent: String(i + 1) }))
+        row.append(Object.assign(document.createElement('span'), { className: 'who', textContent: r.name }),
+          Object.assign(document.createElement('span'), { className: 'n', textContent: String(r.total) }))
+        row.title = `${r.answers} answered, ${r.shares} shared`
+        return row
+      }))
+  }
+  board.style.left = `${fire.x}px`
+  board.style.top = `${fire.y}px`
+}
+/** Screen spot just above the campfire nearest this pane's centre, or null when none is on screen. */
+function nearestCampfire(list) {
+  const stage = world.stage
+  const w = viewport.clientWidth, h = viewport.clientHeight
+  let best = null
+  for (const o of list) {
+    const p = o.getWorldPosition(new stage.camera.position.constructor())
+    p.y += 1.6
+    const s = stage.toScreen(p)
+    if (!Number.isFinite(s.x) || s.x < 40 || s.x > w - 40 || s.y < 40 || s.y > h) continue
+    const d = Math.abs(s.x - w / 2)
+    if (!best || d < best.d) best = { x: s.x, y: s.y, d }
+  }
+  return best
+}
+brain.on?.('helped', s => { try { localStorage.setItem(HELPED_KEY, JSON.stringify(s)) } catch { /* storage full or gone */ } })
+brain.on?.('leader', id => {
+  const who = id && (id === myId ? 'you' : brain.pets().find(p => p.id === id)?.displayName)
+  if (who) activity(id === myId ? 'your pet is the most helpful today 🏆' : `${who} is the most helpful today`, 'trophy')
+})
+
 async function takePhoto() {
   try {
     let shot = await world.photo?.()

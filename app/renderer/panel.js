@@ -26,6 +26,7 @@ const ICONS = {
   party: ['.....#..', '..#....#', '....##..', '...###..', '..####..', '.#####..', '######..', '........'],
   collapse: ['........', '.######.', '.#....#.', '.#.##.#.', '.#.##.#.', '.#....#.', '.######.', '........'],
   quit: ['...##...', '.#.##.#.', '#..##..#', '#......#', '#......#', '.#....#.', '..####..', '........'],
+  paw: ['.#....#.', '.#.##.#.', '...##...', '#......#', '..####..', '.######.', '.######.', '..#..#..'],
   moon: ['..###...', '.##.....', '##......', '##......', '##.....#', '.##...##', '..####..', '........'],
   check: ['........', '......#.', '.....##.', '#...##..', '##.##...', '.###....', '..#.....', '........'],
   flip: ['..#.....', '.###....', '#.#.....', '..#..#..', '..#..#..', '.....#.#', '....###.', '.....#..'],
@@ -40,6 +41,7 @@ function paintIcons () {
   const set = (sel, url) => document.querySelectorAll(sel).forEach(el => { el.style.backgroundImage = url })
   set('.ico-party', icon('party')); set('.ico-collapse', icon('collapse')); set('.ico-quit', icon('quit'))
   document.documentElement.style.setProperty('--moon', icon('moon', '#fff'))
+  document.documentElement.style.setProperty('--paw', icon('paw', '#fff'))
   document.documentElement.style.setProperty('--check', icon('check', '#fff'))
   document.documentElement.style.setProperty('--flip', icon('flip', '#3f86a8'))
 }
@@ -304,6 +306,7 @@ $('align-down').addEventListener('click', async () => { state = await call('nudg
 
 // ---------- DND ----------
 $('dnd').addEventListener('change', async () => { state = await call('dnd', $('dnd').checked); render() })
+$('help-visits').addEventListener('change', async () => { state = await call('helpVisits', $('help-visits').checked); render() })
 
 // ---------- show me (the pet runs the core journey for real) ----------
 $('show-me').addEventListener('click', async () => { state = await call('showMe'); render() })
@@ -379,6 +382,7 @@ addEventListener('keydown', e => { if (e.key === 'Escape') call('hide') })
 function render () {
   renderHeader(); renderMode(); renderRoom(); renderFooter()
   $('dnd').checked = Boolean(state?.dnd)
+  $('help-visits').checked = Boolean(state?.helpVisits)
 }
 
 async function loadCatalog () {

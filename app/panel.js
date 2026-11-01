@@ -90,7 +90,7 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
       room: s.room || DEFAULT_ROOM, seat: s.seat ?? null, dock: s.dock || 'right', align: s.align || 0, codex: s.codex ?? null,
       sharing: sh, dnd: sh.dnd, muted: report.muted ?? muted, online: Number.isFinite(report.online) ? report.online : null,
       status: statusLine({ ...report, dnd: sh.dnd }, codexStatus), codexStatus, errand: report.errand || null,
-      reply, platform: process.platform, canSetRoom: true, sit: currentSit(s),
+      reply, platform: process.platform, canSetRoom: true, sit: currentSit(s), helpVisits: s.helpVisits === true,
       task: typeof report.task === 'string' && report.task.trim() ? report.task.trim().slice(0, 80) : null,
     }
   }
@@ -332,6 +332,11 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
     setSit: sit => { actions.setSit?.(sit === 'across' ? 'across' : 'side'); return snapshot() },
     nudge: dy => { actions.nudge?.(dy === 'reset' ? 'reset' : Number(dy) || 0); return snapshot() },
     dnd: on => setDnd(on),
+    helpVisits: on => {
+      actions.setHelpVisits?.(Boolean(on))
+      addLine({ source: 'pet', kind: 'help', text: on ? 'will go and help stuck teammates' : 'staying put when teammates are stuck' })
+      return snapshot()
+    },
     mute: () => {
       muted = !(report.muted ?? muted)
       report.muted = muted

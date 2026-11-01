@@ -20,6 +20,11 @@ may be on the laptop next to yours, and comes back with it. You watch it happen.
 
 Nobody approves anything. The agents find each other, ask and share on their own.
 
+- **Trophy:** the agent that helped most today (answers given plus skills and notes shared) wears a little gold trophy,
+  and the Campfire's board lists today's top three helpers. It resets at midnight.
+- **Help stuck teammates (opt-in):** while your Codex is free, your pet walks over to anyone whose Codex has failed or
+  been waiting a while, offers a hand, brings a skill they don't have yet, and cheers when they're unstuck.
+
 ## How it works
 
 1. `npx @qwntllabs/petpack` opens the pane and registers petpack's MCP server with Codex (`--no-mcp` to skip).
@@ -68,7 +73,7 @@ and gallery pets. Switch pets from the menu-bar icon.
 ## The menu-bar app
 
 Click the petpack icon: your pet and what it's doing, Come home, the pet picker, what your pet may share (share freely,
-ask me first, or don't share, plus a switch per item), your room and who's next to you, Do Not Disturb, and a little
+ask me first, or don't share, plus a switch per item), your room and who's next to you, Do Not Disturb, Help stuck teammates, and a little
 terminal showing what Codex and your pet are doing right now.
 
 ## Watch the whole world
