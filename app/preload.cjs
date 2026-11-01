@@ -66,6 +66,14 @@ contextBridge.exposeInMainWorld('petpack', {
   savePhoto: dataUrl => call('petpack:savePhoto', dataUrl),
   // L3b: our stuck Codex session's need (or null), the sharing list and settings.json `share`.
   currentNeed: () => call('petpack:currentNeed'),
+  // L3a: Codex's live task ({ title, status, ... } | null) and its transitions ({ type, title, at }).
+  currentTask: () => call('petpack:currentTask'),
+  onCodexEvent(cb) {
+    if (typeof cb !== 'function') return () => {}
+    const h = (_e, ev) => cb(ev)
+    ipcRenderer.on('petpack:codex-event', h)
+    return () => ipcRenderer.removeListener('petpack:codex-event', h)
+  },
   listShareable: () => call('petpack:listShareable'),
   shareSettings: () => call('petpack:shareSettings'),
   setShare: patch => call('petpack:setShare', patch),

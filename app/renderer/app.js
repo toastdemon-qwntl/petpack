@@ -93,7 +93,7 @@ const brain = createBrain({
   me: { id: myId, name: config.name || me.displayName || me.petName || 'Pip', spriteUrl: me.spriteUrl || null, atlas: me.atlas || null,
     skills: Array.isArray(me.skills) ? me.skills : [], catalog, sprite },
   config: { demo, seat: config.seat, dock, room: config.room || null, sharing: config.sharing || null, dnd: !!config.dnd,
-    sit: config.sit === 'across' ? 'across' : 'side', device: config.device || null },
+    sit: config.sit === 'across' ? 'across' : 'side', device: config.device || null, nextTo: config.nextTo || null },
   view: {
     // One text bubble per pane at a time, and only for pets this pane shows.
     ask: (a, b, o) => queueText({ ids: [a, b], hold: 4800, first: true, run: () => world.ask(a, b, o) }),
@@ -167,7 +167,27 @@ bridge.onMeChanged?.(async () => {
   } catch (error) { console.warn('petpack: pet change', error?.message || error) }
 })
 
-bridge.onStatus?.(s => brain.setStatus(typeof s === 'string' ? s : s?.status))
+bridge.onStatus?.(s => { brain.setStatus(typeof s === 'string' ? s : s?.status); refreshTask() })
+// L3a: what Codex is working on. Our own name tag reads "Pip · fixing tests" (<= 32) while it works.
+let taskTitle = null
+let taskCaption = null
+function nameTag(name, caption) {
+  const s = `${name} · ${caption}`
+  return s.length <= 32 ? s : `${s.slice(0, 31).replace(/\s+\S*$/, '')}…`
+}
+let taskBusy = false
+async function refreshTask() {
+  if (taskBusy || !bridge.currentTask) return
+  taskBusy = true
+  try {
+    const task = await bridge.currentTask()
+    taskTitle = task?.title ? String(task.title).replace(/\s+/g, ' ').trim() : null
+    const working = (brain.me?.status || task?.status) === 'working'
+    taskCaption = working && taskTitle ? taskTitle.charAt(0).toLowerCase() + taskTitle.slice(1) : null
+  } catch { taskCaption = null } finally { taskBusy = false }
+}
+bridge.onCodexEvent?.(() => refreshTask())
+setInterval(refreshTask, 5000)
 bridge.onAgentCall?.(async (a, b) => {
   const request = a && typeof a === 'object' && 'tool' in a ? a : { tool: a, args: b }
   return brain.call(request.tool, request.args || {})
@@ -218,7 +238,7 @@ function syncPets() {
     if (p.isMe) shownMe = p
     // Only peers' sprites live on the relay; our own sheet is local (data: or petpack://).
     const spriteUrl = p.spriteUrl && !p.local ? relayAsset(net?.url || relays[0], p.spriteUrl) : p.spriteUrl
-    const info = { displayName: p.displayName, color: p.color, kind: p.kind, spriteUrl: spriteUrl || null, skillCount: p.skillCount, isMe: p.isMe }
+    const info = { displayName: p.isMe && taskCaption ? nameTag(p.displayName, taskCaption) : p.displayName, color: p.color, kind: p.kind, spriteUrl: spriteUrl || null, skillCount: p.skillCount, isMe: p.isMe }
     if (p.atlas) info.atlas = p.atlas
     const key = JSON.stringify(info)
     if (shown.get(p.id) !== key) { world.upsertPet(p.id, info); shown.set(p.id, key) }
@@ -329,6 +349,28 @@ bridge.onPanelCommand?.(msg => {
     brain.setSharing?.({ mode: s.mode === 'off' ? 'never' : s.mode, items: s.items || Object.fromEntries((s.hidden || []).map(ref => [ref, false])) })
   }
 })
+// Co-work: "← Bea" / "Bea →" tags on the edges toward our seat neighbours (across: under the badge).
+const nbTags = Object.fromEntries(['left', 'right', 'across'].map(side => {
+  const tag = Object.assign(document.createElement('div'), { className: 'pp-nb' })
+  tag.dataset.side = side
+  viewport.append(tag)
+  return [side, tag]
+}))
+let nbHintTimer = 0
+function showNeighbours(n = {}) {
+  for (const side of ['left', 'right', 'across']) {
+    const who = n[side]
+    const name = typeof who === 'string' ? who : who?.name
+    nbTags[side].textContent = !name ? '' : side === 'left' ? `← ${name}` : side === 'right' ? `${name} →` : `across: ${name}`
+    nbTags[side].classList.toggle('on', !!name)
+  }
+}
+brain.on?.('neighbours', n => { showNeighbours(n); if (n?.left || n?.right || n?.across) clearTimeout(nbHintTimer) })
+brain.on?.('online', info => {
+  clearTimeout(nbHintTimer)
+  if (!info || demo) return
+  nbHintTimer = setTimeout(() => { const n = brain.neighbours || {}; if (!n.left && !n.right && !n.across) flash('no one next to you yet') }, 8000)
+})
 // Across the table: the later pane of a pair draws the shared seat from the other side.
 brain.on?.('flip', on => { world.setFlip?.(!!on); flash(on ? 'across the table' : 'side by side') })
 brain.on?.('replaced', () => flash('this pet opened on another pane'))
@@ -370,7 +412,7 @@ setInterval(() => {
   reportPeople(false) // sprites are big: only when someone arrives, leaves or changes
   const mine = brain.me || {}
   const busyWith = mine.job && mine.job.mode !== 'return' ? (mine.jobWith || null) : null
-  try { bridge.panelReport?.({ name: mine.name, status: mine.status, home: chunkOf(mine.x) === brain.seat, dnd: !!brain.dnd, muted: joy.muted, busyWith }) } catch { /* bridge gone */ }
+  try { bridge.panelReport?.({ name: mine.name, status: mine.status, home: chunkOf(mine.x) === brain.seat, dnd: !!brain.dnd, muted: joy.muted, busyWith, task: taskTitle }) } catch { /* bridge gone */ }
 }, 2000)
 
 // ---- share permission ('ask' mode): the request with ✓/✗ in the pane ----
@@ -382,6 +424,11 @@ askSheet.replaceSync(`
 .pp-perm span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pp-perm button { flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; font: 700 12px/22px system-ui; color: #fff; }
 .pp-perm .yes { background: #4f9c6c; } .pp-perm .no { background: #c8605b; }
+.pp-nb { position: absolute; z-index: 7; top: 34px; padding: 1px 7px; border-radius: 999px; background: #ffffffc4; color: #24323d;
+  font: 600 10px/14px ui-rounded, system-ui, sans-serif; opacity: 0; transition: opacity .3s; pointer-events: none; white-space: nowrap; }
+.pp-nb.on { opacity: .9; }
+.pp-nb[data-side='left'] { left: 8px; } .pp-nb[data-side='right'] { right: 8px; }
+.pp-nb[data-side='across'] { left: 50%; transform: translateX(-50%); }
 .pp-dnd { position: absolute; z-index: 6; padding: 0 4px; border-radius: 4px; background: #c8605b; color: #fff; pointer-events: none;
   font: 700 8px/11px ui-rounded, system-ui, sans-serif; transform: translate(-50%, -100%); }
 `)

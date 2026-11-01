@@ -1,5 +1,5 @@
 // Electron main: petpack:// protocol + CSP, the docked pane, tray, bridge IPC, Codex data and the MCP socket.
-import { app, BrowserWindow, clipboard, desktopCapturer, ipcMain, net, protocol, screen, session } from 'electron'
+import { app, BrowserWindow, clipboard, desktopCapturer, ipcMain, nativeImage, net, Notification, protocol, screen, session } from 'electron'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -94,6 +94,7 @@ function config() {
     profile: PROFILE || null, version: VERSION, platform: process.platform,
     pane: { ...paneSize(paneScale), scale: paneScale }, debug: DEBUG,
     sharing: brainSharing(), dnd: Boolean(traySharing()?.dnd), sit: settings.sit === 'across' ? 'across' : 'side',
+    nextTo: typeof flags['next-to'] === 'string' && flags['next-to'].trim() ? flags['next-to'].trim() : null,
     // Device registry fingerprint (hello.device): this machine + profile, hashed; the relay keys agents by id first.
     device: crypto.createHash('sha256').update(`${os.hostname()}|${PROFILE || ''}`).digest('hex').slice(0, 32),
   }
@@ -298,6 +299,13 @@ async function loadCodex() {
     onStatus: api ? cb => api.onStatus(cb) : () => () => {},
     // Every pet the person could wear (custom + built-in), sprites as data URLs; demo bots wear these.
     listPets: api?.listPets ? () => api.listPets() : async () => [],
+    // L3a: Codex's live task, its transitions (for notifications) and a way back into the Codex app.
+    currentTask: api?.currentTask ? () => api.currentTask() : async () => null,
+    onCodexEvent: api?.onCodexEvent ? cb => api.onCodexEvent(cb) : () => () => {},
+    openCodex: pick([api, core], 'openCodex') || (async () => ({ ok: false })),
+    // L3a: petpack wears the person's actual Codex pet while it runs and gives it back on quit.
+    takeOverPet: pick([api, core], 'takeOverPet'),
+    releasePet: pick([api, core], 'releasePet'),
     dispose: () => api?.dispose(),
   }
   log('codex modules', codex.loaded)
@@ -403,6 +411,7 @@ handle('petpack:getCatalog', () => codex.getCatalog())
 handle('petpack:readItem', (ref, as) => codex.readItem(ref, as))
 handle('petpack:answerAsk', request => codex.answerAsk(request))
 handle('petpack:currentNeed', () => codex.currentNeed())
+handle('petpack:currentTask', () => codex.currentTask())
 handle('petpack:listShareable', () => codex.listShareable())
 handle('petpack:shareSettings', () => codex.shareSettings())
 handle('petpack:setShare', patch => setShare(patch))
@@ -594,7 +603,55 @@ app.on('window-all-closed', () => app.quit())
 app.on('web-contents-created', (_e, contents) => {
   contents.on('will-attach-webview', event => event.preventDefault())
 })
-app.on('before-quit', () => { try { ipcServer?.close?.() } catch {} })
+// The person's Codex pet goes back to Codex before we exit (L3a releasePet), at most 2 s.
+let petTaken = false
+let releasing = false
+app.on('before-quit', event => {
+  if (!petTaken || !codex?.releasePet) return
+  event.preventDefault()
+  petTaken = false
+  releasing = true
+  Promise.race([Promise.resolve().then(() => codex.releasePet()), new Promise(resolve => setTimeout(resolve, 2000))])
+    .catch(error => console.error(`petpack: pet not handed back (${error.message})`))
+    .finally(() => { releasing = false; app.quit() })
+})
+app.on('before-quit', () => { if (!releasing) try { ipcServer?.close?.() } catch {} })
+
+// ---------------------------------------------------------------------------------------------------------------
+// Codex events (L3a): an OS notification with our pet's face, click -> that thread in the Codex app.
+
+let petFace = null // nativeImage of our pet's first frame; false = none; null = not read yet
+async function petIcon() {
+  if (petFace === null) {
+    petFace = false
+    try {
+      const me = await codex.getMe()
+      if (typeof me.spriteUrl === 'string' && me.spriteUrl.startsWith('data:')) {
+        const sheet = nativeImage.createFromDataURL(me.spriteUrl)
+        const { width, height } = sheet.getSize()
+        const cellW = Number(me.atlas?.cellW) || Math.floor(width / (Number(me.atlas?.cols) || 8))
+        const cellH = Number(me.atlas?.cellH) || Math.floor(height / (Number(me.atlas?.rows) || 9))
+        if (cellW > 0 && cellH > 0) petFace = sheet.crop({ x: 0, y: 0, width: cellW, height: cellH }).resize({ width: 128 })
+      }
+    } catch { petFace = false }
+  }
+  return petFace || undefined
+}
+const notifications = new Set() // held until clicked or closed (a collected notification loses its click)
+function startCodexEvents() {
+  return codex.onCodexEvent(async ev => {
+    if (!ev?.type) return
+    if (win && !win.isDestroyed()) win.webContents.send('petpack:codex-event', { type: ev.type, title: ev.title || null, at: ev.at || Date.now() })
+    if (SMOKE || !['done', 'waiting', 'failed'].includes(ev.type) || !Notification.isSupported()) return
+    const message = ev.message || { title: 'Codex', body: ev.title || '' }
+    const note = new Notification({ title: message.title, body: message.body || '', icon: await petIcon(), silent: false })
+    const drop = () => notifications.delete(note)
+    note.on('click', () => { drop(); Promise.resolve(codex.openCodex({ session: ev.session, threadId: ev.threadId })).catch(() => {}) })
+    note.on('close', drop)
+    notifications.add(note)
+    note.show()
+  })
+}
 
 app.whenReady().then(async () => {
   session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
@@ -606,16 +663,21 @@ app.whenReady().then(async () => {
   createWindow()
   onDockSide?.(side => trayActions().setDock(side)) // COLLAPSE: dragged onto the other edge
   const stopStatus = startStatus()
-  app.on('before-quit', () => { try { stopStatus?.(); codex.dispose(); codexLink?.close() } catch {} })
+  const stopEvents = startCodexEvents()
+  app.on('before-quit', () => { if (!releasing) try { stopStatus?.(); stopEvents?.(); codex.dispose(); codexLink?.close() } catch {} })
+  if (!SMOKE && codex.takeOverPet) { // the actual Codex pet comes over to petpack while it runs
+    Promise.resolve().then(() => codex.takeOverPet()).then(() => { petTaken = true })
+      .catch(error => console.error(`petpack: couldn't take over the Codex pet (${error.message})`))
+  }
   await startCodexLink()
   startMcpIpc()
   for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(event, () => dock())
   if (process.platform === 'win32') setInterval(() => win && raiseToTop(win), 10000)
   if (SMOKE) { runSmoke().catch(error => { console.error(error); app.exit(1) }); return }
-  tray = createTray({ state: () => ({ room: settings.room, seat: settings.seat, dock: settings.dock,
+  tray = createTray({ state: () => ({ room: settings.room, seat: settings.seat, dock: settings.dock, sit: settings.sit === 'across' ? 'across' : 'side',
     align: settings.align, codex: codexState }), actions: trayActions(), pane: () => win, userData: USER_DATA,
     // A new pet from the tray: the page re-reads getMe() and re-sends its sprite (no reload, the walk goes on).
-    onPetChange: () => { if (win && !win.isDestroyed()) win.webContents.send('petpack:me-changed') } })
+    onPetChange: () => { petFace = null; if (win && !win.isDestroyed()) win.webContents.send('petpack:me-changed') } })
   if (codexLink) { codexState = codexLink.state().status === 'unregistered' ? 'unregistered' : 'registered'; refreshTray() }
   else codexMcpState(ROOT).then(state => { codexState = state; refreshTray() }).catch(() => {})
   log('ready', { userData: USER_DATA, profile: PROFILE, relays, os: os.release() })

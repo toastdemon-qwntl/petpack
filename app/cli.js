@@ -13,7 +13,7 @@ const PKG_NAME = (() => {
 export { userDataDir }
 // Relays come from shared/protocol.js (failover order); --relay / PETPACK_RELAY take a comma-separated list.
 export { DEFAULT_RELAY, RELAYS, relayList } from '../shared/protocol.js'
-const VALUE_FLAGS = new Set(['room', 'seat', 'dock', 'top', 'relay', 'name', 'pet', 'profile', 'smoke', 'pane-scale', 'sit',
+const VALUE_FLAGS = new Set(['room', 'seat', 'dock', 'top', 'relay', 'name', 'pet', 'profile', 'smoke', 'pane-scale', 'sit', 'next-to',
   'smoke-wait'])
 
 /** `--flag value`, `--flag=value` and bare booleans. Unknown flags (Chromium switches) are kept but harmless. */
