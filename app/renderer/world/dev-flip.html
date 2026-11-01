@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>petpack · across the table</title><link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./pane.css"><link rel="stylesheet" href="./fx.css">
+  <script type="importmap">{"imports":{"three":"../../../node_modules/three/build/three.module.js","three/addons/":"../../../node_modules/three/examples/jsm/"}}</script>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:#eeeae2;color:#526052;font:13px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:grid;place-items:center;padding:40px}main{width:min(100%,1120px)}header{display:flex;justify-content:space-between;align-items:end;margin-bottom:30px}.eyebrow{font-size:10px;letter-spacing:.19em;text-transform:uppercase;color:#8a9384}h1{font:400 37px/1.15 Georgia,serif;letter-spacing:-.8px;margin:10px 0}header p{max-width:300px;color:#84907e;margin:0}.pair{display:grid;grid-template-columns:1fr 1fr;gap:32px}.petpack-pane{position:relative!important;inset:auto!important;max-width:none;width:100%;aspect-ratio:auto;height:auto}.world-viewport{height:auto;aspect-ratio:4/3}.labels{display:flex;justify-content:space-between;margin:14px 5px;font-size:11px;color:#84907e}.labels strong{font-weight:500;color:#526052}footer{display:flex;align-items:center;justify-content:space-between;margin-top:28px;color:#84907e;font-size:11px}.controls{display:flex;gap:10px}button,select{font:inherit;color:#526052;border:1px solid #bcc7b6;border-radius:9px;padding:9px 13px;background:#ffffff75;cursor:pointer}button:hover{background:#fff}button:focus-visible,select:focus-visible{outline:2px solid #719d98;outline-offset:3px}@media(min-width:1800px){main{width:min(100%,1640px)}h1{font-size:50px}header{margin-bottom:45px}header p{font-size:15px}.pair{gap:50px}.labels,footer{font-size:14px}}@media(max-width:700px){body{padding:22px 12px}header{align-items:start;gap:20px}header p{font-size:11px;max-width:150px}h1{font-size:28px}.pair{gap:14px}.labels{font-size:10px;display:block}.labels span{display:block}footer{align-items:start;gap:20px}.controls{flex-direction:column}}
+  </style>
+</head>
+<body><main>
+  <header><div><div class="eyebrow">petpack · one shared village</div><h1>Across the table.</h1></div><p>The same place, from opposite sides. Your pet walks away from you and towards your teammate.</p></header>
+  <div class="pair">
+    <section><div class="petpack-pane" data-dock="right"><div class="world-viewport" id="south"></div></div><div class="labels"><strong>Looking north</strong><span>Pip’s side of the table</span></div></section>
+    <section><div class="petpack-pane" data-dock="left"><div class="world-viewport" id="north"></div></div><div class="labels"><strong id="north-label">Looking south</strong><span>Cleo’s side of the table</span></div></section>
+  </div>
+  <footer><span id="place-label">Workshop · shared skills</span><div class="controls"><select id="landmark" aria-label="Landmark"><option value="0">Workshop</option><option value="1">Library</option><option value="2">Dojo</option><option value="3">Campfire</option></select><button id="flip" aria-pressed="true">Swing to the other side</button></div></footer>
+</main>
+<script type="module">
+  import * as THREE from 'three'
+  import { createStage } from './stage.js'
+  import { createMap, CHUNK_W } from './map.js'
+  import { createPixelPet } from './pixel-pet.js'
+  import { createSpritePet } from './sprite-pet.js'
+  import { makeTestAtlas } from './atlas.js'
+  import { createFx } from './fx.js'
+
+  const params = new URLSearchParams(location.search)
+  const pixelScale = Number(params.get('px')) || 2
+  let seat = Math.trunc(Number(params.get('seat')) || 0), time = 0, last = performance.now(), frame = 0
+  let paused = params.has('paused'), disposed = false, flipped = true
+  const views = [], point = new THREE.Vector3(), before = new THREE.Vector3()
+  const atlas = await makeTestAtlas()
+  for (const [id, flip] of [['south', false], ['north', true]]) {
+    const host = document.getElementById(id), canvas = document.createElement('canvas'), overlay = document.createElement('div')
+    canvas.className = 'petpack-world-canvas'; overlay.className = 'petpack-fx-overlay'
+    Object.assign(overlay.style, { position: 'absolute', inset: '0' }); host.append(canvas, overlay)
+    const stage = createStage(canvas, { pixelScale, flip, timeOfDay: params.has('hour') ? Number(params.get('hour')) : 14 })
+    const map = createMap(stage.scene, { seed: 77 })
+    const fx = createFx({ scene: stage.scene, camera: stage.camera, stage, overlay })
+    const cast = [createPixelPet({ color: '#71b6db', kind: 'cat' }), await createSpritePet({ spriteUrl: atlas, color: '#d88c77' })]
+    cast.forEach((pet, i) => { stage.scene.add(pet.object3d); fx.attach(i, { anchor: pet.object3d, height: pet.height, color: i ? '#d88c77' : '#71b6db', name: i ? 'Cleo' : 'Pip', isMe: i === +flip }); fx.setSkills(i, i + 2) })
+    views.push({ host, canvas, stage, map, fx, cast })
+  }
+  function pose(i, t) {
+    // A gentle circuit within the walkable road shows opposite screen depth
+    // and opposite horizontal travel, without walking through architecture.
+    const a = t * .65 + i * Math.PI
+    return { x: seat * CHUNK_W + Math.sin(a) * 4.5, z: 1.5 + Math.cos(a) * .95 }
+  }
+  function render(dt = 0) {
+    for (const v of views) {
+      v.stage.update(dt, time)
+      const visibleSeat = Math.round(v.stage.center.x / CHUNK_W)
+      v.map.ensure(visibleSeat - 1, visibleSeat + 1)
+      v.cast.forEach((pet, i) => {
+        const p = pose(i, time), old = pose(i, time - .01)
+        pet.object3d.position.set(p.x, v.map.ground(p.x, p.z), p.z)
+        point.copy(pet.object3d.position); before.set(old.x, point.y, old.z)
+        const dx = v.stage.toScreen(point).x - v.stage.toScreen(before).x
+        pet.set({ anim: 'run', facing: dx < 0 ? -1 : 1, moving: Math.hypot(p.x - old.x, p.z - old.z) / .01 })
+        pet.update(dt, time)
+      })
+      v.map.update(dt, time); v.stage.scene.updateMatrixWorld(true); v.fx.update(dt, time); v.stage.render()
+    }
+  }
+  function setSeat(value) {
+    seat = Math.trunc(value)
+    document.getElementById('landmark').value = String(((seat % 4) + 4) % 4)
+    document.getElementById('place-label').textContent = `${views[0].map.landmark(seat).label} · same chunk, two perspectives`
+    for (const v of views) { const c = v.map.chunkCenter(seat); v.map.ensure(seat - 1, seat + 1); v.stage.focus(c.x, c.z, { span: CHUNK_W }) }
+  }
+  function setFlip(value) {
+    flipped = !!value; views[1].stage.setFlip(flipped)
+    document.getElementById('flip').setAttribute('aria-pressed', String(flipped))
+    document.getElementById('north-label').textContent = flipped ? 'Looking south' : 'Looking north'
+  }
+  function resize() {
+    for (const v of views) { const w = v.host.clientWidth, h = v.host.clientHeight; v.stage.resize(w, h); v.fx.resize(w, h) }
+    render()
+  }
+  function tick(now) {
+    if (disposed) return
+    const dt = Math.min(.1, (now - last) / 1000); last = now
+    if (!paused) { time += dt; render(dt) }
+    frame = requestAnimationFrame(tick)
+  }
+  const observer = new ResizeObserver(resize)
+  for (const v of views) observer.observe(v.host)
+  function dispose() {
+    if (disposed) return
+    disposed = true; cancelAnimationFrame(frame); observer.disconnect()
+    for (const v of views) { v.fx.dispose(); v.cast.forEach(p => p.dispose()); v.map.dispose(); v.stage.dispose() }
+  }
+  document.getElementById('flip').addEventListener('click', () => setFlip(!flipped))
+  document.getElementById('landmark').addEventListener('change', event => setSeat(Number(event.target.value)))
+  window.flipPreview = { views, render, setFlip, setSeat, pause() { paused = true }, play() { paused = false; last = performance.now() }, step(dt = 1 / 60) { time += dt; render(dt) }, setTime(t) { time = t; render() }, dispose }
+  setSeat(seat); for (const v of views) for (let i = 0; i < 24; i++) v.stage.update(.25)
+  resize(); addEventListener('pagehide', dispose, { once: true }); frame = requestAnimationFrame(tick)
+</script></body></html>

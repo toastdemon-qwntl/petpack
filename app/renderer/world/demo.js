@@ -1,6 +1,12 @@
 import { createWorld } from './index.js'
-import { createStory, DURATION, previousGarden, storyGift } from './story.js'
+import { createStory, DURATION, loopTime, previousGarden, storyGift } from './story.js'
 import { createDesk } from './desk.js'
+import { attachSound } from './sound.js'
+import { attachMood } from './mood.js'
+
+// PLAY can still be absent from a preview assembled while its lane is landing.
+const playModule = await fetch(new URL('./play.js', import.meta.url), { method: 'HEAD' })
+  .then(response => response.ok ? import('./play.js') : null).catch(() => null)
 
 const params = new URLSearchParams(location.search)
 const layout = params.has('solo') ? 'solo' : params.has('trio') ? 'trio' : 'pair'
@@ -31,41 +37,94 @@ window.addEventListener('resize', sizeSolo)
 let time = Math.max(0, Number(params.get('t')) || 0)
 let paused = params.has('paused') || matchMedia('(prefers-reduced-motion: reduce)').matches
 let origin = performance.now() / 1000 - time
-let previousTime = time
 let frameId = 0, disposed = false, seeking = false, seekGeneration = 0
+let initialized = false, muted = true, layoutKey = ''
 let testAtlas = null
 let ids = new Set()
-const worlds = desks.map(({ paneHost, dock }, i) => createWorld(paneHost, {
-  seat: layout === 'solo' ? soloSeat : i, pixelScale, dock, clock: () => time, autoRender: false,
-}))
+const worlds = desks.map(({ paneHost, dock }, i) => {
+  const current = attachMood(createWorld(paneHost, {
+    seat: layout === 'solo' ? soloSeat : i, pixelScale, dock, clock: () => time, autoRender: false,
+  }))
+  playModule?.attachPlay?.(current, { container: paneHost })
+  return attachSound(current, { muted: true, volume: .16 / Math.sqrt(desks.length) })
+})
 const world = worlds[0]
 const story = createStory(world.map, { testPet })
-// Sample the daylight on the same clock as the visits; noon is the locked look.
-// An explicit ?hour= pins captures, while ?hour=local follows the laptop's clock.
+const dimensions = () => worlds.map(current => {
+  const canvas = current.stage.renderer.domElement
+  return `${canvas.clientWidth}x${canvas.clientHeight}`
+}).join('/')
 const requestedHour = params.get('hour')
-function daylight(at) {
-  if (requestedHour === 'local') return null
-  if (requestedHour !== null && Number.isFinite(Number(requestedHour))) return Number(requestedHour)
-  const t = ((at % DURATION) + DURATION) % DURATION
-  if (t < 54) return 14
-  const progress = Math.min(1, (t - 54) / 18)
-  return 14 + 10 * Math.sin(Math.PI * progress) ** 2
+const hour = requestedHour !== null && requestedHour.trim() !== '' && Number.isFinite(Number(requestedHour))
+  ? Number(requestedHour) : null
+for (const current of worlds) current.setTimeOfDay(hour)
+
+const speaker = document.getElementById('sound-toggle')
+function setMuted(value) {
+  muted = !!value
+  for (const current of worlds) current.setMuted(muted || seeking)
+  if (speaker) {
+    speaker.dataset.muted = String(muted)
+    speaker.setAttribute('aria-pressed', String(!muted))
+    speaker.setAttribute('aria-label', muted ? 'Turn village sound on' : 'Mute village sound')
+    speaker.title = muted ? 'Turn village sound on' : 'Mute village sound'
+  }
 }
+function firstGesture(event) {
+  if (event.type === 'keydown' && !['Enter', ' '].includes(event.key)) return
+  document.removeEventListener('pointerdown', firstGesture, true)
+  document.removeEventListener('keydown', firstGesture, true)
+  // The speaker's own click handles its toggle; a click elsewhere unlocks too.
+  if (!speaker?.contains(event.target)) setMuted(false)
+}
+function toggleSound() { setMuted(!muted) }
+setMuted(true)
+document.addEventListener('pointerdown', firstGesture, true)
+document.addEventListener('keydown', firstGesture, true)
+speaker?.addEventListener('click', toggleSound)
+
+const subscriptions = []
+for (const current of worlds) {
+  for (const [listen, replay] of [['onThrow', 'throwPet'], ['onTouch', 'touchPet']]) {
+    const unsubscribe = current[listen]?.(event => {
+      for (const peer of worlds) if (peer !== current) peer[replay]?.(event.id, event)
+    })
+    if (unsubscribe) subscriptions.push(unsubscribe)
+  }
+}
+// Scripted moments borrow motion. Keep touch/drag from borrowing it a second
+// time; the pets are otherwise playable throughout their shared journey.
+function protectMoment(event) {
+  const hit = event.target.closest?.('.petpack-play-layer [data-pet-id]')
+  if (!hit) return
+  const id = hit.dataset.petId, t = loopTime(time)
+  const mood = world.moodSnapshot().find(pet => String(pet.id) === id)
+  if (seeking || mood?.sleeping || mood?.arriving || mood?.partying ||
+    (t < 6 && ['pip', 'cleo'].includes(id)) || (t >= 36 && t < 42 && id === 'cleo')) {
+    event.preventDefault(); event.stopImmediatePropagation()
+  }
+}
+document.addEventListener('pointerdown', protectMoment, true)
+document.addEventListener('keydown', protectMoment, true)
 
 function applyState(at) {
   const state = story.sample(at)
+  const phase = loopTime(at)
   const nextIds = new Set(state.map(pet => pet.id))
   for (const current of worlds) {
-    current.setTimeOfDay(daylight(at))
     for (const id of ids) if (!nextIds.has(id)) current.removePet(id)
     for (const pet of state) {
       current.upsertPet(pet.id, {
-        displayName: pet.displayName, color: pet.color, kind: pet.kind,
+        // Names return after landing; confetti and the balloon get room to read.
+        displayName: phase >= 49.5 || (pet.id === 'fern' && phase < 47.4) ? '' : pet.displayName,
+        color: pet.color, kind: pet.kind,
         skillCount: pet.skillCount, isMe: pet.homeSeat === current.seat,
+        memoryCount: pet.memoryCount || 0, techniqueCount: pet.techniqueCount || 0,
         spriteUrl: pet.id === 'test' ? testAtlas : null,
       })
       current.updatePet(pet.id, { x: pet.x, z: pet.z, anim: pet.anim, status: pet.status,
-        facing: pet.facing, speed: pet.speed, snap: true })
+        facing: pet.facing, speed: pet.speed, snap: true, showStatus: pet.showStatus })
+      current.setHat(pet.id, pet.hat)
     }
   }
   ids = nextIds
@@ -81,58 +140,82 @@ function dispatch(event) {
     else if (event.type === 'handshake') current.handshake({ seat: event.seat, side: event.side })
     else if (event.type === 'knock') current.knock(event.id, event.enabled)
     else if (event.type === 'celebrate') current.celebrate(event.id)
+    else if (event.type === 'sleep') for (const id of event.ids) current.sleep(id, event.enabled)
+    else if (event.type === 'weather') current.weather(event.id, event.weather)
+    else if (event.type === 'arrive') current.arrive(event.id, event.mode)
+    else if (event.type === 'conga') {
+      // Hand all motion to the finale, including an unfinished user throw.
+      current.resetEffects()
+      for (const pet of story.sample(event.at)) current.setHat(pet.id, pet.hat)
+      current.conga([...event.ids, ...(testPet ? ['test'] : [])], { durationS: event.durationS, startAt: event.at })
+    }
   }
 }
 function draw(dt, at, render = true) {
-  for (const current of worlds) current.renderFrame(dt, at, { render })
+  for (const current of worlds) current.renderFrame(dt, at, { render, deferRender: true })
 }
+function present() { for (const current of worlds) current.stage.render() }
 
-// Reconstruct the active conversation as well as the positions for captures.
-// Reconstruct the current loop: a visit or a gently repeating knock can outlive
-// a speech bubble. Replay without GPU draws, using the same shared clock.
-async function seek(at) {
+// A canonical 60 Hz simulation makes random-access and successive film frames
+// identical. Forward frame-by-frame seeks reuse state; partial/backward seeks
+// rebuild from the loop start. Replays advance effects without GPU draws.
+const HZ = 60, EPSILON = 1e-7
+async function advance(at, { capture = false } = {}) {
   const generation = ++seekGeneration
   seeking = true
-  const target = Math.max(0, Number(at) || 0)
-  for (const current of worlds) {
-    current.resetEffects()
-    current.setGarden(previousGarden(target))
-    for (const id of ids) current.removePet(id)
+  const requested = Number(at)
+  const bounded = Number.isFinite(requested) ? Math.max(0, requested) : 0
+  const gridTarget = Math.round(bounded * HZ) / HZ
+  const target = Math.abs(bounded - gridTarget) < EPSILON ? gridTarget : bounded
+  const start = Math.floor(target / DURATION) * DURATION
+  const onGrid = Math.abs(time * HZ - Math.round(time * HZ)) < EPSILON
+  const rebuild = !initialized || dimensions() !== layoutKey || target < time || !onGrid ||
+    Math.floor(time / DURATION) !== Math.floor(target / DURATION)
+  // Resizing or resuming from a partial film frame can also reconstruct history.
+  // Only newly advancing life is audible, regardless of who requested the draw.
+  capture ||= rebuild
+  if (capture) for (const current of worlds) current.setMuted(true)
+  let cursor = time
+  if (rebuild) {
+    for (const current of worlds) {
+      current.resetEffects()
+      for (const id of ids) current.removePet(id)
+      current.setGarden(previousGarden(target))
+    }
+    ids.clear()
+    cursor = start
+    applyState(cursor)
+    draw(0, cursor, false)
+    for (const event of story.events(cursor - EPSILON, cursor)) dispatch(event)
+    initialized = true
   }
-  ids.clear()
-  let cursor = Math.floor(target / DURATION) * DURATION
-  applyState(cursor)
-  draw(0, cursor, false)
-  while (cursor < target - .000001 && !disposed && generation === seekGeneration) {
-    const next = Math.min(target, cursor + 1 / 30)
+  while (cursor < target - EPSILON && !disposed && generation === seekGeneration) {
+    const gridNext = (Math.floor(cursor * HZ + EPSILON) + 1) / HZ
+    const next = Math.min(target, gridNext)
     applyState(next)
     for (const event of story.events(cursor, next)) dispatch(event)
-    draw(next - cursor, next, false)
+    // Live audio follows real playback; capture replays remain completely quiet.
+    draw(next === gridNext ? 1 / HZ : next - cursor, next, !capture)
     cursor = next
     await Promise.resolve()
   }
   if (disposed || generation !== seekGeneration) return
   time = target
-  applyState(time)
-  draw(0, time)
-  previousTime = time
-  origin = performance.now() / 1000 - time
+  present()
+  layoutKey = dimensions()
   seeking = false
+  if (capture) for (const current of worlds) current.setMuted(muted)
 }
-function tick(now) {
+async function seek(at) {
+  await advance(at, { capture: true })
+  origin = performance.now() / 1000 - time
+}
+async function tick(now) {
   if (disposed) return
   if (!seeking) {
-    if (!paused) time = now / 1000 - origin
-    const delta = Math.max(0, time - previousTime)
-    if (delta > 3) {
-      void seek(time)
-      frameId = requestAnimationFrame(tick)
-      return
-    }
-    applyState(time)
-    for (const event of story.events(previousTime, time)) dispatch(event)
-    draw(delta, time)
-    previousTime = time
+    const target = paused ? time : Math.max(time, Math.floor((now / 1000 - origin) * HZ) / HZ)
+    if (target > time + EPSILON || dimensions() !== layoutKey) await advance(target, { capture: paused || target - time > .75 })
+    else present()
   }
   frameId = requestAnimationFrame(tick)
 }
@@ -146,7 +229,7 @@ if (testPet) {
   }
 }
 function visibility() {
-  if (!document.hidden) { origin = performance.now() / 1000 - time; previousTime = time }
+  if (!document.hidden) origin = performance.now() / 1000 - time
 }
 function pagehide(event) { if (!event.persisted) window.petpackDemo.dispose() }
 document.addEventListener('visibilitychange', visibility)
@@ -157,6 +240,8 @@ window.petpackDemo = {
   world, worlds, desks, duration: DURATION, layout,
   get time() { return time },
   get paused() { return paused },
+  get muted() { return muted },
+  setMuted,
   seek,
   pause() { paused = true },
   play() { origin = performance.now() / 1000 - time; paused = false },
@@ -167,6 +252,12 @@ window.petpackDemo = {
     disposed = true; seekGeneration++
     cancelAnimationFrame(frameId)
     for (const current of worlds) current.dispose()
+    for (const unsubscribe of subscriptions) unsubscribe()
+    speaker?.removeEventListener('click', toggleSound)
+    document.removeEventListener('pointerdown', firstGesture, true)
+    document.removeEventListener('keydown', firstGesture, true)
+    document.removeEventListener('pointerdown', protectMoment, true)
+    document.removeEventListener('keydown', protectMoment, true)
     window.removeEventListener('resize', sizeSolo)
     document.removeEventListener('visibilitychange', visibility)
     window.removeEventListener('pagehide', pagehide)

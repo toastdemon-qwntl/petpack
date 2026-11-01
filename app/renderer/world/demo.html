@@ -9,10 +9,26 @@
   <link rel="stylesheet" href="./desk.css">
   <link rel="stylesheet" href="./pane.css">
   <link rel="stylesheet" href="./fx.css">
+  <style>
+    #sound-toggle { position: fixed; bottom: 20px; right: 22px; z-index: 30; width: 36px; height: 36px;
+      display: grid; place-items: center; padding: 8px; border: 1px solid #ffffffc9; border-radius: 50%;
+      color: #536b63; background: #ffffff85; box-shadow: 0 3px 12px #35483b12;
+      backdrop-filter: blur(12px); cursor: pointer; }
+    #sound-toggle:hover { background: #ffffffe0; }
+    #sound-toggle:focus-visible { outline: 2px solid #6c9c92; outline-offset: 3px; }
+    #sound-toggle svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5;
+      stroke-linecap: round; stroke-linejoin: round; }
+    #sound-toggle[data-muted="true"] .sound-waves, #sound-toggle[data-muted="false"] .sound-off { display: none; }
+  </style>
   <script type="importmap">{"imports":{"three":"../../../node_modules/three/build/three.module.js","three/addons/":"../../../node_modules/three/examples/jsm/"}}</script>
 </head>
 <body>
   <main aria-label="Two laptops, one shared petpack world"></main>
+  <button id="sound-toggle" type="button" data-muted="true" aria-pressed="false" aria-label="Turn village sound on">
+    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7h3l4-3v12l-4-3H3z"/>
+      <path class="sound-waves" d="M13 7q3 3 0 6m2-9q6 6 0 12"/>
+      <path class="sound-off" d="m13 8 4 4m0-4-4 4"/></svg>
+  </button>
   <script type="module" src="./demo.js"></script>
 </body>
 </html>

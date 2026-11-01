@@ -21,7 +21,7 @@ export function createFx({ scene, camera, overlay, stage, onGift }) {
   const bubbles = createBubbles(overlay, camera, stage)
   const gifts = createGifts(root, field, bubbles, pets, { onGift })
   const collabs = createCollabs(field, bubbles, pets)
-  const asks = createAsks(bubbles, gifts, pets)
+  const asks = createAsks(bubbles, gifts, pets, id => scene.userData.petpackSound?.('gift', id))
   const feet = new THREE.Vector3(), head = new THREE.Vector3()
   let disposed = false, clock = 0
   function detach(id) {

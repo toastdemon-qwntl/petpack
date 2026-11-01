@@ -88,18 +88,36 @@ function wall(b, x, z, width, depth, h) {
     for (let j = 0; j < 6; j++) b.box(x + side * (width / 2 - 0.1), 0.6 + j * 0.4, front + 0.075, j % 2 ? 0.52 : 0.32, 0.23, 0.24, P.pale)
   }
   b.box(x, h + 0.24, front + 0.06, width, 0.21, 0.19, P.wood)
+  // The north elevation is a real facade too: the camera can circle the same
+  // building without exposing an undecorated stone box. Front pieces stay put.
+  const back = z - depth / 2
+  b.box(x, 0.42, back - 0.01, width, 0.2, 0.09, P.pale)
+  for (const side of [-1, 1]) {
+    b.box(x + side * (width / 2 - 0.13), h / 2 + 0.3, back - 0.04, 0.26, h + 0.12, 0.25, P.wood)
+    for (let j = 0; j < 6; j++) b.box(x + side * (width / 2 - 0.1), 0.6 + j * 0.4, back - 0.075, j % 2 ? 0.52 : 0.32, 0.23, 0.24, P.pale)
+  }
+  b.box(x, h + 0.24, back - 0.06, width, 0.21, 0.19, P.wood)
 }
 
-function window(b, x, y, z, w = 1.1, h = 1.28, shutters = true) {
+function window(b, x, y, z, w = 1.1, h = 1.28, shutters = true, facing = 1) {
   b.box(x, y, z, w + 0.18, h + 0.18, 0.18, P.dark)
-  b.box(x, y, z + 0.1, w, h, 0.05, P.glass, 0, 0, 0, true)
-  b.box(x, y, z + 0.16, 0.08, h, 0.06, P.pale)
-  b.box(x, y - 0.03, z + 0.16, w, 0.08, 0.06, P.pale)
-  b.box(x, y - h / 2 - 0.13, z + 0.13, w + 0.32, 0.16, 0.35, P.pale)
+  b.box(x, y, z + 0.1 * facing, w, h, 0.05, P.glass, 0, 0, 0, true)
+  b.box(x, y, z + 0.16 * facing, 0.08, h, 0.06, P.pale)
+  b.box(x, y - 0.03, z + 0.16 * facing, w, 0.08, 0.06, P.pale)
+  b.box(x, y - h / 2 - 0.13, z + 0.13 * facing, w + 0.32, 0.16, 0.35, P.pale)
   if (shutters) for (const side of [-1, 1]) {
-    b.box(x + side * (w / 2 + 0.28), y, z + 0.09, 0.33, h + 0.04, 0.1, P.teal)
-    for (let j = 0; j < 4; j++) b.box(x + side * (w / 2 + 0.28), y - h / 2 + 0.14 + j * 0.29, z + 0.15, 0.34, 0.055, 0.05, P.leaf)
+    b.box(x + side * (w / 2 + 0.28), y, z + 0.09 * facing, 0.33, h + 0.04, 0.1, P.teal)
+    for (let j = 0; j < 4; j++) b.box(x + side * (w / 2 + 0.28), y - h / 2 + 0.14 + j * 0.29, z + 0.15 * facing, 0.34, 0.055, 0.05, P.leaf)
   }
+}
+
+function backDoor(b, x, z, color = P.wood) {
+  b.box(x, 1.25, z, 1.36, 1.96, 0.18, P.dark)
+  for (let j = 0; j < 6; j++) b.box(x - 0.5 + j * 0.2, 1.22, z - 0.13, 0.18, 1.78, 0.1, j % 2 ? color : P.bark)
+  b.box(x, 0.65, z - 0.2, 1.14, 0.13, 0.08, P.wood)
+  b.box(x, 1.79, z - 0.2, 1.14, 0.13, 0.08, P.wood)
+  b.box(x - 0.37, 1.12, z - 0.25, 0.1, 0.13, 0.08, P.gold)
+  b.box(x, 0.1, z - 0.27, 1.63, 0.2, 0.51, P.pale)
 }
 
 function books(b, x, y, z, width, seed = 0) {
@@ -155,6 +173,7 @@ function library(parent) {
   for (let j = 0; j < 3; j++) {
     b.box(x - 2.3 + (j % 2) * 0.13, 4.78 + j * 0.22, z - 0.8, 1.18, 0.19, 0.9, [P.teal, P.red, P.blue][j])
     b.box(x - 2.28 + (j % 2) * 0.13, 4.78 + j * 0.22, z - 0.33, 0.98, 0.1, 0.03, P.paper)
+    b.box(x - 2.28 + (j % 2) * 0.13, 4.78 + j * 0.22, z - 1.27, 0.98, 0.1, 0.03, P.paper)
   }
   // Window herbs and climbing ivy keep the stone from reading as a blank block.
   for (const side of [-1, 1]) {
@@ -165,6 +184,15 @@ function library(parent) {
     }
   }
   for (let j = 0; j < 15; j++) b.box(-22.85 + Math.sin(j * 2) * 0.18, 0.42 + j * 0.17, -9.61, 0.19 + j % 3 * 0.06, 0.2, 0.11, j % 2 ? P.leaf : P.green)
+  // Quiet reading entrance on the north side, with its own open-book plaque.
+  backDoor(b, x, z - 2.31)
+  window(b, x - 2.02, 1.86, z - 2.35, 1.1, 1.28, true, -1)
+  window(b, x + 2.02, 1.86, z - 2.35, 1.1, 1.28, true, -1)
+  b.box(x, 2.77, z - 2.48, 1.54, 0.86, 0.15, P.dark)
+  b.box(x, 2.77, z - 2.59, 1.38, 0.7, 0.05, P.teal)
+  b.pixel([' ### ### ', '#### ####', '#### ####', '#### ####', '#### ####', ' ### ### ', '    #    '], x, 3.07, z - 2.65, 0.105, P.paper)
+  lantern(b, x + 0.98, 2.51, z - 2.56)
+  for (let j = 0; j < 11; j++) b.box(x + 2.85 + Math.sin(j * 2) * 0.14, 0.42 + j * 0.17, z - 2.39, 0.19 + j % 3 * 0.04, 0.2, 0.11, j % 2 ? P.leaf : P.green)
   return b.build()
 }
 
@@ -206,6 +234,17 @@ function workshop(parent) {
   b.box(21.29, 1.38, -9.57, 0.87, 0.15, 0.35, P.iron)
   b.box(21.81, 1.38, -9.57, 0.26, 0.1, 0.25, P.iron)
   lantern(b, 16.75, 2.42, -9.4)
+  // Tradespeople use the rear entrance too. The chimney has brick courses on
+  // both faces; all detail joins the existing instance batches.
+  backDoor(b, x - 0.25, z - 2.26, P.teal)
+  window(b, x - 1.98, 1.67, z - 2.29, 1.05, 1.1, false, -1)
+  window(b, x + 1.85, 1.67, z - 2.29, 1.18, 1.1, false, -1)
+  b.box(x - 0.25, 3.0, z - 2.79, 1.53, 1.41, 0.16, P.dark)
+  b.pixel(['   ###   ', ' # ### # ', '#########', '###   ###', '###   ###', '###   ###', '#########', ' # ### # ', '   ###   '], x - 0.25, 3.63, z - 2.91, 0.14, P.gold)
+  for (let row = 0; row < 9; row++) for (let j = 0; j < 2; j++) {
+    b.box(x + 2.1 + (j - 0.5) * 0.51 + row % 2 * 0.06, 2.92 + row * 0.25, z - 0.74, 0.46, 0.21, 0.07, row % 3 ? P.roof : P.tile)
+  }
+  lantern(b, x + 0.78, 2.36, z - 2.48)
   return b.build()
 }
 
@@ -256,6 +295,16 @@ function dojo(parent) {
   }
   lantern(b, 14.52, 2.18, 8.3)
   lantern(b, 21.48, 2.18, 8.3)
+  // Rear shoji, sliding-door handles and a matching technique crest. The
+  // pavilion remains closed here; the practice apron is still on the road.
+  b.box(x, 1.76, 4.075, 5.21, 2.58, 0.07, P.paper)
+  for (let j = 0; j < 8; j++) b.box(x - 2.48 + j * 0.71, 1.76, 4.015, 0.075, 2.58, 0.065, P.wood)
+  for (let j = 0; j < 5; j++) b.box(x, 0.59 + j * 0.58, 4.015, 5.25, 0.075, 0.065, P.wood)
+  for (const side of [-1, 1]) b.box(x + side * 0.14, 1.34, 3.97, 0.055, 0.24, 0.045, P.dark)
+  b.box(x, 2.7, 3.94, 0.84, 0.9, 0.13, P.gold)
+  b.pixel([' ### ', '#####', '#####', ' ### ', ' ### '], x, 3.01, 3.85, 0.11, P.paper)
+  b.box(x, 3.0, 8.05, 0.84, 0.9, 0.13, P.gold)
+  b.pixel([' ### ', '#####', '#####', ' ### ', ' ### '], x, 3.31, 7.96, 0.11, P.paper)
   return b.build()
 }
 
@@ -266,11 +315,18 @@ function stall(b, x, z, color) {
   for (let j = 0; j < 8; j++) {
     b.box(x - 1.28 + j * 0.365, 2.19, z, 0.36, 0.11, 1.9, j % 2 ? P.paper : color, -0.11)
     b.box(x - 1.28 + j * 0.365, 1.99, z + 0.96, 0.36, 0.3 + j % 2 * 0.07, 0.07, j % 2 ? P.paper : color)
+    b.box(x - 1.28 + j * 0.365, 2.19, z - 0.96, 0.36, 0.17 + j % 2 * 0.05, 0.07, j % 2 ? P.paper : color)
   }
   b.box(x, 2.34, z - 0.93, 2.92, 0.12, 0.14, P.wood)
   for (let j = 0; j < 3; j++) {
     b.box(x - 0.72 + j * 0.71, 1.05, z + 0.43, 0.63, 0.24, 0.6, P.dark)
     for (let k = 0; k < 4; k++) b.box(x - 0.91 + j * 0.71 + k % 2 * 0.27, 1.24 + k % 2 * 0.04, z + 0.29 + Math.floor(k / 2) * 0.26, 0.25, 0.22, 0.23, [P.gold, P.red, P.leaf][j])
+  }
+  b.box(x, 0.83, z - 0.48, 2.4, 0.2, 0.56, P.wood)
+  for (let j = 0; j < 3; j++) {
+    b.box(x - 0.76 + j * 0.76, 0.47, z - 0.68, 0.65, 0.52, 0.09, color)
+    b.box(x - 0.76 + j * 0.76, 0.59, z - 0.75, 0.19, 0.05, 0.055, P.gold)
+    b.box(x - 0.66 + j * 0.66, 1.01, z - 0.47, 0.52, 0.18, 0.43, [P.paper, P.blue, P.gold][j])
   }
 }
 
@@ -306,6 +362,14 @@ function campfire(parent) {
       b.box(x + dx, y - 0.18, 3.76, 0.28, 0.3, 0.07, [P.red, P.gold, P.teal][j % 3])
       b.box(x + dx, y - 0.35, 3.76, 0.14, 0.11, 0.07, [P.red, P.gold, P.teal][j % 3])
     }
+  }
+  // A flame plaque faces the north approach under the existing bunting.
+  b.box(x, 1.41, 3.66, 0.13, 2.82, 0.13, P.wood)
+  b.box(x, 2.23, 3.66, 1.25, 1.25, 0.18, P.dark)
+  for (const face of [-1, 1]) {
+    b.box(x, 2.23, 3.66 + face * 0.12, 1.08, 1.08, 0.05, P.teal)
+    const flameIcon = ['    #    ', '   ##    ', '   ###   ', '  #### # ', ' ####### ', ' ####### ', '  #####  ', '   ###   ']
+    b.pixel(face < 0 ? flameIcon.map(row => [...row].reverse().join('')) : flameIcon, x, 2.65, 3.66 + face * 0.18, 0.115, P.gold)
   }
   b.build()
   const flame = new THREE.Group()

@@ -14,7 +14,7 @@ const finite = Number.isFinite
 const distance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z)
 
 /** One window into the shared village. The optional clock is in seconds. */
-export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, clock, autoRender = true } = {}) {
+export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, flip = false, clock, autoRender = true } = {}) {
   const ownsCanvas = container.tagName !== 'CANVAS'
   const canvas = ownsCanvas ? document.createElement('canvas') : container
   const parent = ownsCanvas ? container : canvas.parentElement
@@ -37,7 +37,7 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
   overlay.className = 'petpack-fx-overlay'
   Object.assign(overlay.style, { position: 'absolute', pointerEvents: 'none', overflow: 'hidden' })
   parent.append(overlay)
-  const stage = createStage(canvas, { pixelScale })
+  const stage = createStage(canvas, { pixelScale, flip })
   const map = village.createMap(stage.scene, { seed: 77 })
   const chunkWidth = map.chunkWidth || village.CHUNK_W || 14
   const onGift = item => map.bloom?.(item)
@@ -55,7 +55,11 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
   const pendingAsks = new Set()
   const moments = createMoments({ scene: stage.scene, camera: stage.camera, overlay, stage })
   const joy = createJoyDirector({ pets, map, moments, move: applyPetState,
-    status: (id, value) => fx.setStatus(id, value), seat: () => currentSeat })
+    status: setFxStatus, seat: () => currentSeat })
+
+  function setFxStatus(id, value) {
+    fx.setStatus(id, pets.get(id)?.showStatus === false ? 'idle' : value)
+  }
 
   function setSeat(nextSeat) {
     if (disposed || !finite(Number(nextSeat))) return
@@ -73,7 +77,7 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
     fx.attach(pet.id, { anchor: pet.anchor, height: pet.character.height, color: pet.info.color,
       name: pet.info.displayName, isMe: pet.info.isMe })
     fx.setSkills(pet.id, pet.info.skillCount)
-    fx.setStatus(pet.id, pet.state.status)
+    setFxStatus(pet.id, pet.state.status)
   }
   function replaceCharacter(pet, character) {
     pet.character.object3d.removeFromParent()
@@ -123,7 +127,14 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
     pet.anchor.position.set(pet.x, finite(y) ? y : 0, pet.z)
   }
   function updatePet(id, state = {}) {
-    if (disposed || joy.capture(id, state)) return
+    if (disposed) return
+    // Badge visibility is independent of a moment borrowing the pet's motion.
+    const pet = pets.get(id)
+    if (pet && typeof state.showStatus === 'boolean' && state.showStatus !== pet.showStatus) {
+      pet.showStatus = state.showStatus
+      setFxStatus(id, pet.state.status)
+    }
+    if (joy.capture(id, state)) return
     applyPetState(id, state)
   }
   function applyPetState(id, state = {}) {
@@ -148,10 +159,12 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
     pet.sampledSpeed = state.snap && finite(state.speed) ? Math.max(0, state.speed) : null
     // A resting pose may look at a companion; walking always derives its turn below.
     if (state.facing === 1 || state.facing === -1) pet.state.facing = state.facing
+    const visibilityChanged = typeof state.showStatus === 'boolean' && state.showStatus !== pet.showStatus
+    if (visibilityChanged) pet.showStatus = state.showStatus
     if (statuses.has(state.status) && state.status !== pet.state.status) {
       pet.state.status = state.status
-      fx.setStatus(id, state.status)
-    }
+      setFxStatus(id, state.status)
+    } else if (visibilityChanged) setFxStatus(id, pet.state.status)
   }
   function walk(pet, dt) {
     if (!pet.route.length || !dt) return
@@ -210,7 +223,7 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
     renderFrame(clockDelta, time, { cameraDt: realDt })
     frameId = requestAnimationFrame(frame)
   }
-  function renderFrame(clockDelta = 0, time = 0, { render = true, cameraDt = clockDelta } = {}) {
+  function renderFrame(clockDelta = 0, time = 0, { render = true, deferRender = false, cameraDt = clockDelta } = {}) {
     if (disposed) return
     clockDelta = finite(clockDelta) ? Math.max(0, clockDelta) : 0
     const dt = Math.min(.1, clockDelta)
@@ -232,10 +245,12 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
       pet.character.update(dt, time)
       pet.lastX = pet.x; pet.lastZ = pet.z
     }
+    // MOOD, PLAY and SOUND decorate this call to apply poses after the base
+    // character update. Preserve that order when the camera swings, too.
     stage.update(Math.min(.25, cameraDt), time)
     // Stream the visible neighbourhood during long seat changes, too. Retain
     // bounded chunks instead of loading every intervening seat at once.
-    const visibleSeat = Math.round(stage.camera.position.x / chunkWidth)
+    const visibleSeat = Math.round(stage.center.x / chunkWidth)
     if (visibleSeat !== loadedSeat) {
       map.ensure?.(visibleSeat - 1, visibleSeat + 1)
       loadedSeat = visibleSeat
@@ -255,7 +270,7 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
     }
     fx.update(Math.min(3, clockDelta), time)
     moments.update(Math.min(3, clockDelta), time)
-    if (render) stage.render()
+    if (render && !deferRender) stage.render()
   }
   if (autoRender) frameId = requestAnimationFrame(frame)
   function gift(fromId, toId, options = {}) {
@@ -268,6 +283,8 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
   }
   return {
     upsertPet, updatePet, removePet, follow, gift, giftFx: gift, setSeat, renderFrame,
+    setFlip: value => disposed ? false : stage.setFlip(value),
+    get flip() { return stage.flip },
     handshake: options => joy.handshake(options),
     knock: (id, enabled) => joy.knock(id, enabled),
     celebrate: id => joy.celebrate(id),
