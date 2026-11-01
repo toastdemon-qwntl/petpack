@@ -38,6 +38,8 @@
 //   config.sharing / config.dnd seed the initial settings.
 //   setSit('side'|'across') -> sit; sit, flipped, acrossWith, replaced getters. config.sit / config.device go in hello.
 //   Resume: a welcome with you.resumed / you.takeover starts our pet at you.x/z/facing (not at home).
+//   Layout: the relay's versioned layout (welcome.layout, layout broadcasts) is applied wholesale, newer v only; a
+//     10 s heartbeat with another v sends layout?; seat messages older than the held layout are ignored.
 //   coworkWith(idOrName) -> { ok, pending, message, target? }: relay {op:'nextTo'}; until that person is online it
 //     retries on every welcome/join (config.nextTo = --next-to <name> does the same at start). neighbours getter.
 //   With a neighbour, our free pet visits their screen every ~45-90 s along the road (wave, collab, a real dot when
@@ -795,6 +797,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         rehomeBots()
         rebuildGarden()
         noteNeighbours(msg)
+        if (msg.layout) { layoutV = 0; applyLayout(msg.layout) }
         emit('online', { room, seat: mySeat })
         sendState(true)
         break
@@ -836,6 +839,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         break
       }
       case 'seat': {
+        if (Number.isFinite(msg.layoutVersion) && msg.layoutVersion < layoutV) break // older than the layout we hold
+        if (Number.isFinite(msg.layoutVersion)) layoutV = msg.layoutVersion
         if (msg.seats) {
           for (const [id, seat] of Object.entries(msg.seats)) {
             if (id === myId) { if (Number.isInteger(seat) && seat !== mySeat) moveSeat(seat, msg.why, false) }
@@ -849,6 +854,18 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         if (Array.isArray(msg.links)) noteLinks(msg.links)
         noteSitting(msg, null)
         noteNeighbours(msg)
+        break
+      }
+      case 'layout': {
+        // The relay's room layout is the single source of truth; a heartbeat with another version asks for the full one.
+        const v = Number(msg.layoutVersion ?? msg.v) || 0
+        if (msg.beat) { if (v !== layoutV) send({ t: 'layout?' }) }
+        else applyLayout(msg)
+        break
+      }
+      case 'sit': {
+        if (msg.sit === 'side' || msg.sit === 'across') { sit = msg.sit; emit('sit', sit) } // corrected to match our pair
+        if (Number.isFinite(msg.layoutVersion) && msg.layoutVersion !== layoutV) send({ t: 'layout?' })
         break
       }
       case 'catalog': {
@@ -1011,6 +1028,29 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     if (msg.flipped && typeof msg.flipped === 'object') next = !!msg.flipped[myId]
     if (Array.isArray(msg.across)) acrossWith = (msg.across.find(pair => Array.isArray(pair) && pair.includes(myId)) || []).find(id => id !== myId) || null
     if (next !== flipped) { flipped = next; emit('flip', flipped) }
+  }
+  /** Apply a full room layout wholesale (seats, flips, across pairs, links, neighbours, sits), newer versions only. */
+  let layoutV = 0
+  function applyLayout(L) {
+    const v = Number(L?.layoutVersion ?? L?.v) || 0
+    if (!L || !L.seats || v <= layoutV) return false
+    layoutV = v
+    const before = mySeat
+    for (const id of [...seats.keys()]) if (id !== myId) seats.delete(id)
+    for (const [id, seat] of Object.entries(L.seats)) {
+      if (!Number.isInteger(seat)) continue
+      if (id === myId) { if (seat !== mySeat) moveSeat(seat, 'layout', false) }
+      else if (peers.has(id)) { const p = peers.get(id); p.seat = seat; if (p.online) seats.set(id, seat) }
+    }
+    seats.set(myId, mySeat)
+    seatedCache = null
+    if (Array.isArray(L.links)) noteLinks(L.links)
+    if (L.sits && (L.sits[myId] === 'side' || L.sits[myId] === 'across') && L.sits[myId] !== sit) { sit = L.sits[myId]; emit('sit', sit) }
+    noteSitting({ flipped: L.flipped || {}, across: L.across || [] }, null)
+    noteNeighbours(L)
+    rehomeBots()
+    if (mySeat !== before) emit('seats', { seat: mySeat, why: 'layout', links: L.links || [] })
+    return true
   }
   function setSit(next) {
     if (next !== 'side' && next !== 'across') return sit

@@ -498,6 +498,32 @@ test('co-work: nextTo (pending until online), neighbours, one handshake, and vis
   assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'collab' && m.dst === 'bea'))
 })
 
+test('layout: newer versions apply wholesale, heartbeats resync, stale seat messages are ignored', async () => {
+  const { brain, net } = makeBrain()
+  const seen = []
+  for (const name of ['flip', 'neighbours', 'seat']) brain.on(name, (...a) => seen.push([name, ...a]))
+  brain.handle({ t: 'welcome', room: 'r', you: { id: 'me', seat: 0 }, peers: [REX, BEA], away: [], links: [],
+    layout: { v: 100, layoutVersion: 100, seats: { me: 0, rex: 3, bea: 1 }, flipped: {}, across: [], links: [['me', 'bea']],
+      neighbours: { me: { left: null, right: 'bea', across: null } }, sits: { me: 'side' } } })
+  assert.deepEqual(brain.neighbours.right, { id: 'bea', name: 'Bea' })
+  // A newer layout moves us and pairs us across with Bea (we are the flipped one).
+  brain.handle({ t: 'layout', v: 101, layoutVersion: 101, seats: { me: 1, bea: 1, rex: 3 }, flipped: { me: true }, across: [['bea', 'me']],
+    links: [], neighbours: { me: { left: null, right: null, across: 'bea' } }, sits: { me: 'across', bea: 'across' } })
+  assert.deepEqual([brain.seat, brain.flipped, brain.sit, brain.acrossWith], [1, true, 'across', 'bea'])
+  // An older layout or seat message changes nothing.
+  brain.handle({ t: 'layout', v: 99, layoutVersion: 99, seats: { me: 5 }, flipped: {}, across: [], links: [] })
+  brain.handle({ t: 'seat', layoutVersion: 98, seats: { me: 7 }, links: [], why: 'move' })
+  assert.equal(brain.seat, 1)
+  // Heartbeats: same version -> quiet; another version -> ask for the full layout.
+  const asks = () => net.sent.filter(m => m.t === 'layout?').length
+  brain.handle({ t: 'layout', v: 101, layoutVersion: 101, beat: true })
+  assert.equal(asks(), 0)
+  brain.handle({ t: 'layout', v: 102, layoutVersion: 102, beat: true })
+  assert.equal(asks(), 1)
+  brain.handle({ t: 'sit', sit: 'side', corrected: true })
+  assert.equal(brain.sit, 'side')
+})
+
 test('Codex pet parity: LIFE places our pet, Codex status picks the row', async () => {
   const { brain } = makeBrain()
   const mine = brain._.mine
