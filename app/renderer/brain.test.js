@@ -313,6 +313,113 @@ test('quiet status polls stay still; demo bots wear real pets; a new pet of ours
   assert.equal(brain.pets().find(p => p.isMe).spriteUrl, 'data:image/webp;base64,BB')
 })
 
+test('recall: free pets walk home; busy pets say who they are helping and come home after', async () => {
+  const { brain } = makeBrain()
+  welcome(brain)
+  brain.call('petpack_get', { id: 'rex/skill:azure-deploy' })
+  await run(brain, 3)
+  const busy = await brain.call('petpack_recall')
+  assert.deepEqual(busy, { busy: true, message: 'busy helping Rex, back soon' })
+  await run(brain, 30, 0.25)
+  assert.equal(chunkOf(brain.me.x), 0, 'home once the errand gave up')
+  // A free pet out on a visit comes straight back.
+  brain._.startJob(brain.me, 'visit', job => brain._.walkTo(brain.me, { x: 30, z: 1.5 }, job))
+  await run(brain, 3)
+  assert.ok(chunkOf(brain.me.x) >= 1)
+  assert.equal((await brain.call('petpack_recall')).busy, false)
+  await run(brain, 10, 0.25)
+  assert.equal(chunkOf(brain.me.x), 0)
+})
+
+test('do not disturb: asks get "heads-down", peers see the sign, no visits or gifts', async () => {
+  const { brain, net } = makeBrain()
+  welcome(brain)
+  const seen = []
+  brain.on('dnd', on => seen.push(on))
+  brain.setDnd(true)
+  assert.deepEqual(seen, [true])
+  assert.equal(net.last('fx')?.dnd ?? net.sent.filter(m => m.kind === 'pose').at(-1).dnd, 1)
+  brain.handle({ t: 'ask', from: 'bea', qid: 'q9', question: 'help?', kind: null })
+  await flush()
+  assert.deepEqual([net.last('answer').ok, net.last('answer').reason, net.last('answer').text], [false, 'dnd', 'Pip is heads-down right now'])
+  assert.equal((await brain.call('petpack_status', { quiet: true })).me.dnd, true)
+  brain.handle({ t: 'fx', from: 'rex', kind: 'pose', ts: Date.now(), x: 42, z: 1.5, m: 0, dnd: 1 })
+  assert.equal(brain.pets().find(p => p.id === 'rex').dnd, true)
+})
+
+test('share permission: ask shows a request and waits; declines say "not right now"; never declines at once', async () => {
+  const bridge = { readItem: async ref => ({ ok: true, sha: 's', text: `content of ${ref}` }) }
+  const { brain, net } = makeBrain({ bridge })
+  welcome(brain)
+  const requests = []
+  brain.on('permission', r => requests.push(r))
+  brain.setSharing({ mode: 'ask' })
+  brain.handle({ t: 'fetch', from: 'bea', fid: 'f1', ref: 'skill:azure-deploy', as: 'text' })
+  await flush()
+  assert.equal(requests.length, 1)
+  assert.match(requests[0].text, /^Bea wants your azure deploy skill$/)
+  assert.ok(net.sent.some(m => m.kind === 'knock' && m.on === true), 'our pet knocks')
+  brain.decide(requests[0].id, false)
+  await flush(); await flush()
+  assert.deepEqual([net.last('fetched').ok, net.last('fetched').text], [false, 'Pip said not right now'])
+  brain.handle({ t: 'fetch', from: 'bea', fid: 'f2', ref: 'skill:azure-deploy', as: 'text' })
+  await flush()
+  brain.decide(brain.permissions[0].id, true)
+  await flush(); await flush(); await flush()
+  assert.deepEqual([net.last('fetched').fid, net.last('fetched').ok, net.last('fetched').text], ['f2', true, 'content of skill:azure-deploy'])
+  brain.handle({ t: 'fetch', from: 'bea', fid: 'f3', ref: 'skill:x', as: 'text' })
+  await flush()
+  await run(brain, 32, 0.25)
+  assert.deepEqual([net.last('fetched').fid, net.last('fetched').ok], ['f3', false], 'timed out as declined')
+  brain.setSharing({ mode: 'never' })
+  brain.handle({ t: 'ask', from: 'bea', qid: 'q1', question: 'anything?' })
+  await flush(); await flush()
+  assert.deepEqual([net.last('answer').ok, net.last('answer').reason], [false, 'declined'])
+  brain.setSharing({ mode: 'never', items: { 'skill:open': true } })
+  brain.handle({ t: 'fetch', from: 'bea', fid: 'f4', ref: 'skill:open', as: 'text' })
+  await flush(); await flush(); await flush()
+  assert.equal(net.last('fetched').ok, true, 'a per-item toggle beats the mode')
+})
+
+test('find errands: returns an id at once, visits the best owners, adopts skills, reports via errand(id)', async () => {
+  const installs = []
+  const bridge = { installItem: async input => { installs.push(input); return { installed: true, path: `/skills/petpack-${input.name || input.title}` } } }
+  const { brain, net } = makeBrain({ bridge })
+  welcome(brain)
+  const events = []
+  brain.on('errand', e => events.push(e.status))
+  const started = await brain.call('petpack_find', { question: 'how do we deploy to Azure?', kind: 'skill' })
+  assert.equal(started.status, 'running')
+  // Answer every fetch the errand sends, as the relay would.
+  for (let i = 0; i < 200 && brain.errand(started.id).status === 'running'; i++) {
+    brain.tick(0.1)
+    await flush()
+    const fetch = net.sent.find(m => m.t === 'fetch' && !m.answered)
+    if (fetch) {
+      fetch.answered = true
+      brain.handle({ t: 'fetched', fid: fetch.fid, ok: true, sha: 's', pkg: { kind: 'skill', id: 'azure-deploy', name: 'azure-deploy', description: 'ship', files: [{ path: 'SKILL.md', b64: Buffer.from('# azure').toString('base64') }] } })
+    }
+  }
+  const done = await brain.call('petpack_errand', { id: started.id })
+  assert.equal(done.status, 'done')
+  assert.equal(done.findings[0].owner, 'Rex')
+  assert.deepEqual(done.installed, ['/skills/petpack-azure-deploy'])
+  assert.match(done.message, /Rex's azure-deploy/)
+  assert.ok(events.includes('done'))
+})
+
+test('a stuck Codex session: the pet fetches the strongest team match on its own', async () => {
+  const bridge = { currentNeed: async () => ({ question: 'how do I deploy this to Azure App Service?', short: 'deploy to Azure?', kind: 'skill' }) }
+  const says = []
+  const net = fakeNet()
+  const brain = createBrain({ bridge, net, view: { say: (id, text) => says.push(text) }, me: { id: 'me', name: 'Pip', skills: [], catalog: [] },
+    config: { seat: 0, noVisits: true }, random: seeded(2) })
+  welcome(brain)
+  await run(brain, 31, 0.25)
+  assert.ok(says.includes('deploy to Azure?'))
+  assert.equal(net.last('fetch')?.ref, 'skill:azure-deploy')
+})
+
 test('search and meet helpers', () => {
   const owners = [{ id: 'rex', name: 'Rex', online: false, catalog: REX.catalog }]
   const [hit] = searchCatalogs('windows click through', owners, { now: 0 })
