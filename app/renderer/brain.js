@@ -28,6 +28,7 @@
 //   bridge.currentNeed() is polled every ~45 s while our pet is free (no wiring needed beyond the bridge method).
 //   config.sharing / config.dnd seed the initial settings.
 import { createTerrain, createStripNavigation, ROAD_Z } from './world/map-paths.js'
+import { createLife } from './life.js'
 
 export const CHUNK_W = 14
 export const WALK_SPEED = 4 // u/s on a seated (visible) chunk: ~3.5 s per pane
@@ -262,6 +263,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   agents.set(myId, mine)
   seats.set(myId, mySeat)
   let codexStatus = 'idle'
+  let statusSince = 0
+  const life = createLife({ map: nav, me: myId, now: () => time, seed: myId, moments: false })
   let lastSent = { at: -Infinity, key: '' }
   let lastCatalogSent = -Infinity
   let catalogDirty = false
@@ -406,12 +409,33 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     agent.faceTo = null
     const home = agent.isMe ? mySeat : agent.home
     if (chunkOf(agent.x) !== home) { startJob(agent, 'return', job => goHome(agent, job)); return }
+    if (agent.isMe) { live(agent); return }
     if (agent.route.length || time < agent.wanderAt) return
     const working = agent.status === 'working'
     if (agent.status === 'waiting' && agent.isMe) { agent.wanderAt = time + 2; return }
     const spot = homeSpot(home)
     agent.route = nav.path(agent, spot).map(p => ({ x: p.x, z: p.z }))
     agent.wanderAt = time + (working ? 0.4 + random() * 1.2 : 3 + random() * 6)
+  }
+
+  // Free time: life.js picks the next activity (work loop, cozy idle, knock, celebrate, slump), walk there, do it.
+  function live(agent) {
+    if (agent.route.length || time < agent.wanderAt) return
+    const act = agent.lifeAct
+    if (act && !act.started) {
+      act.started = true
+      agent.facing = act.facing
+      agent.faceTo = act.with || null
+      if (act.with) { agent.pauseUntil = time + act.durationS; fx('seek', { src: myId, dst: act.with }) }
+      setAnim(agent, act.anim, act.durationS)
+      agent.wanderAt = time + act.durationS
+      for (const call of [act.fx, act.then]) if (call) fx('life', { src: myId, call })
+      return
+    }
+    agent.lifeAct = life.next({ status: codexStatus, statusSince, seat: mySeat, x: agent.x, z: agent.z,
+      peersHere: members({ onlineOnly: true }).filter(m => chunkOf(m.x) === mySeat) })
+    agent.route = nav.path(agent, agent.lifeAct.goal).map(p => ({ x: p.x, z: p.z }))
+    while (agent.route.length && dist(agent, agent.route[0]) < 1e-6) agent.route.shift()
   }
 
   // ---- effects: local + room ----
@@ -537,6 +561,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     else if (kind === 'weather') emit('weather', p.src, p.w === 'rainbow' ? 'rainbow' : 'rain')
     else if (kind === 'celebrate') emit('celebrate', p.src)
     else if (kind === 'sleep') emit('sleep', p.src, p.on !== false)
+    else if (kind === 'life' && p.call && typeof p.call.method === 'string') emit('life', p.call)
     else if (kind === 'conga' && Array.isArray(p.ids)) emit('conga', p.ids, p.startAt)
     else if (kind === 'throw') emit('throwPet', p.src, { vx: p.vx || 0, vz: p.vz || 0, ...(p.from ? { from: p.from } : {}), ...(p.to ? { to: p.to } : {}), ...(p.duration ? { duration: p.duration } : {}) })
     if (kind === 'learned' && p.src) {
@@ -569,6 +594,9 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     const previous = codexStatus
     codexStatus = status
     mine.status = status
+    statusSince = time
+    mine.lifeAct = null; mine.wanderAt = 0; mine.pauseUntil = 0; mine.anim = null
+    if (!mine.job) mine.route = []
     // Joy: the moments every pane shares.
     wake()
     if (status === 'waiting') fx('knock', { src: myId, on: true })
@@ -835,7 +863,12 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       send({ t: 'fetched', fid: msg.fid, to: msg.from, ok: false, reason: 'declined', text: declinedText() })
       return
     }
-    const result = await readOwn(msg.ref, msg.as)
+    let result = await readOwn(msg.ref, msg.as)
+    if (result.reason === 'not shared') result = { ok: false, reason: 'not shared', text: notSharingText() }
+    else if (result.askFirst && permit.reason === 'free') {
+      const again = await askPermission({ from: msg.from, fromName, ref: msg.ref, kind: item?.kind || 'skill', title: item?.title || msg.ref, force: true })
+      if (!again.allowed) result = { ok: false, reason: 'declined', text: declinedText() }
+    }
     send({ t: 'fetched', fid: msg.fid, to: msg.from, ok: result.ok, sha: result.sha || item?.sha || '',
       text: result.text, pkg: result.pkg, reason: result.reason })
   }
@@ -873,6 +906,13 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       }
     } catch (error) { result = { ok: false, text: String(error?.message || error) } }
     mine.answering = Math.max(0, mine.answering - 1)
+    // L3b marks items its owner wants asked about first (askFirst) and ones not shared at all.
+    if (result?.reason === 'not shared') result = { ok: false, reason: 'not shared', text: notSharingText() }
+    else if (result?.askFirst && permit.reason === 'free') {
+      const again = await askPermission({ from: msg.from, fromName, ref: result.item?.ref || result.share?.ref || null, kind: result.item?.kind || result.share?.kind || 'ask',
+        title: result.item?.title || result.share?.title || bubbleText(msg.question, 40), force: true })
+      if (!again.allowed) result = { ok: false, reason: 'declined', text: declinedText() }
+    }
     if (entry.answered) return
     entry.answered = true; entry.answeredAt = time
     inbox.delete(msg.qid)
@@ -964,6 +1004,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   const permissions = new Map() // id -> { id, from, fromName, ref, kind, title, text, expiresAt, resolve }
   const KIND_WORD = { skill: 'skill', memory: 'note', technique: 'technique', resource: 'MCP server' }
   const declinedText = () => `${mine.name} said not right now`
+  const notSharingText = () => `${mine.name} is not sharing that right now`
   function setSharing(next = {}) {
     const mode = ['free', 'ask', 'never'].includes(next.mode) ? next.mode : sharing.mode
     const items = next.items && typeof next.items === 'object' ? { ...next.items } : sharing.items
@@ -974,9 +1015,9 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   const ruleFor = ref => (ref && sharing.items[ref] === false ? 'never' : ref && sharing.items[ref] === true ? 'free' : sharing.mode)
   /** Resolves { allowed, reason: 'free'|'allowed'|'declined'|'never'|'timeout' }. In 'ask' mode our pet walks to the
    *  front, knocks and shows the request; WIRE draws ✓/✗ from the 'permission' event and calls decide(id, allow). */
-  function askPermission({ from, fromName, ref, kind, title }) {
+  function askPermission({ from, fromName, ref, kind, title, force = false }) {
     const rule = ruleFor(ref)
-    if (rule === 'free') return Promise.resolve({ allowed: true, reason: 'free' })
+    if (rule === 'free' && !force) return Promise.resolve({ allowed: true, reason: 'free' })
     if (rule === 'never') return Promise.resolve({ allowed: false, reason: 'never' })
     const id = uid('p')
     const text = kind === 'ask' ? `${fromName} asks: ${title}` : `${fromName} wants your ${shortTitle(title, 26)} ${KIND_WORD[kind] || 'item'}`
@@ -1211,13 +1252,22 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     },
     // Codex sends the pet off to find something out; it returns at once with an errand id to poll.
     async petpack_find({ question = '', kind } = {}) {
-      if (teamOffline()) return { id: null, status: 'failed', offline: true, message: OFFLINE }
-      return find({ question, kind })
+      if (teamOffline()) return { errand_id: null, id: null, status: 'failed', offline: true, message: OFFLINE }
+      const started = find({ question, kind })
+      return { errand_id: started.id, ...started,
+        message: `${mine.name} is off to find out. Carry on, and check back with petpack_errand at your next pause.` }
     },
-    async petpack_errand({ id } = {}) {
-      return errandStatus(id) || { id: id || null, status: 'unknown', message: 'no such errand' }
+    async petpack_errand({ errand_id, id } = {}) {
+      const snap = errandStatus(errand_id || id)
+      return snap ? { errand_id: snap.id, ...snap } : { errand_id: errand_id || id || null, status: 'unknown', message: 'no such errand' }
     },
     async petpack_recall() { return recall() },
+    // S5's Codex link events (connected, a line to say): a wave and a bubble.
+    async codex_link(ev = {}) {
+      if (ev.type === 'connected') setAnim(mine, 'wave', 1.8)
+      if (ev.text) emit('say', myId, bubbleText(ev.text, 30))
+      return { ok: true }
+    },
     async petpack_inbox() {
       return [...inbox.values()].filter(e => !e.answered).map(e => ({ id: e.id, from: e.fromName, question: e.question }))
     },

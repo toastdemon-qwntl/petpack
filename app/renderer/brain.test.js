@@ -420,6 +420,27 @@ test('a stuck Codex session: the pet fetches the strongest team match on its own
   assert.equal(net.last('fetch')?.ref, 'skill:azure-deploy')
 })
 
+test('owner-side askFirst and not-shared results; S5 tool shapes (errand_id, codex_link)', async () => {
+  const bridge = { readItem: async ref => (ref === 'skill:secret' ? { ok: false, reason: 'not shared' } : { ok: true, sha: 's', text: 'body', askFirst: true }) }
+  const { brain, net } = makeBrain({ bridge })
+  welcome(brain)
+  const asks = []
+  brain.on('permission', r => asks.push(r))
+  brain.handle({ t: 'fetch', from: 'bea', fid: 'f1', ref: 'skill:azure-deploy', as: 'text' })
+  for (let i = 0; i < 4; i++) await flush()
+  assert.equal(asks.length, 1, 'askFirst prompts even in free mode')
+  brain.decide(asks[0].id, false)
+  for (let i = 0; i < 3; i++) await flush()
+  assert.deepEqual([net.last('fetched').ok, net.last('fetched').text], [false, 'Pip said not right now'])
+  brain.handle({ t: 'fetch', from: 'bea', fid: 'f2', ref: 'skill:secret', as: 'text' })
+  for (let i = 0; i < 3; i++) await flush()
+  assert.deepEqual([net.last('fetched').fid, net.last('fetched').text], ['f2', 'Pip is not sharing that right now'])
+  const started = await brain.call('petpack_find', { question: 'azure deploy' })
+  assert.ok(started.errand_id && /petpack_errand/.test(started.message))
+  assert.equal((await brain.call('petpack_errand', { errand_id: started.errand_id })).errand_id, started.errand_id)
+  assert.deepEqual(await brain.call('codex_link', { type: 'connected', text: 'Codex is linked' }), { ok: true })
+})
+
 test('search and meet helpers', () => {
   const owners = [{ id: 'rex', name: 'Rex', online: false, catalog: REX.catalog }]
   const [hit] = searchCatalogs('windows click through', owners, { now: 0 })
