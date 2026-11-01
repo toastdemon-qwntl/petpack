@@ -6,6 +6,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { buildCatalog, getCatalog, readItem, installNote, installItem, findCurrentProject, parseToml } from './catalog.js'
 import { answerAsk, createAnswerer, scoreItem, rankItems } from './answer.js'
+import { shortQuestion, currentNeed, analyzeRollout, needFrom } from './question.js'
 
 const W = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text) }
 
@@ -76,7 +77,7 @@ process.stdin.on('end', () => {
   fs.writeFileSync(log, JSON.stringify({ args, schema, stdin, pid: process.pid, cwd: process.cwd() }))
   if (${JSON.stringify(mode)} === 'hang') { setTimeout(() => {}, 60000); return }
   if (args[0] === 'mcp') return
-  fs.writeFileSync(at('-o'), JSON.stringify({ answer: 'stub answer: use forward:true', share: { kind: 'technique', title: 'Forward mouse events', body: 'Pass {forward:true}.' } }))
+  fs.writeFileSync(at('-o'), JSON.stringify({ answer: 'stub answer: use forward:true', short: 'use forward:true', share: { kind: 'technique', title: 'Forward mouse events', body: 'Pass {forward:true}.' } }))
 })
 `)
   W(path.join(bin, 'codex'), `#!/usr/bin/env node\nimport(${JSON.stringify(path.join(bin, 'codex-stub.mjs'))})\n`)
@@ -225,7 +226,8 @@ test('answer: tier 2 runs a read-only ephemeral codex exec with the schema, and 
   assert.ok(a.includes('-o'))
   assert.equal(a[a.length - 1], '-')
   const schema = JSON.parse(log.schema)
-  assert.deepEqual(schema.required, ['answer', 'share'])
+  assert.deepEqual(schema.required, ['answer', 'short', 'share'])
+  assert.equal(r.short, 'use forward:true')
   assert.match(log.stdin, /Question: why does the overlay ignore clicks on Linux\?/)
   assert.match(log.stdin, /Al's agent/)
   assert.ok(fs.existsSync(r.card))
@@ -274,8 +276,9 @@ test('answer: "how do I pull tables out of a PDF?" answers instantly from the pd
   assert.equal(r.ok, true)
   assert.equal(r.tier, 1)
   assert.equal(r.item.ref, 'skill:pdf')
-  assert.ok(r.text.startsWith('pdf: Use when tasks involve reading'))
-  assert.ok(r.text.split('\n').length <= 2)
+  assert.equal(r.text, "I've got a skill for that: pdf. Use pdfplumber for tables.")
+  assert.equal(r.short, 'my pdf skill has it')
+  assert.ok(r.text.length <= 110)
   assert.equal(r.share.ref, 'skill:pdf')
   assert.equal(r.pkg.name, 'pdf')
   assert.ok(r.pkg.files.some(f => f.path === 'scripts/tables.py'))
@@ -299,7 +302,91 @@ test('answer: when tier 2 fails, the closest item still comes back', async () =>
   assert.equal(r.ok, true)
   assert.equal(r.fallback, 'timeout')
   assert.equal(r.item.ref, 'memory:mem-glass-pane-click-through')
-  assert.match(r.text, /^Closest thing I have: glass pane click-through: setIgnoreMouseEvents/)
+  assert.equal(r.text, 'Not sure, but my note on glass pane click-through might help.')
+  assert.ok(r.short.startsWith('maybe my note on') && r.short.length <= 40, r.short)
+})
+
+test('questions: shortQuestion keeps the key nouns in <= 40 chars', () => {
+  assert.equal(shortQuestion('how do I pull tables out of a PDF?'), 'PDF tables?')
+  assert.equal(shortQuestion('How do we ship the relay to Azure?'), 'ship relay to Azure?')
+  const long = shortQuestion('Does anyone know how to configure the Electron transparent window so that clicks pass through on Windows 11 and macOS?')
+  assert.ok(long.length <= 40 && long.endsWith('?'), long)
+  assert.match(long, /Electron/)
+})
+
+test('answer: a memory answers in one teammate sentence with the most relevant clause', async () => {
+  const fx = fixture()
+  const r = await answerAsk('setIgnoreMouseEvents forward on Windows for the glass pane click-through?', { ...fx.opts, noExec: true })
+  assert.equal(r.tier, 1)
+  assert.equal(r.item.ref, 'memory:mem-glass-pane-click-through')
+  assert.equal(r.text, "I've hit this before. SetIgnoreMouseEvents needs {forward:true} on Windows.")
+  assert.ok(r.short.length <= 40)
+})
+
+// ---- proactive asks from a stuck session (fixture rollouts)
+
+const T0 = Date.parse('2026-11-01T14:00:00Z')
+const iso = ms => new Date(ms).toISOString()
+function rollout (events) {
+  const lines = [JSON.stringify({ timestamp: iso(T0), type: 'session_meta', payload: { id: 'sess-1', cwd: '/w/app', source: 'cli' } })]
+  for (const [dt, type, payload] of events) lines.push(JSON.stringify({ timestamp: iso(T0 + dt * 1000), type, payload }))
+  return lines.join('\n') + '\n'
+}
+const started = dt => [dt, 'event_msg', { type: 'task_started', turn_id: 't1' }]
+const user = (dt, text) => [dt, 'response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text }] }]
+const agentsMd = dt => [dt, 'response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text: '# AGENTS.md instructions\n\n<INSTRUCTIONS>x</INSTRUCTIONS>' }] }]
+const failOut = (dt, msg) => [dt, 'response_item', { type: 'function_call_output', call_id: 'c' + dt, output: JSON.stringify({ output: `npm test\n${msg}\n    at Object.<anonymous> (/w/app/x.js:1:1)`, metadata: { exit_code: 1 } }) }]
+const okOut = dt => [dt, 'response_item', { type: 'custom_tool_call_output', call_id: 'k' + dt, output: [{ type: 'input_text', text: 'Script completed\nWall time 0.3 seconds\nOutput:\nall good' }] }]
+const complete = (dt, error) => [dt, 'event_msg', error ? { type: 'task_complete', error: { codex_error_info: 'x', message: error } } : { type: 'task_complete' }]
+
+test('need: a failed turn asks how to get past its error', () => {
+  const lines = rollout([started(0), agentsMd(0), user(1, 'Make the relay accept wss on Azure'), okOut(5), failOut(9, "Error: Cannot find module 'ws'"), complete(12, 'turn failed')]).split('\n')
+  const need = needFrom(analyzeRollout(lines, T0 + 20000))
+  assert.equal(need.why, 'failed')
+  assert.equal(need.prompt, 'Make the relay accept wss on Azure')
+  assert.match(need.question, /^How do I get past "turn failed" while working on: Make the relay accept wss on Azure\?$/)
+  assert.ok(need.short.length <= 40)
+})
+
+test('need: a repeated error asks about that error', () => {
+  const lines = rollout([started(0), user(1, 'Run the relay tests'), failOut(5, "Error: Cannot find module 'ws'"), okOut(7), failOut(9, "Error: Cannot find module 'ws'")]).split('\n')
+  const need = needFrom(analyzeRollout(lines, T0 + 20000))
+  assert.equal(need.why, 'repeated')
+  assert.equal(need.error, "Error: Cannot find module 'ws'")
+  assert.equal(need.question, `How do I get past "Error: Cannot find module 'ws'" while working on: Run the relay tests?`)
+  assert.equal(need.short, "Cannot find module 'ws'?")
+  assert.equal(need.kind, 'technique')
+})
+
+test('need: working over 3 minutes on one turn asks about the prompt; healthy and done sessions ask nothing', () => {
+  const slow = rollout([started(0), user(1, '# Ship the pane to Windows\n\nDetails...'), okOut(30)]).split('\n')
+  const need = needFrom(analyzeRollout(slow, T0 + 4 * 60 * 1000))
+  assert.equal(need.why, 'slow')
+  assert.equal(need.question, 'Anyone solved this before: Ship the pane to Windows?')
+  assert.equal(needFrom(analyzeRollout(slow, T0 + 60 * 1000)), null)
+  const done = rollout([started(0), user(1, 'Ship it'), failOut(5, 'Error: flaky'), complete(9)]).split('\n')
+  assert.equal(needFrom(analyzeRollout(done, T0 + 10 * 60 * 1000)), null)
+})
+
+test('need: currentNeed reads the newest live non-subagent rollout under CODEX_HOME', async () => {
+  const fx = fixture()
+  const dir = path.join(fx.codex, 'sessions/2026/11/01')
+  const main = path.join(dir, 'rollout-2026-11-01T14-00-00-main.jsonl')
+  W(main, rollout([started(0), user(1, 'Run the relay tests'), failOut(5, "Error: Cannot find module 'ws'"), failOut(9, "Error: Cannot find module 'ws'")]))
+  const sub = path.join(dir, 'rollout-2026-11-01T14-00-05-sub.jsonl')
+  W(sub, JSON.stringify({ timestamp: iso(T0), type: 'session_meta', payload: { id: 'sub', source: { subagent: { thread_spawn: {} } } } }) + '\n')
+  const now = Date.now()
+  fs.utimesSync(main, new Date(now - 5000), new Date(now - 5000))
+  fs.utimesSync(sub, new Date(now - 1000), new Date(now - 1000))
+  const older = path.join(fx.codex, 'sessions/2026/11/01/rollout-2026-11-01T10-00-00-abc.jsonl')
+  fs.utimesSync(older, new Date(now - 3600e3), new Date(now - 3600e3))
+  const need = await currentNeed(fx.codex, { now })
+  assert.equal(need.why, 'repeated')
+  assert.equal(need.session, 'sess-1')
+  assert.equal(need.file, main)
+  // not live any more: nothing to ask
+  assert.equal(await currentNeed(fx.codex, { now: now + 60 * 60 * 1000 }), null)
+  assert.equal(await currentNeed(path.join(fx.root, 'nope')), null)
 })
 
 test('answer: noExec (bots, --no-answer) never spawns codex', async () => {

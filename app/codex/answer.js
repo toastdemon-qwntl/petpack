@@ -16,6 +16,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawn, spawnSync } from 'node:child_process'
 import { buildCatalog, readItem, itemSource, defaultAnswersDir, slugify, summarize, invalidateCatalog } from './catalog.js'
+import { shortQuestion, SHORT_MAX } from './question.js'
 
 // GUI launches (Finder, login items) get a thin PATH; add the usual homes of a `codex` binary.
 export function childEnv (env = process.env) {
@@ -34,9 +35,10 @@ export const ANSWER_MAX = 1200
 export const ASK_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['answer', 'share'],
+  required: ['answer', 'short', 'share'],
   properties: {
-    answer: { type: 'string', description: 'The answer for the teammate, at most 1200 characters.' },
+    answer: { type: 'string', description: 'The answer, like a teammate would say it: at most two short sentences.' },
+    short: { type: 'string', description: 'The gist for a speech bubble, at most 40 characters.' },
     share: {
       anyOf: [
         { type: 'null' },
@@ -136,26 +138,109 @@ function excerptOf (text, max = 900) {
   return body.length > max ? body.slice(0, max - 1).trimEnd() + '…' : body
 }
 
-function firstLines (text, max = 400) {
-  const lines = String(text || '').split(/\r?\n/).map(l => l.replace(/^\s*[-*+]\s+|^#+\s*/, '').trim()).filter(Boolean)
-  const out = lines.slice(0, 2).join(' ')
-  return out.length > max ? out.slice(0, max - 1).trimEnd() + '…' : out
+export const SAY_MAX = 110
+
+function clipWords (s, max) {
+  s = String(s || '').replace(/\s+/g, ' ').trim()
+  if (s.length <= max) return s
+  const cut = s.slice(0, max - 1)
+  const sp = cut.lastIndexOf(' ')
+  return (sp > max * 0.4 ? cut.slice(0, sp) : cut).replace(/[\s,;:(-]+$/, '') + '…'
 }
 
-// One or two lines from the item, and the item itself as the dot (pkg) so the asker installs it.
-async function tier1 (best, ctx, prefix = '') {
+// Candidate clauses from a description and a section/SKILL.md body, cleaned of markdown.
+function clausesOf (...texts) {
+  const out = []
+  for (const t of texts) {
+    const clean = String(t || '')
+      .replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---\s*/, '')
+      .replace(/```[\s\S]*?```/g, '\n')
+      .replace(/^\s*#+\s.*$/gm, '\n')
+      .replace(/^\([^)\n]*AGENTS\.md\)$/gm, '\n')
+      .replace(/`([^`]*)`/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/[*_>]/g, '')
+    for (const part of clean.split(/\n+|(?<=[.!?])\s+|;\s+|\s+-\s+/)) {
+      const c = part.replace(/^\s*(?:[-+]|\d+[.)])\s+/, '').replace(/\s+/g, ' ').trim().replace(/[.:,]+$/, '')
+      if (c.length >= 12 && c.length <= 400 && !/^(name|description):/i.test(c)) out.push(c)
+    }
+  }
+  return out
+}
+
+// The clause that best matches the question (token overlap; "Use when ..." boilerplate scores lower).
+export function bestClause (question, ...texts) {
+  const q = tokenize(question)
+  let best = null
+  for (const [i, c] of clausesOf(...texts).entries()) {
+    const toks = tokenize(c)
+    let s = 0
+    for (const t of q) if (toks.has(t)) s += 1
+    if (/^use (this( skill)? )?when\b/i.test(c)) s -= 0.4
+    s -= i * 0.001 + Math.max(0, c.length - 140) * 0.002
+    if (!best || s > best.s) best = { c, s }
+  }
+  if (!best) return ''
+  let c = best.c.replace(/^use (this( skill)? )?when\b/i, 'Handy when')
+  return c.charAt(0).toUpperCase() + c.slice(1)
+}
+
+const LEAD = {
+  skill: t => `I've got a skill for that: ${t}.`,
+  resource: t => `I use the ${t} MCP server for that.`,
+  memory: () => "I've hit this before.",
+  technique: () => 'Been there.'
+}
+const SHORT = {
+  skill: t => `my ${t} skill has it`,
+  resource: t => `my ${t} server does it`,
+  memory: t => `my notes: ${t}`,
+  technique: t => `my trick: ${t}`
+}
+
+// One short teammate sentence (<= 110 chars) and a bubble line (<= 40 chars) about an item.
+export function teammateSay (item, question, text = '', { unsure = false } = {}) {
+  const kind = LEAD[item.kind] ? item.kind : 'memory'
+  const title = clipWords(item.title, 40)
+  if (unsure) {
+    const what = kind === 'skill' ? `my ${title} skill` : kind === 'resource' ? `my ${title} server` : `my note on ${title}`
+    return { text: clipWords(`Not sure, but ${what} might help.`, SAY_MAX), short: clipWords(`maybe ${what}?`, SHORT_MAX) }
+  }
+  const lead = LEAD[kind](title)
+  const clause = bestClause(question, item.summary, text)
+  const room = SAY_MAX - lead.length - 1
+  const say = clause && room >= 20 ? `${lead} ${clipWords(clause, room - 1).replace(/…$/, '')}.` : lead
+  return { text: say.replace(/\.\.$/, '.').slice(0, SAY_MAX), short: clipWords(SHORT[kind](item.title), SHORT_MAX) }
+}
+
+// The bubble line for a free-text answer: its first sentence, clipped.
+export function shortAnswer (text) {
+  const first = String(text || '').replace(/[`*_#>]/g, '').split(/(?<=[.!?])\s+|\n/)[0] || ''
+  return clipWords(first.replace(/[.!]+$/, ''), SHORT_MAX)
+}
+
+// At most two sentences when a model runs long.
+export function twoSentences (text, max = 320) {
+  const s = String(text || '').trim()
+  if (s.length <= max) return s
+  const parts = s.split(/(?<=[.!?])\s+/)
+  const two = parts.slice(0, 2).join(' ')
+  return two.length <= max + 80 ? two : clipWords(two, max)
+}
+
+// A short teammate answer from the item, and the item itself as the dot (pkg) so the asker installs it.
+async function tier1 (best, ctx, question, opts = {}) {
   const { item } = best
   const r = await readItem(item.ref, 'pkg', ctx)
   if (!r.ok) return null
   let text = r.text
   if (item.kind === 'skill') text = (await readItem(item.ref, 'text', ctx)).text || ''
-  const body = excerptOf(text).replace(/^\s*#\s+.*\n+/, '').replace(/^\([^)\n]*AGENTS\.md\)\n+/, '')
-  const line = item.kind === 'skill' || item.kind === 'resource' ? item.summary : firstLines(body)
-  const answer = `${prefix}${item.title}: ${line}`.slice(0, ANSWER_MAX)
+  const say = teammateSay(item, question, text, opts)
   return {
     ok: true,
     tier: 1,
-    text: answer,
+    text: say.text,
+    short: say.short,
     item,
     share: { kind: item.kind, ref: item.ref, title: item.title, body: excerptOf(text, 4000) },
     pkg: r.pkg
@@ -168,9 +253,11 @@ function prompt ({ question, kind, fromName }, hints) {
   const lines = [
     `A teammate's coding agent (${fromName || 'a teammate'}'s agent) asks you a question through petpack, a team commons.`,
     'Answer from what you already know on this machine: your skills, memories, AGENTS.md and the files of the current',
-    'project. Read files if useful, but change nothing and avoid long commands; reply quickly. Be concrete (commands,',
-    'file names, settings), at most 1200 characters. If part of the answer is a reusable note worth keeping, return it',
-    'in share as {kind: "memory" or "technique", title, body}; otherwise share is null.'
+    'project. Read files if useful, but change nothing and avoid long commands; reply quickly.',
+    'Reply like a teammate: answer is at most two short sentences (under 280 characters), concrete (the command, file,',
+    'setting or tool to use); short is the gist in at most 40 characters for a speech bubble (e.g. "use pdfplumber',
+    'extract_tables"). If the full how-to is worth keeping, put it in share as {kind: "memory" or "technique", title,',
+    'body}; otherwise share is null.'
   ]
   if (hints.length) {
     lines.push('', 'Possibly relevant things you know (from your own catalog):')
@@ -245,7 +332,7 @@ export async function runExec ({ question, kind, fromName, hints = [], project, 
       try { j = JSON.parse(fs.readFileSync(outPath, 'utf8')) } catch {}
       if (!j || typeof j.answer !== 'string') j = lastJson(out)
       if (!j) return resolve({ ok: false, reason: code === 0 ? 'no answer' : `codex exited ${code}: ${(errOut || out).trim().split('\n').slice(-3).join(' ').slice(0, 300)}`, pid: child.pid })
-      resolve({ ok: true, answer: j.answer, share: j.share ?? null, pid: child.pid })
+      resolve({ ok: true, answer: j.answer, short: typeof j.short === 'string' ? j.short : '', share: j.share ?? null, pid: child.pid })
     })
     child.stdin.end(prompt({ question, kind, fromName }, hints))
   })
@@ -299,7 +386,7 @@ export function createAnswerer ({ queueMax = 1 } = {}) {
     const question = String(ask.question || '').trim().slice(0, 2000)
     const kind = ask.kind || null
     const fromName = ask.fromName || ctx.fromName || 'a teammate'
-    if (!question) return { ok: false, tier: 0, text: 'no question', reason: 'empty', ms: 0 }
+    if (!question) return { ok: false, tier: 0, text: 'no question', short: '', reason: 'empty', ms: 0 }
     const done = r => ({ ...r, ms: Date.now() - t0 })
 
     let built = { items: [], projects: [] }
@@ -308,13 +395,13 @@ export function createAnswerer ({ queueMax = 1 } = {}) {
     const pick = tier1Pick(question, built.items, kind, ctx.tier1Threshold ?? TIER1_MIN)
     if (pick) {
       try {
-        const r = await tier1(pick, ctx)
+        const r = await tier1(pick, ctx, question)
         if (r) return done({ ...r, score: pick.score, named: pick.named })
       } catch {}
     }
-    if (ctx.noExec) return done({ ok: false, tier: 1, text: "I don't know that one.", reason: 'no match' })
+    if (ctx.noExec) return done({ ok: false, tier: 1, text: "I don't know that one.", short: 'no idea, sorry', reason: 'no match' })
 
-    if (!(await acquire())) return done({ ok: false, busy: true, tier: 2, text: 'busy', reason: 'busy' })
+    if (!(await acquire())) return done({ ok: false, busy: true, tier: 2, text: "I'm busy with another question.", short: 'busy right now', reason: 'busy' })
     try {
       const env = childEnv(ctx.env || process.env)
       const timeoutMs = Math.max(1000, (ctx.timeoutMs ?? ASK_TIMEOUT_MS) - (Date.now() - t0))
@@ -336,17 +423,17 @@ export function createAnswerer ({ queueMax = 1 } = {}) {
         // Exec failed or timed out: hand over the closest item rather than nothing.
         if (ranked[0]) {
           try {
-            const t1 = await tier1(ranked[0], ctx, 'Closest thing I have: ')
+            const t1 = await tier1(ranked[0], ctx, question, { unsure: true })
             if (t1) return done({ ...t1, score: ranked[0].score, fallback: r.reason, execMs: r.ms })
           } catch {}
         }
-        return done({ ok: false, tier: 2, text: "couldn't finish", reason: r.reason, execMs: r.ms })
+        return done({ ok: false, tier: 2, text: "couldn't finish", short: "couldn't finish", reason: r.reason, execMs: r.ms })
       }
-      const text = String(r.answer).trim().slice(0, ANSWER_MAX)
+      const text = twoSentences(String(r.answer).trim()).slice(0, ANSWER_MAX)
       const share = cleanShare(r.share)
       const card = await saveAnswerCard({ question, fromName, answer: text, share }, ctx)
       invalidateCatalog()
-      const out = { ok: true, tier: 2, text, execMs: r.ms, card }
+      const out = { ok: true, tier: 2, text, short: clipWords(r.short || shortAnswer(text), SHORT_MAX), execMs: r.ms, card }
       if (share) {
         out.share = share
         out.pkg = { kind: share.kind, ref: null, title: share.title, text: `# ${share.title}\n\n${share.body}\n` }
@@ -363,4 +450,4 @@ const shared = createAnswerer()
 // The bridge's answerAsk({question, kind, fromName}); also takes a bare question string.
 export function answerAsk (q, ctx = {}) { return shared.answerAsk(q, ctx) }
 
-export { summarize }
+export { summarize, shortQuestion }
