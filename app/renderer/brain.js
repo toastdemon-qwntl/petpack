@@ -1493,7 +1493,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         if (r?.answered_by && r.answer) r.says = `${r.answered_by} says: ${r.answer}`
         const found = r?.dot?.id ? lookupItem(r.dot.id) : null
         if (found) {
-          const res = await Promise.race([fetchItem(found.owner, found.item.ref, 'text'), sleep(8).then(() => null)])
+          const res = await Promise.race([fetchItem(found.owner, found.item.ref, 'text'), new Promise(done => setTimeout(() => done(null), 4000))])
           if (res?.ok && res.text) { r.content = String(res.text).slice(0, 12000); r.from = `${found.owner.name}'s ${found.item.title}` }
         }
       } catch {}
