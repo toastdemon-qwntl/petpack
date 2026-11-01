@@ -67,14 +67,16 @@ function idleFrames (img, grid) {
   probe.width = grid.cellW; probe.height = grid.cellH
   const g = probe.getContext('2d', { willReadFrequently: true })
   const frames = []
-  for (let col = 0; col < 8; col++) {
-    g.clearRect(0, 0, grid.cellW, grid.cellH)
-    g.drawImage(img, col * grid.cellW, 0, grid.cellW, grid.cellH, 0, 0, grid.cellW, grid.cellH)
-    const data = g.getImageData(0, 0, grid.cellW, grid.cellH).data
-    let seen = false
-    for (let i = 3; i < data.length; i += 16) if (data[i] > 24) { seen = true; break }
-    if (seen) frames.push(col)
-  }
+  try {
+    for (let col = 0; col < 8; col++) {
+      g.clearRect(0, 0, grid.cellW, grid.cellH)
+      g.drawImage(img, col * grid.cellW, 0, grid.cellW, grid.cellH, 0, 0, grid.cellW, grid.cellH)
+      const data = g.getImageData(0, 0, grid.cellW, grid.cellH).data
+      let seen = false
+      for (let i = 3; i < data.length; i += 16) if (data[i] > 24) { seen = true; break }
+      if (seen) frames.push(col)
+    }
+  } catch { return [0] } // a relay-hosted sheet can't be read back (cross-origin): first frame only
   return frames.length ? frames : [0]
 }
 function drawCell (canvas, img, grid, col) {
@@ -160,7 +162,7 @@ async function renderPets () {
   }
   $('follow-codex').checked = pets.current?.source !== 'chosen'
 }
-function renderAllPets () { renderHeader(); renderPets(); animateMe(pets.current) }
+function renderAllPets () { renderHeader(); renderPets(); animateMe(pets.current); drawSprite($('nb-me'), pets.current?.spriteUrl, pets.current?.atlas) }
 
 // ---------- sharing ----------
 function renderMode () {
@@ -197,6 +199,75 @@ $('mode').addEventListener('click', async e => {
   state = await call('setMode', b.dataset.mode)
   renderMode()
 })
+
+// ---------- co-working: sit next to… ----------
+let people = []
+let coworkTimer = null
+function drawSprite (canvas, url, atlas) {
+  loadImage(url).then(img => {
+    if (!img) { drawDot(canvas); return }
+    const gr = gridOf(img, atlas)
+    drawCell(canvas, img, gr, idleFrames(img, gr)[0])
+  })
+}
+const STATUS_WORD = { working: 'working', waiting: 'waiting for them', idle: 'idle', done: 'just finished', failed: 'stuck', away: 'away' }
+function renderNeighbours () {
+  for (const side of ['left', 'right']) {
+    const p = people.find(x => x.side === side)
+    const el = $(`nb-${side}`)
+    el.classList.toggle('on', Boolean(p))
+    el.querySelector('.nb-name').textContent = p ? p.name : 'nobody'
+    el.title = p ? `${p.name} sits on your ${side}` : `Nobody on your ${side} yet`
+  }
+}
+function renderPeople () {
+  renderNeighbours()
+  const list = $('people')
+  list.textContent = ''
+  if (!people.length) {
+    const li = document.createElement('li'); li.className = 'muted'; li.textContent = 'Nobody else is online in this room yet.'
+    list.append(li); return
+  }
+  for (const p of people) {
+    const li = document.createElement('li')
+    const b = document.createElement('button')
+    b.className = 'person'
+    b.dataset.id = p.id
+    b.title = p.side ? `${p.name} already sits on your ${p.side}` : `Sit next to ${p.name} and co-work`
+    const c = document.createElement('canvas'); c.width = 56; c.height = 56
+    const pn = document.createElement('span'); pn.className = 'pn'
+    const name = document.createElement('b'); name.textContent = p.name
+    const st = document.createElement('i'); st.textContent = p.dnd ? 'do not disturb' : (STATUS_WORD[p.status] || p.status)
+    pn.append(name, st)
+    const tag = document.createElement('span')
+    tag.className = `tag${p.side ? ' next' : ''}`
+    tag.textContent = p.side === 'left' ? '← next to you' : p.side === 'right' ? 'next to you →' : 'Sit here'
+    b.append(c, pn, tag)
+    b.addEventListener('click', () => coworkWith(p, b))
+    li.append(b)
+    list.append(li)
+    drawSprite(c, p.spriteUrl, p.atlas)
+  }
+}
+function showCowork (text, ok = true, sticky = false) {
+  const el = $('cowork-note')
+  el.textContent = text
+  el.classList.toggle('fail', !ok)
+  el.hidden = false
+  clearTimeout(coworkTimer)
+  if (!sticky) coworkTimer = setTimeout(() => { el.hidden = true }, 8000)
+}
+async function coworkWith (p, button) {
+  button.classList.add('pending')
+  button.querySelector('.tag').textContent = 'asking…'
+  try {
+    const r = await call('cowork', p.id)
+    if (r?.text) showCowork(r.text, true, !p.side)
+  } catch (error) {
+    showCowork(String(error.message || error).replace(/^Error invoking remote method[^:]*: (Error: )?/, ''), false)
+    renderPeople()
+  }
+}
 
 // ---------- room ----------
 function renderRoom () {
@@ -305,6 +376,8 @@ async function loadCatalog () {
 bridge.on(msg => {
   if (msg.type === 'state') { state = msg.state; render() } else if (msg.type === 'line') addTermLine(msg.line)
   else if (msg.type === 'reply') showReply(msg.reply.text)
+  else if (msg.type === 'people') { people = msg.people || []; renderPeople() }
+  else if (msg.type === 'cowork') showCowork(msg.cowork.text, msg.cowork.ok !== false, Boolean(msg.cowork.pending))
   else if (msg.type === 'ask') showAsk(msg.ask)
   else if (msg.type === 'ask-done') { if (asking?.id === msg.id) { asking = null; $('ask').hidden = true } }
   else if (msg.type === 'shown') { call('pets').then(p => { pets = p; renderAllPets() }).catch(() => {}); loadCatalog() }
@@ -315,6 +388,8 @@ async function start () {
   const init = await call('init')
   state = init.state
   pets = init.pets
+  people = init.people || []
+  renderPeople()
   for (const line of init.lines) addTermLine(line)
   if (!init.lines.length) addTermLine({ source: 'pet', kind: 'info', text: 'watching Codex and your pet…', at: Date.now() })
   render()

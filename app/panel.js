@@ -16,7 +16,7 @@ import { BrowserWindow, app, clipboard, dialog, ipcMain, screen } from 'electron
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { PANEL, anchorBounds, recallReply, ringBuffer, statusLine, tailRollouts } from './panel-core.js'
+import { PANEL, anchorBounds, coworkText, normalizePeople, peopleKey, recallReply, ringBuffer, statusLine, tailRollouts } from './panel-core.js'
 import { MODES, readSharing, sharingFile, writeSharing } from './sharing.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -95,7 +95,7 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
   const onReport = (event, r) => {
     if (!fromPane(event) || !r || typeof r !== 'object') return
     const before = report.errand
-    const { recall, ...rest } = r
+    const { recall, people: rawPeople, cowork: coworkResult, ...rest } = r
     report = { ...report, ...rest }
     if (typeof r.muted === 'boolean') muted = r.muted
     if (!report.errand && before && reply) reply = null
@@ -104,7 +104,51 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
       reply = { text: recall.message, busy: Boolean(recall.busy), at: Date.now() }
       push({ type: 'reply', reply })
     }
+    if (Array.isArray(rawPeople)) setPeople(rawPeople)
+    if (coworkResult && typeof coworkResult === 'object') onCoworkResult(coworkResult)
     refresh()
+  }
+
+  // ---- co-working: everyone online in the room, neighbours marked; click -> brain.coworkWith(id) ----
+  let people = []
+  let peopleSig = '[]'
+  let coworking = null // { id, name, at } waiting to land beside us
+  function setPeople (list) {
+    const next = normalizePeople(list)
+    const sig = peopleKey(next)
+    people = next
+    if (coworking) {
+      const p = people.find(x => x.id === coworking.id)
+      if (p?.side) confirmCowork({ name: p.name, side: p.side, ok: true })
+      else if (Date.now() - coworking.at > 20000) coworking = null
+    }
+    if (sig === peopleSig) return
+    peopleSig = sig
+    push({ type: 'people', people })
+  }
+  function confirmCowork ({ name, side, ok = true, message }) {
+    const text = ok === false ? (message || `couldn't sit next to ${name || 'them'} right now`) : coworkText(name || coworking?.name || 'them', side)
+    if (ok !== false && !side) return // still on the way; the side arrives with the next people report
+    coworking = null
+    addLine({ source: 'pet', kind: 'cowork', text })
+    push({ type: 'cowork', cowork: { text, ok: ok !== false, side: side || null } })
+  }
+  function onCoworkResult (res) {
+    const p = people.find(x => x.id === String(res.id ?? coworking?.id ?? ''))
+    const name = res.name || p?.name || coworking?.name
+    const side = res.side === 'left' || res.side === 'right' ? res.side : p?.side || null
+    if (res.ok === false) return confirmCowork({ name, ok: false, message: res.message || res.reason })
+    if (side) return confirmCowork({ name, side })
+    if (res.message) push({ type: 'cowork', cowork: { text: res.message, ok: true, side: null, pending: true } })
+  }
+  function cowork (id) {
+    const p = people.find(x => x.id === String(id))
+    if (!p) throw new Error('they are not online right now')
+    if (p.side) { const text = coworkText(p.name, p.side); push({ type: 'cowork', cowork: { text, ok: true, side: p.side } }); return { text } }
+    coworking = { id: p.id, name: p.name, at: Date.now() }
+    addLine({ source: 'pet', kind: 'you', text: `you: sit next to ${p.name}` })
+    const sent = toPane('petpack:panel-command', { cmd: 'cowork', id: p.id, name: p.name })
+    return { text: sent ? coworkText(p.name, null) : 'petpack is still starting' }
   }
   const onActivity = (event, line) => {
     if (!fromPane(event) || !line) return
@@ -220,7 +264,9 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
   }
 
   const commands = {
-    init: async () => ({ state: snapshot(), lines: lines.all(), pets: await petsPayload().catch(() => ({ current: null, list: [] })) }),
+    init: async () => ({ state: snapshot(), lines: lines.all(), people, pets: await petsPayload().catch(() => ({ current: null, list: [] })) }),
+    people: () => people,
+    cowork: id => cowork(id),
     state: () => snapshot(),
     pets: () => petsPayload(),
     choosePet: id => choose(id),
@@ -328,6 +374,7 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
     win.focus()
     refresh()
     push({ type: 'shown' })
+    toPane('petpack:panel-command', { cmd: 'people' }) // a fresh list now, not at the next 2 s report
   }
   function hide () { if (win && !win.isDestroyed() && win.isVisible()) win.hide() }
   function toggle () {
@@ -339,6 +386,7 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
   const api = {
     show, hide, toggle, refresh, addLine, commands,
     get window () { return win },
+    simulateReport: r => onReport({ senderFrame: { url: `${ORIGIN}/app/renderer/index.html` }, sender: null }, r), // self-test only
     isVisible: () => Boolean(win && !win.isDestroyed() && win.isVisible()),
     errors: () => consoleErrors.slice(),
     destroy () {
@@ -383,6 +431,29 @@ async function selfTest (panel, { dir, userData }) {
   checks.sectionsPresent = await js(`${JSON.stringify(sections)}.every(id => document.getElementById('sec-' + id))`)
   checks.petCount = await js('document.querySelectorAll(".pet-tile").length')
   checks.catalogCount = await js('document.querySelectorAll(".share-item").length')
+  // Sit next to…: a room of teammates (the pane's people report, simulated here so it doesn't depend on WIRE), one
+  // already on our left; ask to sit next to another, then the relay seats them on our right.
+  const pool = (await panel.commands.pets()).list.filter(p => p.spriteUrl).slice(0, 4)
+  const names = ['Bea', 'Sam', 'Ivo', 'Noor']
+  const room = pool.map((p, i) => ({ id: `peer-${i}`, name: names[i], spriteUrl: p.spriteUrl, atlas: p.atlas,
+    status: ['working', 'idle', 'waiting', 'idle'][i], side: i === 1 ? 'left' : null }))
+  panel.simulateReport({ people: room })
+  await wait(400)
+  await js(`document.getElementById('sec-room').scrollIntoView({ block: 'start' }); true`)
+  await wait(300)
+  checks.peopleListed = await js('document.querySelectorAll(".person").length')
+  checks.neighbourLeft = await js(`document.querySelector('#nb-left .nb-name').textContent`)
+  await shot('13-room-people')
+  await js(`document.querySelector('.person[data-id="peer-0"]').click(); true`)
+  await wait(400)
+  checks.coworkAsking = await js(`document.getElementById('cowork-note').textContent`)
+  panel.simulateReport({ people: room.map(p => p.id === 'peer-0' ? { ...p, side: 'right' } : p) })
+  await wait(500)
+  checks.coworkConfirm = await js(`document.getElementById('cowork-note').textContent`)
+  checks.neighbourRight = await js(`document.querySelector('#nb-right .nb-name').textContent`)
+  await js(`document.getElementById('sit-next').scrollIntoView({ block: 'start' }); true`)
+  await wait(300)
+  await shot('14-cowork-confirmed')
   // Recall.
   await js(`document.getElementById('sec-header').scrollIntoView(); document.getElementById('recall').click(); true`)
   await wait(1500)
@@ -419,7 +490,7 @@ async function selfTest (panel, { dir, userData }) {
   checks.restored = saved.dnd === false && saved.mode === 'free' && (!firstRef || !saved.hidden.includes(firstRef))
   await shot('12-restored')
   const errors = panel.errors()
-  const ok = checks.sectionsPresent && checks.sharingMode === 'ask' && checks.dndSaved === true && checks.dndUi === true &&
+  const ok = checks.sectionsPresent && checks.coworkConfirm === 'Now next to Bea →' && checks.neighbourLeft === 'Sam' && checks.sharingMode === 'ask' && checks.dndSaved === true && checks.dndUi === true &&
     checks.restored && checks.hiddenSaved !== false && checks.terminalLines > 0 && errors.length === 0
   fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify({ ok, checks, errors, at: new Date().toISOString() }, null, 2))
   console.log(`panel self-test: ${ok ? 'ok' : 'FAILED'} ${JSON.stringify(checks)} errors=${errors.length} -> ${dir}`)

@@ -44,6 +44,11 @@
 
     <section id="sec-room" class="sec">
       <h2>Room</h2>
+      <div class="neighbours" id="neighbours" aria-label="Who sits beside you">
+        <span class="nb left" id="nb-left"><span class="nb-arrow">←</span><span class="nb-name">nobody</span></span>
+        <span class="nb you"><canvas id="nb-me" width="32" height="32"></canvas><span>you</span></span>
+        <span class="nb right" id="nb-right"><span class="nb-name">nobody</span><span class="nb-arrow">→</span></span>
+      </div>
       <div class="row">
         <code class="room-code" id="room-code">dde-ldn</code>
         <button class="btn small" id="room-copy">Copy</button>
@@ -67,6 +72,9 @@
         <button class="btn small icon" id="align-up" title="Move the pane up">▲</button>
         <button class="btn small icon" id="align-down" title="Move the pane down">▼</button>
       </div>
+      <h3 class="sub-h" id="sit-next">Sit next to…</h3>
+      <div class="cowork-note" id="cowork-note" aria-live="polite" hidden></div>
+      <ul class="people" id="people"><li class="muted">Nobody else is online in this room yet.</li></ul>
     </section>
 
     <section id="sec-dnd" class="sec">

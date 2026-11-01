@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { PANEL, anchorBounds, recallReply, rolloutEntries, statusLine, tailRollouts } from './panel-core.js'
+import { PANEL, anchorBounds, coworkText, neighboursOf, normalizePeople, recallReply, rolloutEntries, statusLine, tailRollouts } from './panel-core.js'
 import { mayShare, readSharing, shareable, writeSharing } from './sharing.js'
 
 const workArea = { x: 0, y: 25, width: 1440, height: 875 }
@@ -93,4 +93,23 @@ test('sharing settings persist and filter what the room sees', () => {
     fs.writeFileSync(path.join(dir, 'sharing.json'), '{broken')
     assert.equal(readSharing(dir).mode, 'free')
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('sit next to: the room list puts neighbours first, drops me and the away, and confirms with an arrow', () => {
+  const people = normalizePeople([
+    { id: 'me', name: 'Me', isMe: true },
+    { id: 'z', displayName: 'Zed', status: 'idle' },
+    { id: 'b', name: 'Bea', status: 'working', where: 'right' },
+    { id: 's', name: 'Sam', side: 'left', dnd: true },
+    { id: 'gone', name: 'Old', where: 'away' },
+    { id: 'b', name: 'Bea again' },
+  ])
+  assert.deepEqual(people.map(p => [p.id, p.side]), [['b', 'right'], ['s', 'left'], ['z', null]])
+  assert.equal(people[1].dnd, true)
+  const { left, right } = neighboursOf(people)
+  assert.equal(left.name, 'Sam'); assert.equal(right.name, 'Bea')
+  assert.equal(coworkText('Bea', 'right'), 'Now next to Bea →')
+  assert.equal(coworkText('Sam', 'left'), '← Now next to Sam')
+  assert.equal(coworkText('Ivo', null), 'Asking to sit next to Ivo…')
+  assert.deepEqual(normalizePeople(null), [])
 })

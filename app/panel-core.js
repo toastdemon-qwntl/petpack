@@ -60,6 +60,53 @@ export function statusLine (pane = {}, codexStatus = 'idle') {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Co-working: who is online in the room and who sits beside you.
+
+/**
+ * The pane's `people` report -> [{ id, name, spriteUrl, atlas, status, dnd, side: 'left'|'right'|null, bot }],
+ * neighbours first, then by name. Accepts `side`, or `where` ('left'|'right'|'far'|'away') as petpack_status has it.
+ */
+export function normalizePeople (list) {
+  if (!Array.isArray(list)) return []
+  const seen = new Set()
+  const out = []
+  for (const p of list) {
+    if (!p || typeof p !== 'object') continue
+    const id = p.id != null ? String(p.id) : null
+    if (!id || seen.has(id) || p.isMe || p.away === true || p.where === 'away') continue
+    seen.add(id)
+    const sideRaw = p.side ?? p.where
+    out.push({
+      id, name: String(p.name || p.displayName || 'a teammate').slice(0, 40),
+      spriteUrl: typeof p.spriteUrl === 'string' ? p.spriteUrl : (typeof p.sprite === 'string' ? p.sprite : null),
+      atlas: p.atlas && typeof p.atlas === 'object' ? p.atlas : null,
+      status: typeof p.status === 'string' ? p.status : 'idle', dnd: Boolean(p.dnd),
+      side: sideRaw === 'left' || sideRaw === 'right' ? sideRaw : null, bot: Boolean(p.bot || p.isBot),
+    })
+  }
+  const rank = p => (p.side ? 0 : 1)
+  return out.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
+}
+
+export function neighboursOf (people) {
+  const left = people.find(p => p.side === 'left') || null
+  const right = people.find(p => p.side === 'right') || null
+  return { left, right }
+}
+
+/** "Now next to Bea →" (Bea on your right) / "← Now next to Bea" (on your left). */
+export function coworkText (name, side) {
+  if (side === 'left') return `← Now next to ${name}`
+  if (side === 'right') return `Now next to ${name} →`
+  return `Asking to sit next to ${name}…`
+}
+
+/** A cheap signature so the popover only re-renders the list when it changed (sprites by length, not content). */
+export function peopleKey (people) {
+  return JSON.stringify(people.map(p => [p.id, p.name, p.status, p.dnd, p.side, p.spriteUrl ? p.spriteUrl.length : 0]))
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // Rollout lines -> terminal lines.
 
 const clip = (s, n = 96) => {
