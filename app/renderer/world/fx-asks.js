@@ -2,8 +2,8 @@
 const COLORS = { skill: '#ffcd78', memory: '#9be5d5', technique: '#d8d1fb', resource: '#ffc88a' }
 const THINK_AT = 1.05, ANSWER_AT = 1.45, GIFT_AT = 2.60, FLIGHT = .72
 
-/** Reserve both pets' message queues; independent conversations can run together. */
-export function createAsks(bubbles, gifts, pets) {
+/** Reserve both pets' queues and the pane's shared conversation turn. */
+export function createAsks(bubbles, gifts, pets, onGiftLaunch = () => {}) {
   const active = new Set()
   function finish(ask, result) {
     active.delete(ask)
@@ -35,6 +35,7 @@ export function createAsks(bubbles, gifts, pets) {
           : { status: ask.age >= THINK_AT ? 'working' : 'idle' })
         if (!ask.kind && ask.age >= GIFT_AT) { finish(ask, true); continue }
         if (ask.kind && ask.age >= GIFT_AT && !ask.flight) {
+          onGiftLaunch(ask.toId)
           // The answer names the useful thing; keep the dot itself unlabelled and readable.
           ask.flight = gifts.start(ask.toId, ask.fromId, { color: COLORS[ask.kind], duration: FLIGHT,
             kind: ask.kind, seed: ask.seed, label: '' })

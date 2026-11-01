@@ -152,5 +152,10 @@ export function signpost(p, x, z, icon = 'book', direction = 1) {
   rows.forEach((row, y) => [...row].forEach((v, ix) => {
     if (v === '1') p.box(x - .28 + ix * .069, 1.76 - y * .069, z + .14, .07, .07, .025, '#736343')
   }))
+  // North-side visitors see the same icon, not the back of an empty board.
+  p.box(x, 1.5, z - .102, 1, .73, .05, '#dec58f')
+  rows.forEach((row, y) => [...row].forEach((v, ix) => {
+    if (v === '1') p.box(x + .28 - ix * .069, 1.76 - y * .069, z - .14, .07, .07, .025, '#736343')
+  }))
   p.box(x + direction * .73, 1.48, z, .3, .3, .18, '#b89761', Math.PI / 4)
 }

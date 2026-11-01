@@ -26,7 +26,7 @@ function spring(state, goal, dt, frequency) {
   }
 }
 
-export function createStage(canvas, { pixelScale = 2, timeOfDay = null } = {}) {
+export function createStage(canvas, { pixelScale = 2, timeOfDay = null, flip = false } = {}) {
   pixelScale = Number.isFinite(pixelScale) ? Math.max(1, Math.round(pixelScale)) : 2
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true, powerPreference: 'low-power' })
   renderer.outputColorSpace = THREE.SRGBColorSpace
@@ -60,6 +60,12 @@ export function createStage(canvas, { pixelScale = 2, timeOfDay = null } = {}) {
   const z = { value: 0, velocity: 0 }
   const span = { value: 12, velocity: 0 }
   const goal = { x: 0, z: 0, span: 12 }
+  const yaw = { value: flip ? Math.PI : 0, velocity: 0 }
+  let flipped = !!flip
+  const right = new THREE.Vector3()
+  const cameraUp = new THREE.Vector3()
+  const back = new THREE.Vector3()
+  const focus = new THREE.Vector3()
   const offset = new THREE.Vector2()
   const aim = new THREE.Vector3()
   const projected = new THREE.Vector3()
@@ -93,17 +99,25 @@ export function createStage(canvas, { pixelScale = 2, timeOfDay = null } = {}) {
 
   function place() {
     const unit = span.value * pixelScale / width
-    const up = 0.65 * COS - z.value * SIN
-    const snappedX = Math.round(x.value / unit) * unit
+    // Snap the target in the actual camera basis, including during the swing.
+    // Exact endpoint axes avoid tiny sin(PI) errors at art-pixel boundaries.
+    const sy = yaw.value === Math.PI ? 0 : Math.sin(yaw.value)
+    const cy = yaw.value === Math.PI ? -1 : Math.cos(yaw.value)
+    right.set(cy, 0, -sy)
+    cameraUp.set(-sy * SIN, COS, -cy * SIN)
+    back.set(sy * COS, SIN, cy * COS)
+    focus.set(x.value, .65, z.value)
+    const across = focus.dot(right)
+    const up = focus.dot(cameraUp)
+    const snappedX = Math.round(across / unit) * unit
     const snappedUp = Math.round(up / unit) * unit
-    const deltaUp = snappedUp - up
-    aim.set(snappedX, 0.65 + deltaUp * COS, z.value - deltaUp * SIN)
+    aim.copy(focus).addScaledVector(right, snappedX - across).addScaledVector(cameraUp, snappedUp - up)
     camera.left = -artWidth * unit / 2
     camera.right = artWidth * unit / 2
     camera.top = artHeight * unit / 2
     camera.bottom = -artHeight * unit / 2
     camera.updateProjectionMatrix()
-    camera.position.set(aim.x, aim.y + SIN * 65, aim.z + COS * 65)
+    camera.position.copy(aim).addScaledVector(back, 65)
     camera.lookAt(aim)
     camera.updateMatrixWorld()
     // Keep shadow texels fixed in world space while covering the current view.
@@ -121,7 +135,7 @@ export function createStage(canvas, { pixelScale = 2, timeOfDay = null } = {}) {
     sun.target.position.copy(shadowCenter)
     sun.position.copy(shadowCenter).add(lightOffset)
     // Include the fractional spare pixel for odd pane sizes in the overscan crop.
-    offset.set((x.value - snappedX) / unit + (artWidth - width / pixelScale) / 2 - GUTTER,
+    offset.set((across - snappedX) / unit + (artWidth - width / pixelScale) / 2 - GUTTER,
       (up - snappedUp) / unit + (artHeight - height / pixelScale) / 2 - GUTTER)
     pipeline.setCamera(unit, offset, lightDirection)
   }
@@ -142,6 +156,15 @@ export function createStage(canvas, { pixelScale = 2, timeOfDay = null } = {}) {
   return {
     renderer, scene, camera, pixelScale,
     resize,
+    get flip() { return flipped },
+    // Use the framed point for chunk streaming: an orbiting camera's position
+    // is several chunks away from the village it is actually looking at.
+    get center() { return { x: x.value, z: z.value } },
+    setFlip(value) {
+      if (disposed) return false
+      flipped = !!value
+      return true
+    },
     get timeOfDay() { return scene.userData.petpackDaylight.hour },
     // null returns to the viewer's clock. Sampling is minute-boundary based,
     // including after sleep/resume; no timers survive stage disposal.
@@ -174,6 +197,11 @@ export function createStage(canvas, { pixelScale = 2, timeOfDay = null } = {}) {
       spring(x, goal.x, dt, 5.8)
       spring(z, goal.z, dt, 5.8)
       spring(span, goal.span, dt, 5)
+      const targetYaw = flipped ? Math.PI : 0
+      spring(yaw, targetYaw, dt, 14)
+      // The last .017 degrees are sub-pixel even at the pane's far corners.
+      // Settle exactly in ~.85 s so static views keep a perfectly stable grid.
+      if (Math.abs(yaw.value - targetYaw) < .0003) { yaw.value = targetYaw; yaw.velocity = 0 }
       place()
     },
     render() {

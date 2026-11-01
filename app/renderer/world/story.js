@@ -1,9 +1,8 @@
-export const DURATION = 72
-const INTRO = 12
+export const DURATION = 60
 export const PETS = [
-  { id: 'pip', displayName: 'Pip', color: '#6d99e5', kind: 'cat', skillCount: 3, homeSeat: 0 },
-  { id: 'cleo', displayName: 'Cleo', color: '#df706d', kind: 'cat', skillCount: 5, homeSeat: 1 },
-  { id: 'fern', displayName: 'Fern', color: '#80b291', kind: 'sprout', skillCount: 2, homeSeat: -1 },
+  { id: 'pip', displayName: 'Pip', color: '#6d99e5', kind: 'cat', skillCount: 3, memoryCount: 1, techniqueCount: 1, homeSeat: 0 },
+  { id: 'cleo', displayName: 'Cleo', color: '#df706d', kind: 'cat', skillCount: 5, memoryCount: 4, techniqueCount: 2, homeSeat: 1 },
+  { id: 'fern', displayName: 'Fern', color: '#80b291', kind: 'sprout', skillCount: 2, memoryCount: 2, techniqueCount: 3, homeSeat: 2 },
 ]
 const TEST_PET = { id: 'test', displayName: 'Pixel', color: '#85bac8', kind: 'cat', skillCount: 2, homeSeat: 0 }
 const between = (t, start, end) => t >= start && t < end
@@ -81,27 +80,27 @@ function itinerary(map, keys) {
   }
 }
 
-// One useful request, then the favour returned. Events have absolute timestamps
-// within the loop, so all panes receive exactly the same choreography.
-const REQUESTS = [
-  { at: 4.2, type: 'say', id: 'pip', text: 'Azure deploy is missing…' },
-  { at: 14.2, type: 'ask', from: 'pip', to: 'cleo', question: 'how do we ship to Azure?',
-    answer: 'my azure-deploy skill', kind: 'skill', label: 'azure-deploy' },
-  { at: 18, type: 'say', id: 'pip', text: 'learned azure-deploy' },
-  { at: 23.2, type: 'collab', from: 'pip', to: 'cleo', kind: 'memory', label: 'deployment checklist' },
-  { at: 27.2, type: 'say', id: 'pip', text: 'Got it. Thank you!' },
-  { at: 41.4, type: 'say', id: 'pip', text: 'Shipped to Azure!' },
-  { at: 48.4, type: 'say', id: 'cleo', text: 'Let’s improve it together.' },
-  { at: 49.3, type: 'collab', from: 'pip', to: 'cleo', kind: 'skill', label: 'a reusable deploy skill' },
-  { at: 53.1, type: 'say', id: 'cleo', text: 'Next time, one step.' },
-]
+// One useful request changes a pet's day. These beats use the same simulation
+// clock in every pane, including when a film jumps directly to a later frame.
 export const EVENTS = [
-  { at: .25, type: 'handshake', seat: 0, side: 'right' },
-  { at: 10, type: 'knock', id: 'pip', enabled: true },
-  { at: 15, type: 'knock', id: 'pip', enabled: false },
-  ...REQUESTS.map(event => ({ ...event, at: event.at + INTRO })),
-  { at: 50, type: 'celebrate', id: 'pip' },
-  { at: 65.4, type: 'gift', from: 'pip', to: 'cleo', kind: 'skill', label: 'reusable-deploy', color: '#ffcd78' },
+  { at: 0, type: 'sleep', ids: ['pip', 'cleo'], enabled: true },
+  { at: .6, type: 'sleep', ids: ['pip', 'cleo'], enabled: false },
+  { at: .8, type: 'handshake', seat: 0, side: 'right' },
+  { at: 6.2, type: 'weather', id: 'pip', weather: 'rain' },
+  { at: 6.3, type: 'say', id: 'pip', text: 'Deploy is stuck…' },
+  { at: 14.2, type: 'ask', from: 'pip', to: 'cleo', question: 'How do I deploy?',
+    answer: 'Use azure-deploy.', kind: 'skill', label: 'azure-deploy' },
+  { at: 17.7, type: 'weather', id: 'pip', weather: 'rainbow' },
+  { at: 18.7, type: 'collab', from: 'pip', to: 'cleo', kind: 'memory', label: 'deployment checklist' },
+  { at: 22.1, type: 'say', id: 'pip', text: 'Got it. Thank you!' },
+  { at: 31.5, type: 'celebrate', id: 'pip' },
+  { at: 34.6, type: 'say', id: 'pip', text: 'Shipped to Azure!' },
+  { at: 36, type: 'knock', id: 'cleo', enabled: true },
+  { at: 37.8, type: 'say', id: 'cleo', text: 'Need you for a moment.' },
+  { at: 40.5, type: 'knock', id: 'cleo', enabled: false },
+  { at: 42, type: 'arrive', id: 'fern', mode: 'balloon' },
+  { at: 47.5, type: 'say', id: 'fern', text: 'Hello, neighbours!' },
+  { at: 49.5, type: 'conga', ids: ['pip', 'cleo', 'fern'], durationS: 10 },
 ].sort((a, b) => a.at - b.at)
 
 const giftColors = { skill: '#ffcd78', memory: '#9be5d5', technique: '#d8d1fb', resource: '#ffc88a' }
@@ -143,48 +142,48 @@ export function createStory(map, { testPet = false } = {}) {
   const pipHome = offset(workshop, -1.35, 0)
   const cleoHome = offset(library, 1.35, 0)
   const pipVisit = offset(library, -1.35, 0)
-  const cleoVisit = offset(workshop, 1.35, 0)
   // Until the map lane lands its strip, keep this file loadable with the old map.
   const routes = map.landmark ? map : { path: (a, b) => [a, b] }
   const positions = {
-    pip: itinerary(routes, [key(0, pipHome), key(6, pipHome), key(14, pipVisit),
-      key(28, pipVisit), key(36, pipHome), key(60, pipHome)]),
-    cleo: itinerary(routes, [key(0, cleoHome), key(41, cleoHome), key(48, cleoVisit),
-      key(54, cleoVisit), key(60, cleoHome)]),
-    fern: itinerary(routes, [key(0, { x: -20, z: 2.2 }), key(9, { x: -20, z: 2.2 }),
-      key(20, { x: -4.6, z: 2.2 }), key(22, { x: -4.6, z: 2.2 }),
-      key(40, { x: 19.5, z: 2.2 }), key(42, { x: 19.5, z: 2.2 }),
-      key(59, { x: 39, z: 2.2 }), key(60, { x: 39, z: 2.2 })]),
+    pip: itinerary(routes, [key(0, { x: 5.3, z: 1.5 }), key(2.4, { x: 5.3, z: 1.5 }),
+      key(6, pipHome), key(8, pipHome), key(14, pipVisit), key(23, pipVisit),
+      key(29, pipHome), key(60, pipHome)]),
+    cleo: itinerary(routes, [key(0, { x: 8.7, z: 1.5 }), key(2.4, { x: 8.7, z: 1.5 }),
+      key(6, cleoHome), key(60, cleoHome)]),
+    fern: itinerary(routes, [key(0, offset(library, 4.4, 0)), key(60, offset(library, 4.4, 0))]),
     test: itinerary(routes, [key(0, offset(workshop, -3.2, .65)),
       key(30, offset(workshop, -3.2, .65)), key(38, offset(library, -3.2, .65)),
       key(50, offset(library, -3.2, .65)), key(60, offset(workshop, -3.2, .65))]),
   }
   function sample(time) {
-    const t = Math.max(0, loopTime(time) - INTRO)
-    return [...PETS, ...(testPet ? [TEST_PET] : [])].map(pet => {
+    const t = loopTime(time)
+    return [...PETS, ...(testPet ? [TEST_PET] : [])].filter(pet => pet.id !== 'fern' || t >= 42).map(pet => {
       const pose = positions[pet.id](t)
-      let anim = pose.speed > .07 ? 'run' : 'idle', status = 'idle', skillCount = pet.skillCount
+      let anim = pose.speed > .07 ? 'run' : 'idle', status = 'idle', skillCount = pet.skillCount, hat = 0
       if (pet.id === 'pip') {
-        status = t < 4 ? 'working' : t < 17.6 ? 'waiting' : t < 23.2 ? 'idle' : t < 28 ? 'working'
-          : t < 36 ? 'idle' : t < 38 ? 'working' : t < 41 ? 'done'
-            : between(t, 49.3, 53) ? 'working' : 'idle'
-        if (between(t, 4, 6)) anim = 'waiting'
-        if (between(t, 14, 23.2)) anim = 'waiting'
-        if (between(t, 23.2, 27.2)) anim = 'review'
-        if (between(t, 38, 39.2)) anim = 'jump'
-        if (between(t, 39.2, 41)) anim = 'wave'
-        if (between(t, 49.3, 53)) anim = 'review'
-        if (t >= 17.6) skillCount++
+        status = t < 5.6 ? 'idle' : t < 6.2 ? 'working' : t < 8 ? 'failed'
+          : t < 17.6 ? 'waiting' : t < 18.7 ? 'idle' : t < 22.1 ? 'working'
+            : t < 29 ? 'idle' : t < 31.5 ? 'working' : 'done'
+        if (between(t, 6.2, 8)) anim = 'failed'
+        if (between(t, 14, 17.6)) anim = 'waiting'
+        if (between(t, 18.7, 22.1) || between(t, 29, 31.5)) anim = 'review'
+        if (t >= 17.6) { skillCount++; hat = 3 }
         if (pose.speed < .07) pose.facing = 1
       } else if (pet.id === 'cleo') {
-        if (between(t, 14.75, 17.6) || between(t, 23.2, 27.2) || between(t, 49.3, 53)) { status = 'working'; anim = 'review' }
-        if (between(t, 27.2, 28) || between(t, 53, 54)) anim = 'wave'
-        if (t >= 53) skillCount++
+        if (between(t, 15.25, 17.6) || between(t, 18.7, 22.1)) { status = 'working'; anim = 'review' }
+        if (between(t, 36, 40.5)) { status = 'waiting'; anim = 'waiting' }
+        if (t >= 40.5) status = 'done'
         if (pose.speed < .07) pose.facing = -1
       } else if (pet.id === 'fern') {
-        if (between(t, 20, 22) || between(t, 40, 42)) anim = 'wave'
+        anim = t < 47.4 ? 'wave' : 'idle'
+        status = t < 49.2 ? 'idle' : 'done'
       }
-      return { ...pet, ...pose, anim, status, skillCount }
+      if (t >= 49.2) status = 'done'
+      // The task remains done while its celebration takes the visual foreground.
+      // Speech still works; persistent status badges yield to clouds and confetti.
+      const showStatus = t >= 6 && !between(t, 42, 47.5) && t < 49.5 &&
+        !(pet.id === 'pip' && (between(t, 6.2, 14.2) || between(t, 17.7, 23) || between(t, 31.5, 34.6)))
+      return { ...pet, ...pose, anim, status, skillCount, hat, showStatus }
     })
   }
   return { duration: DURATION, sample, events: storyEvents, focus: () => [] }

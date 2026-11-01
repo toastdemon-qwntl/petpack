@@ -65,14 +65,17 @@ export function createNightLights(parent, { lamps = [], ground, waterShape }) {
   })
   pool.computeBoundingSphere(); root.add(pool)
   // The original lantern housing is opaque. A night-only inset face puts light
-  // in front of that housing without changing any of its locked daytime pixels.
+  // on both faces without changing any of its locked daytime pixels.
   const faces = new THREE.InstancedMesh(new THREE.PlaneGeometry(.23, .33),
-    new THREE.MeshBasicMaterial({ color: '#ffdc8b', transparent: true, opacity: 0, depthWrite: false, toneMapped: false }), panels.length)
+    new THREE.MeshBasicMaterial({ color: '#ffdc8b', transparent: true, opacity: 0, depthWrite: false, toneMapped: false }), panels.length * 2)
   faces.name = 'lit-lantern-faces'
   faces.userData.noOutline = true
   panels.forEach((p, i) => {
-    dummy.position.set(p.x, 1.44, p.z + .158)
-    dummy.updateMatrix(); faces.setMatrixAt(i, dummy.matrix)
+    for (const [face, direction] of [[0, 1], [1, -1]]) {
+      dummy.position.set(p.x, 1.44, p.z + .158 * direction)
+      dummy.rotation.y = face * Math.PI
+      dummy.updateMatrix(); faces.setMatrixAt(i * 2 + face, dummy.matrix)
+    }
   })
   faces.computeBoundingSphere(); root.add(faces)
   let disposed = false
