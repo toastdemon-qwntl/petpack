@@ -20,11 +20,21 @@
 //             x: number, z: number, facing: 1|-1, anim: string, status: string,
 //             answers: boolean /* true: this peer answers `ask` (Q4, --no-answer turns it off) */ }} Peer
 // @typedef {{ id: string, name: string, color: string, catalog: Item[], lastSeen: number /* ms epoch */ }} Away
+// @typedef {{ id: string, name: string, color: string, sprite: string|null, spriteSha: string|null, seat: number|null,
+//             x: number, z: number, facing: 1|-1, status: string, lastSeen: number, online: boolean, away: boolean }} Agent
+//             // the device registry: one agent per id, absolute world position, kept 24 h after its owner leaves.
+//             // welcome.you.resumed = this id is in the registry: start your agent at you.x/z/facing, not at home.
 // @typedef {[string, string]} Link     // [leftId, rightId]: two laptops physically side by side, left one first
 //
 // Client -> server
 //   hello   { t, v, id, room|null, seat|null, dock, name, color, status, skills, catalog,
-//             sprite: { sha, b64 } | { sha } | null, answers, x?, z?, facing?, anim? }
+//             sprite: { sha, b64 } | { sha } | null, answers, x?, z?, facing?, anim?, device?, spectator? }
+//           id = the device's stable agent id (persisted per profile). device = optional fingerprint string (<= 128,
+//           e.g. sha256(machine id + profile)); used to derive the id ('d-' + 24 hex) only when id is missing.
+//           One live agent per id: a second hello with the same id (reconnect, second pane, MCP overlay, restart)
+//           takes the agent over; the old socket closes 4409 'replaced' and must NOT reconnect; the room sees no
+//           leave/join. spectator: true = read-only watcher (no seat, not an agent): gets welcome + every room
+//           broadcast and all state unfiltered, sends nothing (anything it sends is ignored).
 //           room null (or a legacy auto room 'net-<8 hex>') = DEFAULT_ROOM 'dde-ldn', the one room everyone shares;
 //           an explicit --room code wins and sticks. dock 'none' = headless/probe client: never dock-linked.
 //           seat = the last seat (reconnect) or --seat; welcome is authoritative.
@@ -42,11 +52,14 @@
 //   fx      { t, kind: FX_KINDS[number], ...anything }  learned: { kind:'learned', skill: Skill } also updates skills
 //
 // Server -> client
-//   welcome { t, v, room, you: { id, seat }, peers: Peer[] /* online, not you */, away: Away[], links: Link[],
+//   welcome { t, v, room, you: { id, seat, x, z, facing, resumed, takeover }, peers: Peer[] /* online, not you */,
+//             away: Away[] /* + x, z, facing, sprite, seat, status, away: true */, agents: Agent[] /* registry, not you */,
+//             links: Link[],
 //             seats: { [id]: seat } /* online */, held: { [id]: seat } /* away, seat held 10 min */ }
 //   join    { t, v, peer: Peer }
-//   leave   { t, v, id, lastSeen }               the leaver's catalog stays as `away` for 24 h
-//   state   { t, v, pets: [{ id, x, z, facing, anim, status }] }   room batch every 100 ms, changed pets only,
+//   leave   { t, v, id, lastSeen, away?, x?, z?, facing? }   away: true = it stays in the world, napping at x/z
+//           (catalog stays searchable) for 24 h; it never moves until its owner is back. No away = gone (a probe).
+//   state   { t, v, pets: [{ id, x, z, facing, anim, status, away? }] }   room batch every 100 ms, changed pets only,
 //                                                 never your own; above 16 members only pets in your chunk +-1
 //   seat    { t, v, seats, held, links, why: SEAT_WHY[number], ids? }
 //           why 'bump' with nothing changed = shrug (ids = the pets that shrug). After any seat message every pane
@@ -122,7 +135,7 @@ export const DOCK_PAIR_WINDOW_MS = 60 * 1000 // dock auto-link pairs right+left 
 export const CLOSE = Object.freeze({
   normal: 1000,
   badFrame: 4400,
-  replaced: 4409,   // the same id connected again; the newer socket wins
+  replaced: 4409,   // the same id connected again; the newer socket wins and the old client stops (no reconnect)
   tooBig: 4413
 })
 

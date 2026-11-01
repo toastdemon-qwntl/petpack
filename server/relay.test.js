@@ -375,6 +375,91 @@ test('busy room: dock auto-link pairs the most recent opposite dock within the w
   await r.close()
 })
 
+test('never duplicated: the same id again takes the agent over, no leave/join churn, the old client stops', async () => {
+  const { createNet } = await import('./net-failover.js')
+  const b = await client({ id: 'dup-b', room: 'dup' })
+  const statuses = []
+  const old = createNet({ urls: [url], hello: () => ({ t: 'hello', v: 2, id: 'dup-a', room: 'dup', name: 'Rex' }), onStatus: (s) => statuses.push(s), random: () => 0 })
+  old.connect()
+  await b.next((m) => m.t === 'join' && m.peer.id === 'dup-a')
+  old.send({ t: 'state', x: 9.5, z: 1.25, facing: -1, anim: 'run', status: 'working' })
+  await b.next(has('dup-a'))
+  const second = await client({ id: 'dup-a', room: 'dup', x: 0, z: 0 }) // e.g. a second pane, sending its home
+  assert.equal(second.welcome.you.takeover, true)
+  assert.equal(second.welcome.you.resumed, true)
+  assert.deepEqual([second.welcome.you.x, second.welcome.you.z, second.welcome.you.facing], [9.5, 1.25, -1])
+  const third = await client({ id: 'dup-a', room: 'dup' }) // e.g. an MCP-launched overlay
+  assert.equal(await second.closed(), 4409)
+  await sleep(1500) // longer than the old client's first reconnect delay
+  assert.equal(old.status, 'replaced'); assert.ok(!old.connected, 'the replaced client does not fight back')
+  assert.ok(await b.none((m) => (m.t === 'leave' || m.t === 'join') && (m.id === 'dup-a' || m.peer?.id === 'dup-a'), 50), 'no churn')
+  const room = relay.rooms.get('dup')
+  assert.equal([...room.members.values()].filter((m) => m.id === 'dup-a').length, 1)
+  assert.equal([...room.members.values()].filter((m) => m.online).length, 2, 'one live agent per id')
+  await third.close(); await b.close(); old.close()
+})
+
+test('absolute positions: an agent naps where it stopped and resumes there next session', async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'petpack-registry-'))
+  let r = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir, saveMs: 20, posSaveMs: 20 })
+  let u = (await r.listen()).url
+  const a = await client({ id: 'pos-a', room: 'pos', x: 0, z: 0 }, u)
+  const b = await client({ id: 'pos-b', room: 'pos' }, u)
+  assert.equal(a.welcome.you.resumed, false)
+  a.send({ t: 'state', x: 23.5, z: -2, facing: -1, anim: 'run', status: 'working' })
+  await b.next(has('pos-a'))
+  await a.close()
+  const lv = await b.next((m) => m.t === 'leave' && m.id === 'pos-a')
+  assert.deepEqual([lv.away, lv.x, lv.z], [true, 23.5, -2])
+  const nap = await b.next((m) => m.t === 'state' && m.pets.some((p) => p.id === 'pos-a' && p.away))
+  assert.equal(nap.pets.find((p) => p.id === 'pos-a').x, 23.5)
+  const c = await client({ id: 'pos-c', room: 'pos' }, u)
+  const ag = c.welcome.agents.find((x) => x.id === 'pos-a')
+  assert.deepEqual([ag.away, ag.online, ag.x, ag.z, ag.facing], [true, false, 23.5, -2, -1])
+  assert.equal(c.welcome.away.find((x) => x.id === 'pos-a').x, 23.5)
+  await b.close(); await c.close()
+  await sleep(50)
+  await r.close() // a relay restart in between: the registry is on disk
+  r = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir })
+  u = (await r.listen()).url
+  const a2 = await client({ id: 'pos-a', room: 'pos', x: 0, z: 0 }, u) // its client sends home; the registry wins
+  assert.equal(a2.welcome.you.resumed, true)
+  assert.deepEqual([a2.welcome.you.x, a2.welcome.you.z, a2.welcome.you.facing], [23.5, -2, -1])
+  await a2.close(); await r.close()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('a spectator sees every agent on every seat, read-only, with no seat', async () => {
+  const r = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: null, chunkFilterAbove: 1 })
+  const u = (await r.listen()).url
+  const a = await client({ id: 'sp-1', room: null }, u)
+  const b = await client({ id: 'sp-2', room: null }, u)
+  const s = await client({ id: 'ignored', room: null, spectator: true }, u)
+  assert.equal(s.welcome.room, DEFAULT_ROOM)
+  assert.equal(s.welcome.you.spectator, true); assert.equal(s.welcome.you.seat, null)
+  assert.deepEqual(new Set(s.welcome.agents.map((x) => x.id)), new Set(['sp-1', 'sp-2']))
+  assert.ok(!('ignored' in s.welcome.seats))
+  assert.ok(await a.none((m) => m.t === 'join' && m.peer.id !== 'sp-2', 100), 'a spectator is not an agent: no join')
+  a.send({ t: 'state', x: 140, z: 0, facing: 1, anim: 'run', status: 'idle' }) // chunk 10: filtered for b, not for s
+  const st = await s.next(has('sp-1'))
+  assert.equal(st.pets.find((p) => p.id === 'sp-1').x, 140)
+  b.send({ t: 'fx', kind: 'wave' })
+  assert.equal((await s.next((m) => m.t === 'fx')).from, 'sp-2')
+  s.send({ t: 'state', x: 1, z: 1, facing: 1, anim: 'run', status: 'idle' })
+  s.send({ t: 'fx', kind: 'say', text: 'hi' })
+  assert.ok(await b.none((m) => m.t === 'fx' && m.kind === 'say', 200), 'spectators send nothing')
+  const h = await (await fetch(u.replace('ws:', 'http:').replace('/ws', '/healthz'))).json()
+  assert.equal(h.online, 2); assert.equal(h.spectators, 1)
+  await b.close()
+  const lv = await s.next((m) => m.t === 'leave' && m.id === 'sp-2')
+  assert.equal(lv.away, true)
+  await Promise.all([a.close(), s.close()])
+  await r.close()
+})
+
 test('a legacy per-network room on disk folds into the one room as away members', async () => {
   const fs = await import('node:fs')
   const os = await import('node:os')

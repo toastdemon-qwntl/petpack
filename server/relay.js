@@ -88,6 +88,7 @@ export function createRelay (opts = {}) {
     chunkFilterAbove: opts.chunkFilterAbove ?? P.CHUNK_FILTER_ABOVE,
     log: opts.log ?? ((...a) => console.log(new Date().toISOString(), ...a)),
     dataDir: opts.dataDir !== undefined ? opts.dataDir : defaultDataDir(),
+    posSaveMs: opts.posSaveMs ?? 5000,
     saveMs: opts.saveMs ?? 1000,
     name: opts.name ?? process.env.PETPACK_RELAY_NAME ?? process.env.WEBSITE_SITE_NAME ?? process.env.CONTAINER_APP_NAME ?? 'local',
     region: opts.region ?? process.env.PETPACK_REGION ?? process.env.REGION_NAME ?? null
@@ -115,9 +116,9 @@ export function createRelay (opts = {}) {
     const body = JSON.stringify({ key, sha: v.sha, text: v.text, pkg: v.pkg, at: v.at })
     fs.writeFile(path.join(dirs.cache, keyFile(key)), body, (e) => e && cfg.log('cache save failed', e.message))
   }
-  function markDirty () {
+  function markDirty (delay = cfg.saveMs) {
     if (!dirs || saveTimer || closing) return
-    saveTimer = setTimeout(() => { saveTimer = null; saveRooms() }, cfg.saveMs)
+    saveTimer = setTimeout(() => { saveTimer = null; saveRooms() }, delay)
     saveTimer.unref?.()
   }
   function saveRooms () {
@@ -130,7 +131,8 @@ export function createRelay (opts = {}) {
           name: r.name, links: r.links,
           members: [...r.members.values()].map((m) => ({
             id: m.id, name: m.name, color: m.color, dock: m.dock, skills: m.skills, catalog: m.catalog,
-            sprite: m.sprite, seat: m.seat, lastSeen: m.online ? now() : m.lastSeen
+            sprite: m.sprite, spriteSha: m.spriteSha ?? null, device: m.device ?? null, seat: m.seat, lastSeen: m.online ? now() : m.lastSeen,
+            x: m.x, z: m.z, facing: m.facing, status: m.status
           }))
         }))
       }
@@ -161,8 +163,9 @@ export function createRelay (opts = {}) {
               skills: arr(s.skills), catalog: arr(s.catalog), sprite: typeof s.sprite === 'string' ? s.sprite : null,
               seat: !fold && Number.isInteger(s.seat) ? s.seat : null, lastSeen: s.lastSeen || t,
               heldUntil: t + cfg.seatHoldMs, // a restart is not their fault: everyone gets a fresh hold
-              online: false, ws: null, dirty: false, answers: true, status: 'idle', anim: 'idle', facing: 1,
-              x: P.seatCenterX(Number.isInteger(s.seat) ? s.seat : 0), z: 0
+              online: false, ws: null, dirty: false, answers: true, status: P.STATUSES.includes(s.status) ? s.status : 'idle', anim: 'idle',
+              facing: s.facing === -1 ? -1 : 1, spriteSha: typeof s.spriteSha === 'string' ? s.spriteSha : null, device: typeof s.device === 'string' ? s.device : null,
+              x: Number.isFinite(s.x) ? s.x : P.seatCenterX(Number.isInteger(s.seat) ? s.seat : 0), z: Number.isFinite(s.z) ? s.z : 0
             })
             byId.set(s.id, name)
           }
@@ -196,7 +199,7 @@ export function createRelay (opts = {}) {
   function getRoom (name) {
     let r = rooms.get(name)
     if (!r) {
-      r = { name, members: new Map(), links: [], bumps: [], fetches: new Map(), asks: new Map() }
+      r = { name, members: new Map(), links: [], bumps: [], fetches: new Map(), asks: new Map(), spectators: new Set() }
       rooms.set(name, r)
     }
     return r
@@ -208,18 +211,35 @@ export function createRelay (opts = {}) {
   function peerView (m) {
     return {
       id: m.id, name: m.name, color: m.color, seat: m.seat, dock: m.dock, skills: m.skills, catalog: m.catalog,
-      sprite: m.sprite, x: m.x, z: m.z, facing: m.facing, anim: m.anim, status: m.status, answers: m.answers
+      sprite: m.sprite, x: m.x, z: m.z, facing: m.facing, anim: m.anim, status: m.status, answers: m.answers,
+      ...(m.online ? {} : { away: true, lastSeen: m.lastSeen })
     }
   }
+
+  // the device registry: one agent per id, with its absolute world position, online or napping where it stopped
+  function agentView (m) {
+    return {
+      id: m.id, name: m.name, color: m.color, sprite: m.sprite, spriteSha: m.spriteSha ?? null, seat: m.seat,
+      x: m.x, z: m.z, facing: m.facing, status: m.status, lastSeen: m.lastSeen, online: !!m.online, away: !m.online
+    }
+  }
+
+  const awayView = (m) => ({
+    id: m.id, name: m.name, color: m.color, catalog: m.catalog, lastSeen: m.lastSeen, away: true,
+    sprite: m.sprite, seat: m.seat, x: m.x, z: m.z, facing: m.facing, status: m.status, skills: m.skills
+  })
 
   function send (m, msg) {
     if (!m || !m.ws || m.ws.readyState !== 1) return
     m.ws.send(typeof msg === 'string' ? msg : P.encode(msg))
   }
 
+  function sendWs (ws, data) { if (ws.readyState === 1) ws.send(data) }
+
   function broadcast (room, msg, exceptId = null) {
     const data = P.encode(msg)
     for (const m of room.members.values()) if (m.online && m.id !== exceptId) send(m, data)
+    for (const ws of room.spectators) sendWs(ws, data) // spectators see everything the room sees
   }
 
   // ---- seats: chains of linked laptops, one empty chunk between chains, never compacted ---------------------------
@@ -355,8 +375,33 @@ export function createRelay (opts = {}) {
     return sha ? P.spriteUrl(baseUrl(req), sha) : null
   }
 
+  function registryViews (room) {
+    const t = now()
+    const all = [...room.members.values()].filter((x) => x.online || t - x.lastSeen <= cfg.awayTtlMs)
+    return {
+      peers: all.filter((x) => x.online).map(peerView),
+      away: all.filter((x) => !x.online).map(awayView),
+      agents: all.map(agentView),
+      links: room.links.map((l) => [...l]),
+      seats: seatMsg(room, 'join').seats,
+      held: seatMsg(room, 'join').held
+    }
+  }
+
+  function onSpectator (ws, h) {
+    const roomName = P.roomFor(h.room)
+    const room = getRoom(roomName)
+    room.spectators.add(ws)
+    ws._petpack = { room, spectator: true }
+    sendWs(ws, P.encode({ t: 'welcome', room: roomName, you: { id: null, spectator: true, seat: null }, ...registryViews(room) }))
+    cfg.log('spectator', roomName, room.spectators.size)
+  }
+
   function onHello (ws, req, h) {
-    const id = /^[\w.-]{1,64}$/.test(h.id || '') ? h.id : P.rid('p')
+    if (h.spectator === true) { onSpectator(ws, h); return }
+    const device = typeof h.device === 'string' && h.device ? h.device.slice(0, 128) : null
+    const id = /^[\w.-]{1,64}$/.test(h.id || '') ? h.id
+      : device ? 'd-' + crypto.createHash('sha256').update(device).digest('hex').slice(0, 24) : P.rid('p')
     const roomName = P.roomFor(h.room) // no room or a legacy 'net-…' auto room: the one shared DEFAULT_ROOM
 
     // one live record per id: a reconnect replaces the old socket; another room drops the old record
@@ -377,19 +422,22 @@ export function createRelay (opts = {}) {
     const wasOnline = !!m?.online
     const prevDock = m?.dock
     const before = snapshot(room)
+    const known = !!m && Number.isFinite(m.x) && Number.isFinite(m.z) // in the registry: resume where it stopped
     if (!m) {
-      m = { id, seat: null, skills: [], catalog: [] }
+      m = { id, seat: null, skills: [], catalog: [], sprite: null }
       room.members.set(id, m)
     }
     byId.set(id, roomName)
+    const sprite = takeSprite(h.sprite, req) ?? (h.sprite === undefined || h.sprite === null ? m.sprite : null)
     Object.assign(m, {
       ws, online: true, lastSeen: now(), heldUntil: 0, dirty: false,
-      name: str(h.name, 64, 'pet'), color: str(h.color, 32, '#7c5cff'),
+      name: str(h.name, 64, m.name || 'pet'), color: str(h.color, 32, m.color || '#7c5cff'),
       dock: P.DOCKS.includes(h.dock) ? h.dock : 'right',
-      skills: arr(h.skills), catalog: arr(h.catalog),
+      skills: Array.isArray(h.skills) ? h.skills : m.skills, catalog: Array.isArray(h.catalog) ? h.catalog : m.catalog,
       status: P.STATUSES.includes(h.status) ? h.status : 'idle',
       answers: h.answers !== false,
-      sprite: takeSprite(h.sprite, req)
+      sprite, spriteSha: sprite?.match(/\/s\/([a-f0-9]{64})/)?.[1] ?? null,
+      device: device ?? m.device ?? null
     })
     if (m.seat == null) {
       const req = Number.isInteger(h.seat) && h.seat >= 0 ? h.seat : null
@@ -405,21 +453,23 @@ export function createRelay (opts = {}) {
     ws._petpack = { room, m }
     if (!wasOnline || m.dockAt == null || prevDock !== m.dock) m.dockAt = now() // joined or re-docked
     const docked = dockAutoLink(room, m)
-    const fresh = m.x == null
-    m.x = num(h.x, fresh ? P.seatCenterX(m.seat) : m.x)
-    m.z = num(h.z, fresh ? 0 : m.z)
-    m.facing = h.facing === -1 ? -1 : 1
+    if (!known) { // a new agent starts where its client says, else at its seat's home
+      m.x = num(h.x, P.seatCenterX(m.seat))
+      m.z = num(h.z, 0)
+      m.facing = h.facing === -1 ? -1 : 1
+    } // a known agent resumes at its registry position (absolute, across sessions); the client adopts welcome.you
     m.anim = P.ANIMS.includes(h.anim) ? h.anim : 'idle'
 
+    const views = registryViews(room)
     send(m, {
-      t: 'welcome', room: roomName, you: { id, seat: m.seat },
-      peers: online(room).filter((x) => x.id !== id).map(peerView),
-      away: [...room.members.values()].filter((x) => !x.online && now() - x.lastSeen <= cfg.awayTtlMs)
-        .map((x) => ({ id: x.id, name: x.name, color: x.color, catalog: x.catalog, lastSeen: x.lastSeen })),
-      links: room.links.map((l) => [...l]),
-      seats: seatMsg(room, 'join').seats, held: seatMsg(room, 'join').held
+      t: 'welcome', room: roomName,
+      you: { id, seat: m.seat, x: m.x, z: m.z, facing: m.facing, resumed: known, takeover: wasOnline },
+      ...views,
+      peers: views.peers.filter((p) => p.id !== id),
+      agents: views.agents.filter((a) => a.id !== id)
     })
     if (!wasOnline) broadcast(room, { t: 'join', peer: peerView(m) }, id)
+    else m.dirty = true // a takeover: no join/leave churn, just a fresh state for everyone
     if (docked || snapshot(room) !== before || !wasOnline) broadcast(room, seatMsg(room, docked ? 'dock' : 'join'))
     cfg.log('hello', roomName, id, 'seat', m.seat, docked ? 'dock-linked' : '')
     markDirty()
@@ -428,9 +478,11 @@ export function createRelay (opts = {}) {
   function onClose (ws) {
     const ctx = ws._petpack
     if (!ctx || ws._petpackReplaced) return
+    if (ctx.spectator) { ctx.room.spectators.delete(ws); return }
     const { room, m } = ctx
     if (m.ws !== ws) return
     m.ws = null; m.online = false; m.lastSeen = now(); m.heldUntil = now() + cfg.seatHoldMs
+    m.dirty = true // the next state batch carries it as away: it naps where it stopped
     room.bumps = room.bumps.filter((b) => b.id !== m.id)
     for (const [k, f] of room.fetches) {
       if (f.owner === m.id) { room.fetches.delete(k); send(room.members.get(f.requester), { t: 'fetched', from: m.id, fid: f.fid, ok: false, reason: 'away', lastSeen: m.lastSeen }) }
@@ -444,7 +496,8 @@ export function createRelay (opts = {}) {
       room.members.delete(m.id); unlinkAll(room, m.id)
       if (byId.get(m.id) === room.name) byId.delete(m.id)
     }
-    broadcast(room, { t: 'leave', id: m.id, lastSeen: m.lastSeen })
+    const stays = room.members.has(m.id)
+    broadcast(room, { t: 'leave', id: m.id, lastSeen: m.lastSeen, ...(stays ? { away: true, x: m.x, z: m.z, facing: m.facing } : {}) })
     broadcast(room, seatMsg(room, 'leave'))
     cfg.log('leave', room.name, m.id)
     markDirty()
@@ -460,6 +513,7 @@ export function createRelay (opts = {}) {
       onHello(ws, req, msg)
       return
     }
+    if (ctx.spectator) return // read-only: a spectator sends nothing but pings
     const { room, m } = ctx
     if (m.ws !== ws) return
     m.lastSeen = now()
@@ -470,6 +524,7 @@ export function createRelay (opts = {}) {
         if (typeof msg.anim === 'string') m.anim = msg.anim.slice(0, 32)
         if (typeof msg.status === 'string') m.status = msg.status.slice(0, 32)
         m.dirty = true
+        markDirty(cfg.posSaveMs) // registry position, persisted at most every posSaveMs
         break
       }
       case 'seat': {
@@ -576,17 +631,21 @@ export function createRelay (opts = {}) {
   function flushState () {
     for (const room of rooms.values()) {
       const changed = []
-      for (const m of room.members.values()) if (m.dirty && m.online) { m.dirty = false; changed.push(m) }
+      for (const m of room.members.values()) if (m.dirty) { m.dirty = false; changed.push(m) }
       if (!changed.length) continue
       const live = online(room)
       const filter = live.length > cfg.chunkFilterAbove
-      const pet = (m) => ({ id: m.id, x: m.x, z: m.z, facing: m.facing, anim: m.anim, status: m.status })
-      const all = filter ? null : changed.map(pet)
+      const pet = (m) => ({ id: m.id, x: m.x, z: m.z, facing: m.facing, anim: m.anim, status: m.status, ...(m.online ? {} : { away: true }) })
+      const all = changed.map(pet)
       for (const r of live) {
         const pets = filter
           ? changed.filter((m) => m.id !== r.id && Math.abs(P.chunkOf(m.x) - (r.seat ?? 0)) <= 1).map(pet)
           : all.filter((p) => p.id !== r.id)
         if (pets.length) send(r, { t: 'state', pets })
+      }
+      if (room.spectators.size) { // spectators watch every seat, unfiltered
+        const data = P.encode({ t: 'state', pets: all })
+        for (const ws of room.spectators) sendWs(ws, data)
       }
     }
   }
@@ -603,7 +662,7 @@ export function createRelay (opts = {}) {
       for (const [k, a] of room.asks) if (t - a.at > cfg.answerTtlMs) room.asks.delete(k)
       for (const [k, f] of room.fetches) if (t - f.at > cfg.answerTtlMs) room.fetches.delete(k)
       if (seatsChanged) { broadcast(room, seatMsg(room, 'leave')); markDirty() }
-      if (!room.members.size) rooms.delete(name)
+      if (!room.members.size && !room.spectators.size) rooms.delete(name)
     }
   }
 
@@ -619,8 +678,10 @@ export function createRelay (opts = {}) {
       res.writeHead(200, { ...cors, 'content-type': 'application/json', 'cache-control': 'no-store' })
       let away = 0
       for (const r of rooms.values()) for (const m of r.members.values()) if (!m.online) away++
+      let spectators = 0
+      for (const r of rooms.values()) spectators += r.spectators.size
       res.end(JSON.stringify({
-        ok: true, v: P.PROTOCOL_VERSION, name: cfg.name, region: cfg.region, rooms: rooms.size, online: members, away,
+        ok: true, v: P.PROTOCOL_VERSION, name: cfg.name, region: cfg.region, rooms: rooms.size, online: members, away, spectators,
         cached: fetchCache.size, sprites: sprites.size, persisted: !!dirs, uptimeS: Math.round((now() - startedAt) / 1000)
       }))
       return
