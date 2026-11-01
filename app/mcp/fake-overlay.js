@@ -89,6 +89,7 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith
     onClient: (ev, client) => process.stderr.write(`fake-overlay client ${ev} ${JSON.stringify(client)}\n`),
     onCall: async (call) => {
       process.stderr.write(`fake-overlay call ${call.tool} ${JSON.stringify(call.args)}\n`)
+      if (call.tool === 'petpack_ask' && call.progress) { call.progress('Dot is walking to Rex\'s screen'); await new Promise((r) => setTimeout(r, 300)); call.progress('Rex is thinking'); await new Promise((r) => setTimeout(r, 300)) }
       return fakeOnCall(call)
     },
   })
