@@ -57,6 +57,14 @@ contextBridge.exposeInMainWorld('petpack', {
   readItem: (ref, as) => call('petpack:readItem', ref, as),
   answerAsk: request => call('petpack:answerAsk', request),
   savePhoto: dataUrl => call('petpack:savePhoto', dataUrl),
+  // Window collapse (COLLAPSE lane, app/window.js): commands in, window events out.
+  window: (cmd, arg) => ipcRenderer.invoke('petpack:window', cmd, arg),
+  onWindow: cb => {
+    if (typeof cb !== 'function') return () => {}
+    const h = (_e, ev) => cb(ev)
+    ipcRenderer.on('petpack:window-event', h)
+    return () => ipcRenderer.removeListener('petpack:window-event', h)
+  },
   onAgentCall(handler) {
     agentHandler = typeof handler === 'function' ? handler : null
     if (agentHandler) {

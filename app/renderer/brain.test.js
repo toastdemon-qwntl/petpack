@@ -256,6 +256,45 @@ test('joy: status moments, hats and blooms, handshake on link, conga when the wh
   assert.ok(seen.some(e => e[0] === 'conga'))
 })
 
+test('no relay and no demo: a quiet solo pane, no bots, and tools say the team is offline', async () => {
+  let execs = 0
+  const { brain, net } = makeBrain({ bridge: { answerAsk: async () => { execs++; return { ok: true, text: 'x' } } } })
+  brain.netStatus('solo')
+  await run(brain, 20, 0.25)
+  assert.deepEqual(brain.pets().map(p => p.id), ['me'], 'only our own pet')
+  const status = await brain.call('petpack_status')
+  assert.equal(status.offline, true)
+  assert.deepEqual(status.peers, [])
+  const search = await brain.call('petpack_search', { query: 'pdf tables' })
+  assert.deepEqual([search.offline, search.results], [true, []])
+  const ask = await brain.call('petpack_ask', { question: 'how do I extract tables from a PDF?' })
+  assert.equal(ask.answered_by, null)
+  assert.match(ask.answer, /offline/)
+  assert.equal((await brain.call('petpack_get', { id: 'rex/skill:azure-deploy' })).offline, true)
+  assert.equal(execs, 0)
+  assert.equal(net.sent.length, 0)
+  // Once a relay answers, the team is back.
+  welcome(brain)
+  assert.equal((await brain.call('petpack_search', { query: 'azure deploy' }))[0].owner, 'Rex')
+})
+
+test('events for the window collapse: visitors entering/leaving our chunk, involvement', async () => {
+  const { brain } = makeBrain()
+  const seen = []
+  for (const name of ['visitor-enter', 'visitor-leave', 'involved']) brain.on(name, e => seen.push([name, e]))
+  welcome(brain, [{ ...REX, seat: 1, x: 14 }])
+  brain.tick(0.1)
+  assert.equal(seen.length, 0, 'Rex is on his own screen')
+  brain.handle({ t: 'fx', from: 'rex', kind: 'pose', ts: Date.now(), x: 5, z: 1.5, m: 1 })
+  brain.tick(0.1)
+  assert.deepEqual(seen.at(-1), ['visitor-enter', { id: 'rex', name: 'Rex', bot: false }])
+  brain.handle({ t: 'fx', from: 'rex', kind: 'pose', ts: Date.now() + 1, x: 12, z: 1.5, m: 1 })
+  brain.tick(0.1)
+  assert.equal(seen.at(-1)[0], 'visitor-leave')
+  brain.handle({ t: 'fx', from: 'rex', kind: 'gift', src: 'rex', dst: 'me', dot: 'skill' })
+  assert.deepEqual(seen.at(-1), ['involved', { kind: 'gift', with: 'rex' }])
+})
+
 test('search and meet helpers', () => {
   const owners = [{ id: 'rex', name: 'Rex', online: false, catalog: REX.catalog }]
   const [hit] = searchCatalogs('windows click through', owners, { now: 0 })

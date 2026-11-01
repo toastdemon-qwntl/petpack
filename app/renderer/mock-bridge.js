@@ -1,7 +1,8 @@
 // A plain-browser stand-in for the Electron bridge (window.petpack). Query parameters:
 //   ?demo                 demo bots plus a fake Codex agent that calls the MCP tools
 //   &seat=0 &dock=right   seat and dock edge (dock defaults to right)
-//   &relay=ws://host:port/ws   relay to join (none: solo); &relay=local -> ws://<this host>:8787/ws
+//   &relay=ws://host:port/ws   relay(s) to join, comma-separated (none: solo); &relay=local -> ws://<this host>:8787/ws;
+//   &relay=live -> the built-in failover list (shared/protocol.js RELAYS)
 //   &room=code &name=Pip &id=fixed-id &status=working
 import { tier1Answer } from './brain.js'
 
@@ -20,7 +21,8 @@ export function installMockBridge(target = window) {
   if (relayUrl === 'local') relayUrl = `ws://${location.hostname || 'localhost'}:8787/ws`
   const seatParam = params.get('seat')
   const config = {
-    relayUrl: relayUrl || null,
+    relayUrl: relayUrl === 'live' ? undefined : relayUrl && !relayUrl.includes(',') ? relayUrl : null,
+    relays: relayUrl && relayUrl.includes(',') ? relayUrl.split(',').map(s => s.trim()).filter(Boolean) : undefined,
     room: params.get('room') || null,
     seat: seatParam != null && seatParam !== '' && Number.isFinite(Number(seatParam)) ? Math.trunc(Number(seatParam)) : null,
     demo,

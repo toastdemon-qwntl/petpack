@@ -1,6 +1,13 @@
 // The pack brain: simulates this laptop's own agent (plus local demo bots), broadcasts its
 // state, mirrors peers, and turns MCP tool calls into visible errands. No DOM, no three:
 // `node --test` drives it with a fake relay and a fake clock (brain.tick(dt)).
+//
+// Events: brain.on(name, cb) -> unsubscribe. Every view callback name also fires here, plus:
+//   'visitor-enter' / 'visitor-leave' ({ id, name, bot })  another pet walks into / out of this seat's chunk
+//   'knock'     (id, on)                                   a pet knocks (on=true) or stops; ours when Codex waits
+//   'involved'  ({ kind, with })                           a gift, fetch, ask or errand touches our own pet
+//                                                          (kind: 'gift'|'fetch'|'ask'|'errand'|'asked')
+//   'online'    ({ room, seat } | null)                    joined a relay / went solo
 import { createTerrain, createStripNavigation, ROAD_Z } from './world/map-paths.js'
 
 export const CHUNK_W = 14
@@ -215,7 +222,17 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   const pendingAsk = new Map() // qid -> { resolve, target, ... }
   const inbox = new Map() // qid -> { id, from, fromName, question, kind, at, answered }
   const giftLog = new Map() // receiver id -> { last, count }
-  const emit = (name, ...args) => { try { view[name]?.(...args) } catch (error) { console.warn('petpack view', name, error) } }
+  const listeners = new Map() // name -> Set(cb), see Events at the top
+  const emit = (name, ...args) => {
+    try { view[name]?.(...args) } catch (error) { console.warn('petpack view', name, error) }
+    for (const cb of listeners.get(name) || []) { try { cb(...args) } catch (error) { console.warn('petpack on', name, error) } }
+  }
+  const on = (name, cb) => {
+    if (typeof cb !== 'function') return () => {}
+    if (!listeners.has(name)) listeners.set(name, new Set())
+    listeners.get(name).add(cb)
+    return () => listeners.get(name)?.delete(cb)
+  }
   let seq = 0
   const uid = prefix => `${prefix}${Date.now().toString(36)}${(seq++).toString(36)}${Math.floor(random() * 1e6).toString(36)}`
 
@@ -462,6 +479,18 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     return true
   }
 
+  /** Other pets walking into / out of this seat's chunk (live positions, so a pane can open just ahead). */
+  const visitors = new Map() // id -> { id, name, bot }
+  function watchVisitors() {
+    const here = new Map()
+    for (const m of members()) {
+      if (!m.online || !Number.isFinite(m.x)) continue
+      if (Math.abs(m.x - mySeat * CHUNK_W) <= CHUNK_W / 2 + 0.6) here.set(m.id, { id: m.id, name: m.name, bot: !!m.isBot })
+    }
+    for (const [id, v] of here) if (!visitors.has(id)) { visitors.set(id, v); emit('visitor-enter', v) }
+    for (const [id, v] of visitors) if (!here.has(id)) { visitors.delete(id); emit('visitor-leave', v) }
+  }
+
   /** Stay at the meeting until the answer is out and the scene has played (caps keep it moving). */
   async function holdForScene(agent, job, answeredAt) {
     const started = time
@@ -473,6 +502,9 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     }
   }
   function showFx(kind, p) {
+    if ((kind === 'gift' || kind === 'fetch' || kind === 'ask') && (p.src === myId || p.dst === myId)) {
+      emit('involved', { kind, with: p.src === myId ? p.dst : p.src })
+    }
     // Text only for the moments that matter: the question, the answer and "learned X".
     // A dot blooms in the garden where it lands; one shared seed keeps every pane's garden identical.
     const knowledge = p.seed && KINDS.includes(p.dot) ? { kind: p.dot, seed: String(p.seed) } : {}
@@ -751,7 +783,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     emit('seat', seat, why)
   }
   function netStatus(state) {
-    // 'solo' when the relay is unreachable; bots keep the pane alive.
+    // 'solo' when no relay is reachable: our own pet and the world, quietly; the client keeps retrying.
+    // Demo bots exist only with --demo / ?demo, never as stand-ins for an offline team.
     if (state === 'solo' || state === 'offline') {
       if (online) {
         online = false
@@ -759,7 +792,6 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         for (const id of [...seats.keys()]) if (id !== myId) seats.delete(id)
         seatedCache = null
       }
-      if (config.soloBots !== false && !bots().length) addBots()
       emit('online', null)
     }
   }
@@ -781,6 +813,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   }
   function answerTimeoutText(name) { return `${name} couldn't finish in time.` }
   async function receiveAsk(msg) {
+    emit('involved', { kind: 'asked', with: msg.from })
     const fromName = peers.get(msg.from)?.name || 'a teammate'
     const entry = { id: msg.qid, from: msg.from, fromName, question: String(msg.question || '').slice(0, 600), kind: msg.kind, at: time, answered: false }
     inbox.set(msg.qid, entry)
@@ -874,6 +907,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     })
   }
   function errandTo(agent, targetId, { kind, label, onArrive, landmarkKind, quiet = false } = {}) {
+    if (agent.isMe || targetId === myId) emit('involved', { kind: 'errand', with: agent.isMe ? targetId : agent.id })
     // Walk to the live position of whoever owns it; away owners -> that kind's landmark.
     return startJob(agent, 'errand', async job => {
       const target = member(targetId)
@@ -892,10 +926,14 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     })
   }
 
+  // No relay and no demo: say so plainly; never fake teammates.
+  const OFFLINE = 'The team is offline right now (no petpack relay reachable; it keeps retrying). Carry on solo and try again shortly.'
+  const teamOffline = () => !online && !bots().length
   const tools = {
     async petpack_status() {
       setAnim(mine, 'wave', 1.8)
       sendState(true)
+      if (teamOffline()) return { room: null, offline: true, message: OFFLINE, me: { name: mine.name, pet: mine.name, seat: mySeat, status: mine.status, online: false }, peers: [] }
       const list = members().filter(m => !m.isBot || demo || !online)
       return {
         room: room || (online ? null : 'solo'),
@@ -910,12 +948,14 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     },
     async petpack_search({ query = '', kind, limit = 3 } = {}) {
       if (!String(query).trim()) throw new Error('query is required')
+      if (teamOffline()) return { offline: true, message: OFFLINE, results: [] }
       const results = searchCatalogs(query, members(), { kind: KINDS.includes(kind) ? kind : undefined, limit, now: wall() })
       const owners = new Set(results.map(r => r.owner))
       for (const m of members()) if (owners.has(m.name)) fx('pulse', { src: m.id })
       return results
     },
     async petpack_get({ id } = {}) {
+      if (teamOffline()) return { offline: true, error: OFFLINE }
       const found = lookupItem(id)
       if (!found) throw new Error(`unknown item ${id}; use petpack_search first`)
       const { owner, item } = found
@@ -949,6 +989,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       return out
     },
     async petpack_install({ id } = {}) {
+      if (teamOffline()) return { installed: false, offline: true, reason: OFFLINE }
       const found = lookupItem(id)
       if (!found) throw new Error(`unknown item ${id}; use petpack_search first`)
       const { owner, item } = found
@@ -964,13 +1005,16 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         result = bridge.installItem ? await bridge.installItem({ ...item, text: content.text, pkg: content.pkg, owner: owner.name }, owner.name)
           : await bridge.installSkill?.(content.pkg, owner.name)
       } catch (error) { result = { installed: false, reason: String(error?.message || error) } }
-      fx('gift', { src: owner.online && member(owner.id) ? owner.id : myId, dst: myId, label: item.title, dot: item.kind, seed: id })
-      setAnim(mine, 'jump', 1.1)
-      fx('learned', { src: myId, text: `learned ${shortTitle(item.title)}`, bloom: { kind: item.kind, seed: id } })
+      if (result?.installed) {
+        if (owner.online && member(owner.id)) fx('gift', { src: owner.id, dst: myId, label: item.title, dot: item.kind, seed: id })
+        setAnim(mine, 'jump', 1.1)
+        fx('learned', { src: myId, text: `learned ${shortTitle(item.title)}`, bloom: { kind: item.kind, seed: id } })
+      }
       return { installed: !!result?.installed, path: result?.path, ...(result?.reason ? { reason: result.reason } : {}) }
     },
     async petpack_ask({ question = '', to, kind } = {}) {
       if (!String(question).trim()) throw new Error('question is required')
+      if (teamOffline()) return { answered_by: null, answer: OFFLINE, dot: null, offline: true }
       return askPeer(mine, { question: String(question).slice(0, 600), to, kind: KINDS.includes(kind) ? kind : undefined })
     },
     async petpack_inbox() {
@@ -1022,6 +1066,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       },
     }
     pendingAsk.set(qid, state)
+    if (agent.isMe) emit('involved', { kind: 'errand', with: target.id })
     // The question leaves now, so latency hides behind the walk.
     if (agents.has(target.id)) botAnswer(agents.get(target.id), { qid, from: agent.id, question, kind, meet: lm })
     else if (agent.isMe) send({ t: 'ask', qid, to: target.id, question, kind: kind || route.item?.kind || null, meet: { x: lm.x, z: lm.z } })
@@ -1282,6 +1327,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     if (mine.job || codexStatus === 'working' || codexStatus === 'waiting') { lastActivity = time; if (sleeping) wake() }
     if (!sleeping && time - lastActivity > 180) { sleeping = true; fx('sleep', { src: myId, on: true }) }
     if (online) maybeConga()
+    watchVisitors()
     catalogTimer += dt
     if (catalogTimer > 30) { catalogTimer = 0; refreshCatalog() }
     if (catalogDirty && online && time - lastCatalogSent >= 5) {
@@ -1346,7 +1392,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   }
 
   return {
-    tick, handle, call, setStatus, netStatus, hello, pets, addBots, removeBots, refreshCatalog,
+    tick, handle, call, setStatus, netStatus, hello, pets, addBots, removeBots, refreshCatalog, on,
     moveSeatRequest(delta) { if (online) send({ t: 'seat', op: 'move', to: mySeat + delta }) },
     isSeated(chunk) { for (const [id, seat] of seats) if (id !== myId && seat === chunk) return true; return false },
     party: () => maybeConga(true),

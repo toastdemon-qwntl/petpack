@@ -2,14 +2,17 @@
 // wired to window.petpack (the preload bridge, or mock-bridge.js in a plain browser).
 import { createWorld } from './world/index.js'
 import { createBrain, CHUNK_W, chunkOf } from './brain.js'
-import { createNet, DEFAULT_RELAY, relayAsset } from './net.js'
+import { createNet, relayAsset } from './net.js'
+import { RELAYS } from '../../shared/protocol.js'
 
 if (!window.petpack) (await import('./mock-bridge.js')).installMockBridge()
 const bridge = window.petpack
 const config = bridge.config || {}
 const demo = !!config.demo
 const dock = config.dock === 'left' ? 'left' : 'right'
-const relayUrl = config.relayUrl === undefined ? DEFAULT_RELAY : config.relayUrl
+// Relays in failover order: the shell's list, else one --relay URL, else the built-in list; null/'' = no relay.
+const relays = Array.isArray(config.relays) && config.relays.length ? config.relays
+  : config.relayUrl === undefined ? [...RELAYS] : config.relayUrl ? [config.relayUrl] : []
 
 const sheet = new CSSStyleSheet()
 sheet.replaceSync(`
@@ -28,6 +31,9 @@ body.petpack-app .petpack-pane { position: fixed; top: 0; width: 100vw; height: 
 .pp-edge.on { opacity: .92; }
 .pp-edge[data-side='left'] { left: 6px; }
 .pp-edge[data-side='right'] { right: 6px; }
+.pp-offline { position: absolute; z-index: 7; bottom: 6px; left: 50%; transform: translateX(-50%); padding: 1px 7px; border-radius: 999px;
+  font: 600 9px/12px ui-rounded, system-ui, sans-serif; color: #24323d; background: #ffffffa8; opacity: 0; transition: opacity .4s; pointer-events: none; }
+.pp-offline.on { opacity: .75; }
 `)
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet]
 document.body.classList.add('petpack-app')
@@ -37,7 +43,10 @@ pane.dataset.dock = dock
 const viewport = pane.querySelector('.world-viewport')
 const badge = Object.assign(document.createElement('div'), { className: 'pp-badge' })
 const edge = Object.assign(document.createElement('div'), { className: 'pp-edge' })
-viewport.append(badge, edge)
+const offline = Object.assign(document.createElement('div'), { className: 'pp-offline', textContent: 'offline' })
+viewport.append(badge, edge, offline)
+// No relay reachable (and not a demo): a quiet pane, its own pet, one tiny cue; the client keeps retrying.
+function offlineCue(state) { offline.classList.toggle('on', !demo && (state === 'solo' || state === 'offline')) }
 
 let me = {}
 try { me = (await bridge.getMe?.()) || {} } catch (error) { console.warn('petpack getMe', error) }
@@ -111,10 +120,10 @@ function withPet(id, fn) {
 // Shared moments carry wall-clock times; the world runs on this page's frame clock (seconds).
 const worldTimeOf = epochMs => (Number.isFinite(epochMs) ? performance.now() + (epochMs - Date.now()) : performance.now()) / 1000
 if (demo) brain.addBots()
-if (relayUrl) {
-  net = createNet({ url: relayUrl, hello: () => brain.hello(), onMessage: msg => brain.handle(msg), onStatus: s => brain.netStatus(s) })
+if (relays.length) {
+  net = createNet({ urls: relays, hello: () => brain.hello(), onMessage: msg => brain.handle(msg), onStatus: s => { brain.netStatus(s); offlineCue(s) } })
   net.connect()
-} else brain.netStatus('solo')
+} else { brain.netStatus('solo'); offlineCue('solo') }
 
 bridge.onStatus?.(s => brain.setStatus(typeof s === 'string' ? s : s?.status))
 bridge.onAgentCall?.(async (a, b) => {
@@ -165,7 +174,7 @@ function syncPets() {
     shownX.set(p.id, p.x)
     if (p.isMe) shownMe = p
     // Only peers' sprites live on the relay; our own sheet is local (data: or petpack://).
-    const spriteUrl = p.spriteUrl && !p.local ? relayAsset(relayUrl || DEFAULT_RELAY, p.spriteUrl) : p.spriteUrl
+    const spriteUrl = p.spriteUrl && !p.local ? relayAsset(net?.url || relays[0], p.spriteUrl) : p.spriteUrl
     const info = { displayName: p.displayName, color: p.color, kind: p.kind, spriteUrl: spriteUrl || null, skillCount: p.skillCount, isMe: p.isMe }
     if (p.atlas) info.atlas = p.atlas
     const key = JSON.stringify(info)
@@ -244,6 +253,8 @@ world.onThrow?.((event = {}) => {
   brain.throwPet(event.id, to, event)
 })
 if (typeof world.setGarden === 'function') world.setGarden(brain.garden)
+// Window collapse (COLLAPSE lane): it opens when a pet walks on; subscribes via brain.on (see brain.js Events).
+import('./collapse.js').then(m => m.attachCollapse?.({ world, brain, bridge: window.petpack, root: pane })).catch(() => {})
 async function takePhoto() {
   try {
     let shot = await world.photo?.()

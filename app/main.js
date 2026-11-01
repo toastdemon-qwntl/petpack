@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { DEFAULT_RELAY, codexMcpState, parseArgs, profileName, readJson, registerMcp, userDataDir, writeJson } from './cli.js'
+import { DEFAULT_RELAY, codexMcpState, parseArgs, profileName, readJson, registerMcp, relayList, userDataDir, writeJson } from './cli.js'
 import { createClickThrough, createPaneWindow, dockBounds, edgeGap, paneSize, placePane, raiseToTop } from './window.js'
 import { createTray } from './tray.js'
 
@@ -48,7 +48,9 @@ function saveSettings() {
   try { writeJson(SETTINGS_FILE, settings) } catch (error) { console.error(`petpack: settings not saved (${error.message})`) }
 }
 
-const relayUrl = (typeof flags.relay === 'string' && flags.relay) || process.env.PETPACK_RELAY || DEFAULT_RELAY
+// Every relay in failover order (shared/protocol.js); --relay / PETPACK_RELAY replace it (comma-separated list).
+const relays = relayList((typeof flags.relay === 'string' && flags.relay) || process.env.PETPACK_RELAY || null)
+const relayUrl = relays[0] || DEFAULT_RELAY
 const paneScale = Number(flags['pane-scale']) > 0 ? Number(flags['pane-scale']) : 1
 const topFraction = (() => {
   const v = parseFloat(String(flags.top ?? ''))
@@ -58,7 +60,7 @@ const topFraction = (() => {
 
 function config() {
   return {
-    relayUrl, relay: relayUrl, room: settings.room ?? null, seat: settings.seat ?? null, dock: settings.dock,
+    relays, relayUrl, relay: relayUrl, room: settings.room ?? null, seat: settings.seat ?? null, dock: settings.dock,
     demo: Boolean(flags.demo), install: !flags['no-install'], answer: !flags['no-answer'],
     name: typeof flags.name === 'string' ? flags.name : null, pet: typeof flags.pet === 'string' ? flags.pet : null,
     profile: PROFILE || null, version: VERSION, platform: process.platform,
@@ -77,12 +79,18 @@ const MOUNTS = [
   ['/shared/', path.join(ROOT, 'shared')],
 ]
 
+const OPTIONAL_MODULES = new Set(['/app/renderer/world/sound.js', '/app/renderer/world/play.js',
+  '/app/renderer/world/mood.js', '/app/renderer/collapse.js'])
+
 function relayOrigins() {
-  try {
-    const u = new URL(relayUrl)
-    const secure = u.protocol === 'wss:' || u.protocol === 'https:'
-    return [`${secure ? 'wss' : 'ws'}://${u.host}`, `${secure ? 'https' : 'http'}://${u.host}`]
-  } catch { return [] }
+  // Every relay, in both forms: wss for the socket, https for sprites and the primary health probe.
+  return [...new Set(relays.flatMap(url => {
+    try {
+      const u = new URL(url)
+      const secure = u.protocol === 'wss:' || u.protocol === 'https:'
+      return [`${secure ? 'wss' : 'ws'}://${u.host}`, `${secure ? 'https' : 'http'}://${u.host}`]
+    } catch { return [] }
+  }))]
 }
 
 function csp(html) {
@@ -142,6 +150,10 @@ async function serve(request) {
       return notFound()
     }
     return htmlResponse(html)
+  }
+  // Optional plug-ins the page imports when present; until a lane lands one, it is an empty module, not a 404.
+  if (OPTIONAL_MODULES.has(pathname) && !fs.existsSync(file)) {
+    return new Response('export {}\n', { headers: { 'content-type': 'text/javascript; charset=utf-8' } })
   }
   try {
     return await net.fetch(pathToFileURL(file).href)
@@ -515,5 +527,5 @@ app.whenReady().then(async () => {
   tray = createTray({ state: () => ({ room: settings.room, seat: settings.seat, dock: settings.dock,
     align: settings.align, codex: codexState }), actions: trayActions() })
   codexMcpState(ROOT).then(state => { codexState = state; refreshTray() }).catch(() => {})
-  log('ready', { userData: USER_DATA, profile: PROFILE, relayUrl, os: os.release() })
+  log('ready', { userData: USER_DATA, profile: PROFILE, relays, os: os.release() })
 })

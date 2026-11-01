@@ -11,7 +11,8 @@ const PKG_NAME = (() => {
 })()
 
 export { userDataDir }
-export const DEFAULT_RELAY = 'wss://petpack-relay.azurewebsites.net/ws'
+// Relays come from shared/protocol.js (failover order); --relay / PETPACK_RELAY take a comma-separated list.
+export { DEFAULT_RELAY, RELAYS, relayList } from '../shared/protocol.js'
 const VALUE_FLAGS = new Set(['room', 'seat', 'dock', 'top', 'relay', 'name', 'pet', 'profile', 'smoke', 'pane-scale',
   'smoke-wait'])
 
