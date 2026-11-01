@@ -136,9 +136,13 @@ if (demo) {
   brain.addBots()
   dressBots() // they start as built-in pixel pets and put on real Codex pets as soon as those load
 }
+// The relay files our own test runs (it-*, s1*, rel*, smoke*, l2*, pair*, wire* profiles) in its scratch room (L1).
+const helloExtra = config.profile
+  ? { profile: String(config.profile), ...(/^(it-|s1|rel|smoke|l2|pair|wire)/i.test(String(config.profile)) ? { test: true } : {}) }
+  : {}
 function connectNet() {
   net?.close()
-  net = createNet({ urls: relays, hello: () => brain.hello(), onMessage: msg => brain.handle(msg), onStatus: s => { brain.netStatus(s); offlineCue(s) } })
+  net = createNet({ urls: relays, hello: () => ({ ...brain.hello(), ...helloExtra }), onMessage: msg => brain.handle(msg), onStatus: s => { brain.netStatus(s); offlineCue(s) } })
   net.connect()
 }
 if (relays.length) connectNet()
@@ -416,7 +420,7 @@ setInterval(() => {
   reportPeople(false) // sprites are big: only when someone arrives, leaves or changes
   const mine = brain.me || {}
   const busyWith = mine.job && mine.job.mode !== 'return' ? (mine.jobWith || null) : null
-  try { bridge.panelReport?.({ name: mine.name, status: mine.status, home: chunkOf(mine.x) === brain.seat, dnd: !!brain.dnd, muted: joy.muted, busyWith, task: taskTitle }) } catch { /* bridge gone */ }
+  try { bridge.panelReport?.({ name: mine.name, status: mine.status, home: chunkOf(mine.x) === brain.seat, dnd: !!brain.dnd, muted: joy.muted, busyWith, task: taskCaption ? taskTitle : null }) } catch { /* bridge gone */ }
 }, 2000)
 
 // ---- share permission ('ask' mode): the request with ✓/✗ in the pane ----
