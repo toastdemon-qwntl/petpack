@@ -65,11 +65,11 @@ body.pp-dragging, body.pp-dragging * { cursor: grabbing !important; }
 body.pp-collapsed .pp-grip { opacity: 0; pointer-events: none; }
 
 body.petpack-app.pp-floating .petpack-pane, body.petpack-app.pp-dragging .petpack-pane {
-  border: 1px solid #ffffff78; padding: var(--pane-inset, 4px); border-radius: var(--pane-radius, 22px); transform-origin: center center;
+  border: 1px solid #ffffff78; padding: var(--pane-inset, 0px); border-radius: var(--pane-radius, 22px); transform-origin: center center;
   box-shadow: inset 0 1px #ffffffe0, inset 1px 0 #ffffff45, inset -1px 0 #ffffff45, inset 0 -1px #ffffff25, 0 16px 40px -14px #0d1c3552;
 }
 body.petpack-app.pp-floating .petpack-pane > .world-viewport, body.petpack-app.pp-dragging .petpack-pane > .world-viewport {
-  border-radius: calc(var(--pane-radius, 22px) - var(--pane-inset, 4px));
+  border-radius: calc(var(--pane-radius, 22px) - var(--pane-inset, 0px) - 1px);
 }
 body.petpack-app.pp-floating.pp-collapsed .petpack-pane { transform: scale(.135, .18); }
 

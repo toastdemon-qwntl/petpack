@@ -18,7 +18,7 @@ const sheet = new CSSStyleSheet()
 sheet.replaceSync(`
 html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
 body.petpack-app .petpack-pane { position: fixed; top: 0; width: 100vw; height: 100vh; max-width: none; aspect-ratio: auto;
-  --pane-inset: 4px; --pane-radius: 22px; user-select: none; -webkit-user-select: none; }
+  --pane-inset: 0px; --pane-radius: 22px; user-select: none; -webkit-user-select: none; }
 /* The plain-browser mock shows the pane as it sits on a desktop: 416x312 at 20 % height. */
 .petpack-mock body { background: radial-gradient(120% 90% at 30% 10%, #e8eef3, #c9d3dc); }
 .petpack-mock body.petpack-app .petpack-pane { top: 20vh; width: min(416px, 100vw); height: min(312px, 100vh); }
