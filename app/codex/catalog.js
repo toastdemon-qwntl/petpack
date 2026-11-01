@@ -754,8 +754,16 @@ export async function installResource (pkg, fromName = 'a teammate', opts = {}) 
 
 // installItem(item|pkg, fromName): the bridge's generalised installSkill. Notes and resources here; skill packages
 // go to install.js (L3a) as skills/petpack-<name>/, and an existing folder counts as installed.
-export async function installItem (pkg, fromName, opts = {}) {
-  const kind = pkg?.kind || (Array.isArray(pkg?.files) ? 'skill' : String(pkg?.ref || '').split(':')[0])
+export async function installItem (input, fromName, opts = {}) {
+  // Accepts a pkg from readItem(ref,'pkg'), or a catalog item carrying {text, pkg} as the brain sends it.
+  let pkg = input && typeof input.pkg === 'object' && input.pkg ? { ...input, ...input.pkg } : { ...(input || {}) }
+  const kind = pkg.kind || (Array.isArray(pkg.files) ? 'skill' : String(pkg.ref || '').split(':')[0])
+  if (kind === 'resource' && !pkg.command && !pkg.url && pkg.text) {
+    const servers = parseToml(pkg.text).mcp_servers || {}
+    const name = Object.keys(servers)[0]
+    if (name) pkg = { ...pkg, name, ...servers[name] }
+  }
+  if (kind === 'resource' && !pkg.name && pkg.title) pkg.name = pkg.title
   invalidateCatalog()
   try {
     if (kind === 'resource') return await installResource(pkg, fromName, opts)

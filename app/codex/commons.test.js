@@ -185,6 +185,12 @@ test('install: a resource installs through codex mcp add', async () => {
   const r = await installItem(pkg, 'Bea', { ...other.opts, env: stub.env })
   assert.equal(r.installed, true)
   assert.deepEqual(JSON.parse(fs.readFileSync(stub.log, 'utf8')).args, ['mcp', 'add', 'docs-server', '--', 'node', 'server.js', '--port', '7000'])
+  // the brain's shape: the catalog item plus the fetched text, no pkg
+  const item = (await getCatalog(fx.opts)).find(i => i.ref === 'resource:web-search')
+  const { text } = await readItem(item.ref, 'text', fx.opts)
+  const r2 = await installItem({ ...item, text, owner: 'Bea' }, 'Bea', { ...other.opts, env: stub.env })
+  assert.equal(r2.installed, true, r2.reason)
+  assert.deepEqual(JSON.parse(fs.readFileSync(stub.log, 'utf8')).args, ['mcp', 'add', 'web-search', '--url', 'https://search.example/mcp'])
 })
 
 test('answer: tier 1 answers from a matching item and skips exec', async () => {
