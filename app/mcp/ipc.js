@@ -23,18 +23,15 @@ import crypto from 'node:crypto'
 export const IPC_VERSION = 1
 const MAX_FRAME = 8 * 1024 * 1024
 
+/** Same rule as S1's cli.profileName: '' is the default profile. */
 function cleanProfile(profile) {
-  const p = String(profile || process.env.PETPACK_PROFILE || 'default')
-  const safe = p.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 24)
-  return safe || 'default'
+  return String(profile || process.env.PETPACK_PROFILE || '').replace(/[^a-z0-9_-]/gi, '').slice(0, 32)
 }
 
 /**
- * The overlay's Electron `userData` folder, computed without Electron.
- * Default profile: `app.getPath('userData')` for an app named `petpack`
- *   macOS `~/Library/Application Support/petpack`, Windows `%APPDATA%\petpack`, Linux `$XDG_CONFIG_HOME|~/.config/petpack`.
- * `--profile p` (p != default): the sibling folder `petpack-p`. S1 should `app.setPath('userData', userDataDir(p))`.
- * `PETPACK_USER_DATA` overrides everything (tests, CI).
+ * The overlay's Electron `userData` folder, computed without Electron (matches app/main.js + app/cli.js):
+ *   macOS `~/Library/Application Support/petpack`, Windows `%APPDATA%\petpack`, Linux `$XDG_CONFIG_HOME|~/.config/petpack`;
+ *   `--profile p`: the sibling folder `petpack-p`. `PETPACK_USER_DATA` overrides everything (tests, CI).
  */
 export function userDataDir(profile) {
   if (process.env.PETPACK_USER_DATA) return path.resolve(process.env.PETPACK_USER_DATA)
@@ -44,7 +41,7 @@ export function userDataDir(profile) {
   else if (process.platform === 'win32') appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming')
   else appData = process.env.XDG_CONFIG_HOME || path.join(home, '.config')
   const p = cleanProfile(profile)
-  return path.join(appData, p === 'default' ? 'petpack' : `petpack-${p}`)
+  return path.join(appData, p ? `petpack-${p}` : 'petpack')
 }
 
 export function ipcInfoPath(userData) {
@@ -59,7 +56,7 @@ function userHash() {
 
 /** Socket path (macOS/Linux, per-user tmpdir, well under the 104-byte limit) or named pipe (Windows). */
 export function endpointFor(profile) {
-  const p = cleanProfile(profile)
+  const p = cleanProfile(profile).slice(0, 24) || 'default'
   if (process.platform === 'win32') return `\\\\.\\pipe\\petpack-${userHash()}-${p}`
   return path.join(os.tmpdir(), `petpack-${userHash()}-${p}.sock`)
 }

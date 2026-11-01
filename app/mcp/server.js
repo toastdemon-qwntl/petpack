@@ -3,11 +3,11 @@
 //
 // - Answers `initialize`, `tools/list` and `ping` at once, with no overlay running (Codex's startup timeout is short).
 // - On the first `tools/call` it connects to the running overlay over app/mcp/ipc.js; if none is running it launches
-//   one detached (bin/petpack.js --from-mcp, or PETPACK_MCP_LAUNCH='["cmd", "arg", ...]') and waits up to 20 s.
+//   one detached (bin/petpack.js --from-mcp --detach, or PETPACK_MCP_LAUNCH='["cmd", "arg", ...]') and waits up to 20 s.
 // - Each call is forwarded as { tool, args } to the overlay, whose main process hands it to the page's onAgentCall.
 // - Logs go to stderr only.
 //
-// Exports: main(argv), createMcpServer(opts), TOOLS, installIntoCodex(opts), codexServerCommand(platform).
+// Exports: runMcpServer(opts), main(argv), createMcpServer(opts), TOOLS, installIntoCodex(opts), codexServerCommand(platform).
 
 import fs from 'node:fs'
 import os from 'node:os'
@@ -18,6 +18,7 @@ import { connectIpc, userDataDir } from './ipc.js'
 
 const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
 const LAUNCH_WAIT_MS = 20000
+const CALL_BUDGET_MS = 56000
 
 function pkgVersion() {
   try { return JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version || '0.0.0' } catch { return '0.0.0' }
@@ -49,7 +50,7 @@ export const TOOLS = [
       required: ['query'],
     },
     annotations: { readOnlyHint: true, openWorldHint: false },
-    timeoutMs: 10000,
+    timeoutMs: 30000,
   },
   {
     name: 'petpack_get',
@@ -63,7 +64,7 @@ export const TOOLS = [
       required: ['id'],
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    timeoutMs: 25000,
+    timeoutMs: 40000,
   },
   {
     name: 'petpack_install',
@@ -77,7 +78,7 @@ export const TOOLS = [
       required: ['id'],
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    timeoutMs: 25000,
+    timeoutMs: 40000,
   },
   {
     name: 'petpack_ask',
@@ -107,7 +108,7 @@ export const TOOLS = [
       'each is doing (idle = free to help, working, waiting = stuck on its person) and how much each knows. Your pet waves at the pack.',
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true, openWorldHint: false },
-    timeoutMs: 15000,
+    timeoutMs: 30000,
   },
   {
     name: 'petpack_inbox',
@@ -115,7 +116,7 @@ export const TOOLS = [
     description: 'Questions your teammates\' agents have asked you that are still open: [{id, from, question}]. Answer with petpack_answer.',
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true, openWorldHint: false },
-    timeoutMs: 10000,
+    timeoutMs: 20000,
   },
   {
     name: 'petpack_answer',
@@ -131,7 +132,7 @@ export const TOOLS = [
       required: ['id', 'text'],
     },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    timeoutMs: 15000,
+    timeoutMs: 30000,
   },
 ]
 const TOOL_MAP = new Map(TOOLS.map((t) => [t.name, t]))
@@ -147,14 +148,14 @@ function textResult(value, isError = false) {
 
 function pkgRoot() { return fileURLToPath(new URL('../../', import.meta.url)) }
 
-/** Start the overlay detached. PETPACK_MCP_LAUNCH (JSON argv) overrides; default `node bin/petpack.js --from-mcp`. */
+/** Start the overlay detached. PETPACK_MCP_LAUNCH (JSON argv) overrides; default `node bin/petpack.js --from-mcp --detach`. */
 export function defaultLaunch({ profile, log = () => {} } = {}) {
   let argv
   if (process.env.PETPACK_MCP_LAUNCH) argv = JSON.parse(process.env.PETPACK_MCP_LAUNCH)
   else {
     const bin = path.join(pkgRoot(), 'bin', 'petpack.js')
     if (!fs.existsSync(bin)) throw new Error(`petpack launcher not found at ${bin}`)
-    argv = [process.execPath, bin, '--from-mcp']
+    argv = [process.execPath, bin, '--from-mcp', '--detach']
     if (profile) argv.push('--profile', profile)
   }
   const env = { ...process.env }
@@ -225,11 +226,14 @@ export function createMcpServer({
     for (const k of tool.inputSchema.required || []) {
       if (args[k] === undefined || args[k] === null || args[k] === '') return textResult(`Missing required argument: ${k}`, true)
     }
+    // Always answer inside Codex's 60 s tool timeout, launch wait included.
+    const deadline = Date.now() + CALL_BUDGET_MS
     for (let attempt = 0; attempt < 2; attempt++) {
       let c
       try { c = await getClient() } catch (e) { return textResult(e.message, true) }
       try {
-        const result = await c.call(name, args, { timeoutMs: tool.timeoutMs })
+        const timeoutMs = Math.max(3000, Math.min(tool.timeoutMs, deadline - Date.now()))
+        const result = await c.call(name, args, { timeoutMs })
         return textResult(result ?? { ok: true })
       } catch (e) {
         if (e.code === 'ECLOSED' && attempt === 0) continue // overlay restarted under us: reconnect once
@@ -376,22 +380,34 @@ export function installIntoCodex({ codexHome = codexHomeDir(), command = codexSe
 
 // ---------------------------------------------------------------------------------------------------------------
 
-/** `petpack mcp [--profile p]` serves stdio; `petpack mcp install` registers with Codex. */
+/**
+ * Serve stdio until stdin ends, then exit. bin/petpack.js calls this as `runMcpServer({ argv, profile, ... })`
+ * (it handles `mcp install` itself); `node app/mcp/server.js [--profile p]` works too.
+ */
+export async function runMcpServer(opts = {}) {
+  const server = createMcpServer({ profile: opts.profile || profileFromArgv(opts.argv) })
+  await server.done
+  server.close()
+  process.exit(0)
+}
+
+function profileFromArgv(argv = []) {
+  const i = argv.indexOf('--profile')
+  if (i >= 0) return argv[i + 1]
+  const eq = argv.find((a) => typeof a === 'string' && a.startsWith('--profile='))
+  return eq ? eq.slice('--profile='.length) : undefined
+}
+
+/** `node app/mcp/server.js [mcp] [install] [--profile p]`; also accepts the options object bin/petpack.js passes. */
 export async function main(argv = process.argv.slice(2)) {
-  const args = [...argv]
-  let profile
-  const pi = args.indexOf('--profile')
-  if (pi >= 0) { profile = args[pi + 1]; args.splice(pi, 2) }
-  if (args[0] === 'mcp') args.shift()
+  if (!Array.isArray(argv)) return runMcpServer(argv || {})
+  const args = argv.filter((a) => a !== 'mcp')
   if (args[0] === 'install') {
     const r = installIntoCodex()
     process.stdout.write(r.message + '\n')
     return r
   }
-  const server = createMcpServer({ profile })
-  await server.done
-  server.close()
-  process.exit(0)
+  return runMcpServer({ argv: args })
 }
 
 function isMain() {

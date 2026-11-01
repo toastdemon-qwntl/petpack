@@ -24,9 +24,9 @@ function fixture() {
   return { userData: path.join(dir, 'ud'), profile: `t${process.pid}x${++n}`, dir }
 }
 
-/** A JSON-RPC client over a child `node server.js` (the real stdio entry). */
-function mcpChild({ userData, profile, env = {} }) {
-  const child = spawn(process.execPath, [SERVER], {
+/** A JSON-RPC client over a child `node server.js` (the real stdio entry), or any other argv (e.g. the bin). */
+function mcpChild({ userData, profile, env = {}, argv = [SERVER] }) {
+  const child = spawn(process.execPath, argv, {
     env: { ...process.env, PETPACK_USER_DATA: userData, PETPACK_PROFILE: profile, ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -122,6 +122,18 @@ test('tools/call round trips through the IPC to the overlay (fake onAgentCall)',
     { tool: 'petpack_search', args: { query: 'pdf tables', limit: 2 } },
     { tool: 'petpack_get', args: { id: 'rex/skill:pdf' } },
   ])
+})
+
+const BIN = path.join(here, '..', '..', 'bin', 'petpack.js')
+test('`petpack mcp` through bin/petpack.js reaches the overlay', { skip: !fs.existsSync(BIN) && 'no bin yet' }, async () => {
+  const { userData, profile } = fixture()
+  const ipc = await startIpcServer({ userData, profile, onCall: ({ tool, args }) => ({ via: 'bin', tool, args }) })
+  cleanups.push(() => ipc.close())
+  const c = mcpChild({ userData, profile, argv: [BIN, 'mcp'] })
+  const r = await init(c)
+  assert.equal(r.result.serverInfo.name, 'petpack')
+  const res = await c.callTool('petpack_search', { query: 'pdf' })
+  assert.deepEqual(parse(res), { via: 'bin', tool: 'petpack_search', args: { query: 'pdf' } })
 })
 
 function rawFrames(endpoint) {
