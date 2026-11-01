@@ -37,6 +37,7 @@ export function createPixelPipeline(renderer, scene, camera) {
       texel: { value: new THREE.Vector2(1, 1) },
       depthRange: { value: camera.far - camera.near }, worldPixel: { value: 0.04 },
       lightDirection: { value: new THREE.Vector3(-0.5, 0.7, 0.5).normalize() },
+      rimColor: { value: new THREE.Color().setRGB(1, .87, .64) },
     },
     vertexShader,
     fragmentShader: /* glsl */`
@@ -45,6 +46,7 @@ export function createPixelPipeline(renderer, scene, camera) {
       uniform vec2 texel;
       uniform float depthRange, worldPixel;
       uniform vec3 lightDirection;
+      uniform vec3 rimColor;
       void main() {
         vec4 color = texture2D(colorMap, vUv);
         float rawDepth = texture2D(depthMap, vUv).r;
@@ -76,7 +78,7 @@ export function createPixelPipeline(renderer, scene, camera) {
         }
         silhouette *= (1.0 - step(0.99999, rawDepth)) * step(0.5, normalValid);
         vec3 shade = color.rgb * vec3(0.48, 0.53, 0.58) + vec3(0.009, 0.012, 0.011);
-        vec3 rim = color.rgb + (vec3(1.0, 0.87, 0.64) - color.rgb) * 0.23;
+        vec3 rim = color.rgb + (rimColor - color.rgb) * 0.23;
         color.rgb = mix(color.rgb * (1.0 - crease), rim, highlight * (1.0 - silhouette));
         color.rgb = mix(color.rgb, shade, silhouette * 0.88);
         gl_FragColor = color;
@@ -153,6 +155,7 @@ export function createPixelPipeline(renderer, scene, camera) {
   }
 
   return {
+    setNight(amount) { edgeMaterial.uniforms.rimColor.value.setRGB(1 - amount * .65, .87 - amount * .4, .64 - amount * .02) },
     resize(w, h, visibleW, visibleH) {
       for (const rt of [beauty, normals, ink]) rt.setSize(w, h)
       edgeMaterial.uniforms.texel.value.set(1 / w, 1 / h)

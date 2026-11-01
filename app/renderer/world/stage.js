@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { createPixelPipeline } from './post-pixel.js'
+import { localHour, sampleDaylight } from './map-light.js'
 
 const PITCH = THREE.MathUtils.degToRad(38)
 const SIN = Math.sin(PITCH)
@@ -25,7 +26,7 @@ function spring(state, goal, dt, frequency) {
   }
 }
 
-export function createStage(canvas, { pixelScale = 2 } = {}) {
+export function createStage(canvas, { pixelScale = 2, timeOfDay = null } = {}) {
   pixelScale = Number.isFinite(pixelScale) ? Math.max(1, Math.round(pixelScale)) : 2
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true, powerPreference: 'low-power' })
   renderer.outputColorSpace = THREE.SRGBColorSpace
@@ -64,6 +65,31 @@ export function createStage(canvas, { pixelScale = 2 } = {}) {
   const projected = new THREE.Vector3()
   let width = 1, height = 1, artWidth = 5, artHeight = 5
   let disposed = false
+  let explicitHour = Number.isFinite(timeOfDay) ? timeOfDay : null
+  let sampledMinute = -1
+
+  function applyDaylight(hours) {
+    const light = sampleDaylight(hours)
+    scene.userData.petpackDaylight = light
+    scene.background.copy(light.sky)
+    ambient.color.copy(light.ambient)
+    ambient.groundColor.copy(light.ground)
+    ambient.intensity = light.fill
+    sun.color.copy(light.sun)
+    sun.intensity = light.key
+    pipeline.setNight(light.night)
+    lightOffset.copy(light.offset)
+    lightDirection.copy(lightOffset).normalize()
+    lightRight.set(lightDirection.z, 0, -lightDirection.x).normalize()
+    lightUp.crossVectors(lightDirection, lightRight)
+  }
+  function syncLocalTime() {
+    if (explicitHour !== null) return
+    const minute = Math.floor(Date.now() / 60000)
+    if (minute !== sampledMinute) { sampledMinute = minute; applyDaylight(localHour()) }
+  }
+  if (explicitHour !== null) applyDaylight(explicitHour)
+  else syncLocalTime()
 
   function place() {
     const unit = span.value * pixelScale / width
@@ -116,6 +142,18 @@ export function createStage(canvas, { pixelScale = 2 } = {}) {
   return {
     renderer, scene, camera, pixelScale,
     resize,
+    get timeOfDay() { return scene.userData.petpackDaylight.hour },
+    // null returns to the viewer's clock. Sampling is minute-boundary based,
+    // including after sleep/resume; no timers survive stage disposal.
+    setTimeOfDay(hours = null) {
+      if (disposed || (hours !== null && !Number.isFinite(hours))) return false
+      explicitHour = hours
+      sampledMinute = -1
+      if (hours === null) syncLocalTime()
+      else applyDaylight(hours)
+      place()
+      return true
+    },
     focus(nextX, nextZ, { span: nextSpan } = {}) {
       if (disposed) return
       if (Number.isFinite(nextX)) goal.x = nextX
@@ -132,6 +170,7 @@ export function createStage(canvas, { pixelScale = 2 } = {}) {
     update(dt) {
       if (disposed) return
       dt = Number.isFinite(dt) ? THREE.MathUtils.clamp(dt, 0, 0.25) : 0
+      syncLocalTime()
       spring(x, goal.x, dt, 5.8)
       spring(z, goal.z, dt, 5.8)
       spring(span, goal.span, dt, 5)
@@ -147,6 +186,7 @@ export function createStage(canvas, { pixelScale = 2 } = {}) {
       disposed = true
       pipeline.dispose()
       sun.shadow.dispose()
+      delete scene.userData.petpackDaylight
       scene.remove(ambient, sun, sun.target)
       renderer.dispose()
     },

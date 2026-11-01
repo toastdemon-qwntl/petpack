@@ -4,6 +4,8 @@ import * as village from './map.js'
 import { createPixelPet } from './pixel-pet.js'
 import { createSpritePet } from './sprite-pet.js'
 import { createFx } from './fx.js'
+import { createMoments } from './fx-moments.js'
+import { createJoyDirector } from './fx-director.js'
 
 const animations = new Set(['idle', 'run', 'wave', 'jump', 'failed', 'waiting', 'review'])
 const statuses = new Set(['idle', 'working', 'waiting', 'done', 'failed'])
@@ -38,7 +40,8 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
   const stage = createStage(canvas, { pixelScale })
   const map = village.createMap(stage.scene, { seed: 77 })
   const chunkWidth = map.chunkWidth || village.CHUNK_W || 14
-  let fx = createFx({ scene: stage.scene, camera: stage.camera, overlay, stage })
+  const onGift = item => map.bloom?.(item)
+  let fx = createFx({ scene: stage.scene, camera: stage.camera, overlay, stage, onGift })
   const pets = new Map()
   const raycaster = new THREE.Raycaster()
   const pointer = new THREE.Vector2()
@@ -50,6 +53,9 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
   let currentSeat = 0
   let loadedSeat = null
   const pendingAsks = new Set()
+  const moments = createMoments({ scene: stage.scene, camera: stage.camera, overlay, stage })
+  const joy = createJoyDirector({ pets, map, moments, move: applyPetState,
+    status: (id, value) => fx.setStatus(id, value), seat: () => currentSeat })
 
   function setSeat(nextSeat) {
     if (disposed || !finite(Number(nextSeat))) return
@@ -117,6 +123,10 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
     pet.anchor.position.set(pet.x, finite(y) ? y : 0, pet.z)
   }
   function updatePet(id, state = {}) {
+    if (disposed || joy.capture(id, state)) return
+    applyPetState(id, state)
+  }
+  function applyPetState(id, state = {}) {
     const pet = pets.get(id)
     if (!pet || disposed) return
     if (finite(state.x) || finite(state.z)) {
@@ -167,6 +177,7 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
   function removePet(id) {
     const pet = pets.get(id)
     if (!pet) return
+    joy.detach(id)
     pets.delete(id); pet.generation++
     fx.detach(id)
     pet.anchor.removeFromParent()
@@ -184,6 +195,7 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
     Object.assign(overlay.style, { left: `${canvas.offsetLeft}px`, top: `${canvas.offsetTop}px`, width: `${width}px`, height: `${height}px` })
     stage.resize(width, height)
     fx.resize(width, height)
+    moments.resize(width, height)
   }
   const observer = new ResizeObserver(resize)
   observer.observe(ownsCanvas ? container : canvas)
@@ -202,18 +214,21 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
     if (disposed) return
     clockDelta = finite(clockDelta) ? Math.max(0, clockDelta) : 0
     const dt = Math.min(.1, clockDelta)
+    joy.update(dt)
     for (const pet of pets.values()) {
       if (!pet.positioned) continue
       walk(pet, dt)
       const dx = pet.x - pet.lastX
       const dz = pet.z - pet.lastZ
-      pet.speed = pet.sampledSpeed ?? (clockDelta ? Math.min(8, Math.hypot(dx, dz) / clockDelta) : 0)
+      pet.speed = pet.sampledSpeed ?? (clockDelta ? Math.min(8, Math.hypot(dx, dz) / clockDelta)
+        : pet.route.length ? pet.travelSpeed : 0)
       placePet(pet)
       beforePoint.set(pet.lastX, pet.anchor.position.y, pet.lastZ)
       const screenDelta = stage.toScreen(pet.anchor.position).x - stage.toScreen(beforePoint).x
       if (Math.abs(screenDelta) > .03) pet.state.facing = screenDelta < 0 ? -1 : 1
       const anim = pet.speed > .07 ? 'run' : pet.state.anim === 'run' ? 'idle' : pet.state.anim
-      pet.character.set({ anim, facing: pet.state.facing, moving: pet.speed })
+      pet.character.set({ anim, facing: pet.state.facing, moving: pet.speed,
+        ...(pet.speed <= .07 ? joy.pose(pet.id) : null) })
       pet.character.update(dt, time)
       pet.lastX = pet.x; pet.lastZ = pet.z
     }
@@ -239,6 +254,7 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
       }
     }
     fx.update(Math.min(3, clockDelta), time)
+    moments.update(Math.min(3, clockDelta), time)
     if (render) stage.render()
   }
   if (autoRender) frameId = requestAnimationFrame(frame)
@@ -252,13 +268,20 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
   }
   return {
     upsertPet, updatePet, removePet, follow, gift, giftFx: gift, setSeat, renderFrame,
+    handshake: options => joy.handshake(options),
+    knock: (id, enabled) => joy.knock(id, enabled),
+    celebrate: id => joy.celebrate(id),
+    setTimeOfDay: hours => disposed ? false : stage.setTimeOfDay?.(hours),
+    bloom: item => disposed ? false : map.bloom?.(item),
+    setGarden: items => disposed ? false : map.setGarden?.(items),
     get seat() { return currentSeat },
     resetEffects() {
       if (disposed) return
+      joy.reset()
       for (const task of pendingAsks) task.resolve(false)
       pendingAsks.clear()
       fx.dispose()
-      fx = createFx({ scene: stage.scene, camera: stage.camera, overlay, stage })
+      fx = createFx({ scene: stage.scene, camera: stage.camera, overlay, stage, onGift })
       for (const pet of pets.values()) syncFx(pet)
       resize()
     },
@@ -301,6 +324,7 @@ export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, 
       disposed = true
       cancelAnimationFrame(frameId); observer.disconnect()
       for (const id of [...pets.keys()]) removePet(id)
+      joy.dispose()
       fx.dispose(); map.dispose(); stage.dispose()
       overlay.remove()
       if (ownsCanvas) canvas.remove()

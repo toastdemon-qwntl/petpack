@@ -40,6 +40,7 @@ export function preparePetAtlas(image, hint) {
   const ctx = canvas.getContext('2d')
   const output = ctx.createImageData(canvas.width, canvas.height)
   const frames = Array.from({ length: ROWS }, () => [])
+  const heads = Array.from({ length: ROWS }, () => [])
   const bounds = Array.from({ length: ROWS }, () => ({ minX: ART_W, minY: ART_H, maxX: -1, maxY: -1 }))
   const scaleX = cellW / ART_W, scaleY = cellH / ART_H
   const coverage = 255 * scaleX * scaleY * .42
@@ -79,7 +80,26 @@ export function preparePetAtlas(image, hint) {
           visible = true
         }
       }
-      if (visible) frames[row].push(col)
+      if (visible) {
+        frames[row].push(col)
+        // Read the upper central silhouette, excluding tails and tall side ears.
+        // Head coordinates belong to the artwork, so accessories work on imports.
+        let minX = ART_W, maxX = -1
+        for (let y = 0; y < ART_H; y++) for (let x = 0; x < ART_W; x++) {
+          if (output.data[((row * ART_H + y) * canvas.width + col * ART_W + x) * 4 + 3]) {
+            minX = Math.min(minX, x); maxX = Math.max(maxX, x)
+          }
+        }
+        const left = Math.floor(minX + (maxX - minX) * .35)
+        const right = Math.ceil(minX + (maxX - minX) * .65)
+        head: for (let y = 0; y < ART_H; y++) {
+          let sum = 0, count = 0
+          for (let x = left; x <= right; x++) {
+            if (output.data[((row * ART_H + y) * canvas.width + col * ART_W + x) * 4 + 3]) { sum += x + .5; count++ }
+          }
+          if (count) { heads[row][col] = { x: sum / count / ART_W, y: (ART_H - y) / ART_H }; break head }
+        }
+      }
     }
   }
   const firstRow = frames.findIndex(row => row.length > 0)
@@ -90,7 +110,7 @@ export function preparePetAtlas(image, hint) {
   texture.magFilter = texture.minFilter = THREE.NearestFilter
   texture.generateMipmaps = false
   const restingRow = frames[0].length ? 0 : firstRow
-  return { texture, frames, firstRow, restingRow, restingBounds: bounds[restingRow] }
+  return { texture, frames, heads, firstRow, restingRow, restingBounds: bounds[restingRow] }
 }
 
 /** Shared by uploaded Codex atlases and the synchronous procedural cast. */
@@ -162,6 +182,11 @@ export function createAtlasCharacter(atlas, { color = '#79b9dc', name = 'Codex p
     const reflectAnchor = (facing < 0) !== (atlas.restingRow === 2)
     const restCentre = (b.minX + b.maxX + 1) / (2 * ART_W)
     sprite.center.x = reflectAnchor ? 1 - restCentre : restCentre
+    const head = atlas.heads?.[row]?.[frame]
+    sprite.userData.petpackHead = head ? {
+      x: ((flip ? 1 - head.x : head.x) - sprite.center.x) * ART_W * units,
+      y: (head.y - sprite.center.y) * ART_H * units,
+    } : { x: 0, y: 2 }
     if (row !== lastRow || frame !== lastFrame || flip !== lastFlip) {
       texture.repeat.x = (flip ? -1 : 1) / COLS
       texture.offset.set((frame + (flip ? 1 : 0)) / COLS, (ROWS - row - 1) / ROWS)
@@ -170,6 +195,15 @@ export function createAtlasCharacter(atlas, { color = '#79b9dc', name = 'Codex p
     }
   }
   updateFrame()
+  // Opt-in shared-clock visual sampling. Normal cast playback is unchanged.
+  sprite.userData.petpackSample = state => {
+    if (disposed) return
+    if (ANIMATIONS.has(state.anim)) anim = state.anim
+    if (state.facing === 1 || state.facing === -1) facing = state.facing
+    if (Number.isFinite(state.phase)) walkPhase = ((state.phase % 1) + 1) % 1
+    if (Number.isFinite(state.elapsed)) elapsed = Math.max(0, state.elapsed)
+    updateFrame()
+  }
   return {
     object3d,
     height: 2,

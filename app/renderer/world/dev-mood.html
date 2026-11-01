@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>petpack · little moods</title><link rel="icon" href="data:,">
+<link rel="stylesheet" href="./fx.css">
+<script type="importmap">{"imports":{"three":"../../../node_modules/three/build/three.module.js","three/addons/":"../../../node_modules/three/examples/jsm/"}}</script>
+<style>
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;color:#4e645e;font:14px/1.6 system-ui,sans-serif}
+body{background:radial-gradient(ellipse at 45% 20%,#fafaf3,#e6ece4 65%,#d7e2da);min-height:100vh;display:grid;place-content:center;padding:34px}
+header{margin:0 0 26px 8px}small{text-transform:uppercase;letter-spacing:.2em;color:#829086;font-size:10px}h1{font-size:clamp(30px,3vw,52px);font-weight:560;letter-spacing:-.045em;line-height:1.12;margin:12px 0}p{color:#8b978b;margin:0;font-size:13px}
+.pair{display:flex;gap:0;filter:drop-shadow(0 20px 26px #405a4526)}.glass{padding:7px;background:#ffffff70;backdrop-filter:blur(24px) saturate(1.4);border:1px solid #ffffffb8;box-shadow:inset 0 1px #fff;border-radius:22px 0 0 22px}.glass+ .glass{border-radius:0 22px 22px 0}.glass:first-child{padding-right:0;border-right:0}.glass:last-child{padding-left:0;border-left:0}.view{width:520px;height:390px;overflow:hidden;border-radius:15px 0 0 15px}.glass+ .glass .view{border-radius:0 15px 15px 0}footer{display:flex;justify-content:space-between;padding:18px 8px 0;font-size:11px;letter-spacing:.03em;color:#8d9a8d}
+@media(min-width:1800px){.view{width:780px;height:585px}header{margin-bottom:40px}}@media(max-width:1140px){body{padding:12px}.view{width:calc((100vw - 40px)/2);height:calc((100vw - 40px)*.375)}}
+</style>
+</head>
+<body>
+<header><small>petpack / the little things</small><h1>Even agents have their moments.</h1><p>A nap. A rain cloud. A very well-earned hat. And when everyone is done, a dance.</p></header>
+<main class="pair" aria-label="Two neighbouring windows onto the same world"><section class="glass"><div class="view" id="left"></div></section><section class="glass"><div class="view" id="right"></div></section></main>
+<footer><span>ONE WORLD · TWO NEIGHBOURS</span><span id="caption">Little lives, together.</span></footer>
+<script type="module">
+import { createWorld } from './index.js'
+import { attachMood } from './mood.js'
+import { makeTestAtlas } from './atlas.js'
+const query=new URLSearchParams(location.search), worlds=[], ids=['pip','miso','bolt','atlas','bud','bea']
+const kinds=['cat','cat','robot','cat','sprout','blob'], colors=['#87bbae','#dca278','#9bbbc5','#89b8ad','#acbc7f','#d4a5a0']
+const homes=[-4,1,5.5,10.5,15,19.5], mode=query.get('mode')||'story'
+let time=0,last,raf,paused=query.has('paused'),disposed=false,eventIndex=0
+const atlas=await makeTestAtlas()
+for(const [i,host] of [...document.querySelectorAll('.view')].entries()){
+ const world=attachMood(createWorld(host,{seat:i,pixelScale:Number(query.get('px'))||2,clock:()=>time,autoRender:false}))
+ world.setTimeOfDay(14)
+ worlds.push(world)
+ ids.forEach((id,j)=>{world.upsertPet(id,{kind:kinds[j],color:colors[j],spriteUrl:j===3?atlas:null});world.updatePet(id,{x:homes[j],z:1.5,snap:true,status:'idle'})})
+ world.renderFrame(0,0)
+}
+// The imported fixture exercises atlas replacement while the mood is attached.
+const events=[
+ [0, w=>{ids.forEach((id,i)=>w.setHat(id,i));if(mode!=='hats'){w.sleep('pip',true);w.weather('miso','rain');w.arrive('bea','balloon')} }],
+ [7,w=>{if(mode!=='hats'){w.sleep('pip',false);w.weather('miso','rainbow');w.updatePet('miso',{status:'done'})}}],
+ [10,w=>{if(mode!=='hats')w.setHat('miso',3)}],
+ [13,w=>{if(mode!=='hats')w.conga(ids,{durationS:22,startAt:13})}],
+]
+function dispatch(){while(eventIndex<events.length && events[eventIndex][0]<=time){const [,fn]=events[eventIndex++];worlds.forEach(fn)}}
+function step(dt,render=true){time+=dt;dispatch();worlds.forEach(w=>w.renderFrame(dt,time,{render}));document.querySelector('#caption').textContent=mode==='hats'?'A LITTLE SOMETHING FOR EVERYTHING LEARNED':time<7?'REST, RECOVER, ARRIVE':time<13?'A FRESH START':time<35?'EVERYONE DONE. EVERYONE DANCES.':'BACK HOME, A LITTLE HAPPIER.'}
+function seek(t){time=0;eventIndex=0;worlds.forEach(w=>{w.resetEffects();ids.forEach((id,j)=>w.updatePet(id,{x:homes[j],z:1.5,snap:true,status:'idle',anim:'idle'}));w.renderFrame(0,0,{render:false})});dispatch();while(time+1/30<t)step(1/30,false);step(Math.max(0,t-time))}
+function tick(now){if(disposed)return;const dt=last===undefined?0:Math.min(.1,(now-last)/1000);last=now;if(!paused){if(time>=38)seek(0);step(dt)}else worlds.forEach(w=>w.renderFrame(0,time));raf=requestAnimationFrame(tick)}
+window.moodStudy={worlds,ids,homes,seek,step,pause(value=true){paused=value},get time(){return time},dispose(){if(disposed)return;disposed=true;cancelAnimationFrame(raf);worlds.forEach(w=>w.dispose())}}
+seek(Number(query.get('t'))||0);raf=requestAnimationFrame(tick)
+</script>
+</body>
+</html>

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>petpack — little sounds, shared world</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./desk.css"><link rel="stylesheet" href="./pane.css"><link rel="stylesheet" href="./fx.css">
+  <script type="importmap">{"imports":{"three":"../../../node_modules/three/build/three.module.js","three/addons/":"../../../node_modules/three/examples/jsm/"}}</script>
+  <style>
+    .sound-note{position:fixed;bottom:24px;left:0;right:0;text-align:center;color:#7d8984;font:12px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;pointer-events:none;letter-spacing:.02em}
+    .sound-note svg{width:14px;height:14px;vertical-align:-2px;margin-right:7px;fill:none;stroke:currentColor;stroke-width:1.4}
+    .sound-note[data-started] {opacity:0;transition:opacity 1.5s ease}
+  </style>
+</head>
+<body>
+  <main aria-label="Two laptops, one shared petpack world"></main>
+  <div class="sound-note" role="status"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3v10l-4-3H2zM11 5q4 3 0 6M13 2q6 6 0 12"/></svg>Touch anywhere to hear the village.</div>
+  <script type="module">
+    import { attachSound } from './sound.js'
+    import './demo.js'
+    const demo = window.petpackDemo
+    const params = new URLSearchParams(location.search)
+    const events = [], timers = new Set()
+    let disposed = false
+    for (const world of demo.worlds) attachSound(world, { muted: params.has('muted'),
+      ambience: !params.has('dry'), onEvent: event => {
+        events.push({ seat: world.seat, ...event }); if (events.length > 256) events.shift()
+      } })
+    const note = document.querySelector('.sound-note')
+    const unlock = async () => {
+      if (disposed) return
+      const running = await Promise.all(demo.worlds.map(world => world.unlockAudio()))
+      if (running.some(Boolean)) note.dataset.started = ''
+    }
+    document.addEventListener('pointerdown', unlock, { once:true })
+    document.addEventListener('keydown', unlock, { once:true })
+    const dispose = demo.dispose.bind(demo)
+    demo.dispose = () => {
+      if (disposed) return
+      disposed = true
+      for (const timer of timers) clearTimeout(timer)
+      timers.clear()
+      document.removeEventListener('pointerdown', unlock)
+      document.removeEventListener('keydown', unlock)
+      dispose()
+    }
+    const seek = demo.seek.bind(demo)
+    demo.seek = async at => {
+      const mutes = demo.worlds.map(world => world.soundSnapshot().muted)
+      demo.worlds.forEach(world => world.setMuted(true))
+      try { await seek(at) } finally { demo.worlds.forEach((world, i) => world.setMuted(mutes[i])) }
+    }
+    // Capture controls only. The product surface remains the unchanged village.
+    window.petpackSound = {
+      events,
+      mute(value) { demo.worlds.forEach(world => world.setMuted(value)) },
+      cue(type, source = 'pip') { return disposed ? [] : demo.worlds.map(world => world.playSound(type, source)) },
+      states() { return demo.worlds.map(world => world.soundSnapshot()) },
+      async audition() {
+        await unlock()
+        if (disposed) return
+        for (const [i, type] of ['gift','learn','knock','handshake','firework'].entries()) {
+          const timer = setTimeout(() => { timers.delete(timer); this.cue(type) }, i * 1600)
+          timers.add(timer)
+        }
+      },
+    }
+  </script>
+</body>
+</html>

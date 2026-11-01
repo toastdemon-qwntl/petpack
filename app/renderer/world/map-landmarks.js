@@ -31,6 +31,7 @@ function builder(parent, name) {
     for (const [parts, glow] of [[items, false], [glows, true]]) {
       if (!parts.length) continue
       const material = toonMaterial({ color: '#ffffff', emissive: glow ? '#705120' : '#000000' })
+      if (glow) material.userData.nightGlow = true
       const mesh = new THREE.InstancedMesh(cube, material, parts.length)
       mesh.name = `${name}-${glow ? 'warm-windows' : 'timber-stone-tiles'}`
       const dummy = new THREE.Object3D()

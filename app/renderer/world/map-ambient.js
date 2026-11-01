@@ -3,7 +3,7 @@ import { toonMaterial } from './toon.js'
 
 /** Chunk-local, seeded life. The same chunk and world clock render identically. */
 export function createMapAmbient(root, {
-  random, clear, waterShape, chimney = null,
+  random, clear, waterShape, chimney = null, havens = [],
   bounds = { minX: -7, maxX: 7, minZ: -16, maxZ: 14 },
 }) {
   const time = { value: 0 }, dummy = new THREE.Object3D(), tint = new THREE.Color()
@@ -63,6 +63,18 @@ export function createMapAmbient(root, {
   const smoke = instances('chimney-pixel-smoke', chimney ? 7 : 0, toonMaterial({ color: '#d7d3bc' }))
   const leaves = instances('drifting-leaves', 3, toonMaterial({ color: '#b8b566' }))
   const leafSpots = Array.from({ length: 3 }, point)
+  // Consume night-only randomness last: none of the approved daytime scenery,
+  // grass, water sparkle, butterfly or leaf positions changes as a result.
+  const shelters = [...gleams.filter(p => p.z > -7 && p.z < 8), ...havens.map(p => ({ x: p.x, z: p.z + 1.3 }))]
+  const fireflySpots = Array.from({ length: shelters.length ? 12 : 0 }, (_, i) => {
+    const p = shelters[i % shelters.length]
+    return { x: p.x, z: p.z, phase: random() * Math.PI * 2, height: .3 + random() * .65 }
+  })
+  const fireflies = instances('night-fireflies', fireflySpots.length,
+    new THREE.MeshBasicMaterial({ color: '#ffe5a2', transparent: true, opacity: 0, depthWrite: false, toneMapped: false }))
+  fireflies.userData.noOutline = true
+  fireflies.visible = false
+  let night = 0
   let disposed = false
   function set(mesh, i, x, y, z, sx, sy, sz, ry = 0, rz = 0) {
     dummy.position.set(x, y, z); dummy.scale.set(sx, sy, sz); dummy.rotation.set(0, ry, rz)
@@ -80,7 +92,8 @@ export function createMapAmbient(root, {
       const y = .85 + Math.sin(t * 1.4 + p.phase) * .19, flap = Math.sin(t * 10 + p.phase)
       for (let side = 0; side < 2; side++) {
         const sign = side ? 1 : -1
-        set(butterflies, i * 2 + side, x + sign * .07, y + Math.abs(flap) * .04, z, .14, .035, .1, p.phase, flap * sign * 1.1)
+        const daylight = 1 - night
+        set(butterflies, i * 2 + side, x + sign * .07, y + Math.abs(flap) * .04, z, .14 * daylight, .035 * daylight, .1 * daylight, p.phase, flap * sign * 1.1)
       }
     })
     if (chimney) for (let i = 0; i < 7; i++) {
@@ -92,8 +105,19 @@ export function createMapAmbient(root, {
       const age = ((t * .095 + i / 3) % 1 + 1) % 1
       set(leaves, i, p.x + Math.sin(age * 8 + i) * .4, (1 - age) * 2.6 + .08, p.z + age, .12, .035, .19, age * 7, age * 5)
     })
-    for (const mesh of [water, butterflies, smoke, leaves]) mesh.instanceMatrix.needsUpdate = true
+    fireflySpots.forEach((p, i) => {
+      const pulse = .5 + .5 * Math.sin(t * 1.8 + p.phase)
+      const size = pulse > .7 ? .08 : pulse > .25 ? .055 : .025
+      set(fireflies, i, p.x + Math.sin(t * .39 + p.phase) * .35,
+        p.height + Math.sin(t * .7 + p.phase) * .14, p.z + Math.cos(t * .31 + p.phase) * .35, size, size, size)
+    })
+    for (const mesh of [water, butterflies, smoke, leaves, fireflies]) mesh.instanceMatrix.needsUpdate = true
   }
   update(0, 0)
-  return { update, dispose() { disposed = true } }
+  return { update, setNight(amount) {
+    night = THREE.MathUtils.clamp(Number.isFinite(amount) ? amount : 0, 0, 1)
+    fireflies.visible = night > .2
+    fireflies.material.opacity = Math.max(0, (night - .2) / .8)
+    butterflies.visible = night < .999
+  }, dispose() { disposed = true } }
 }

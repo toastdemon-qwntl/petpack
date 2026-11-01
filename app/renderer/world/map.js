@@ -3,6 +3,8 @@ import { createPainter, seededRandom, tree, fence, lantern, flowers, bench, sign
 import { createChunkLandmark } from './map-landmarks.js'
 import { createMapAmbient } from './map-ambient.js'
 import { createTerrain, createStripNavigation } from './map-paths.js'
+import { createNightLights, localHour, sampleDaylight } from './map-light.js'
+import { createKnowledgeGarden } from './map-garden.js'
 
 export const CHUNK_W = 14
 const TYPES = [
@@ -28,8 +30,10 @@ export function createMap(scene, { seed = 1, chunkWidth = CHUNK_W } = {}) {
   scene.add(root)
   const chunks = new Map(), terrain = createTerrain({ seed, chunkWidth })
   const navigation = createStripNavigation(terrain)
+  const garden = createKnowledgeGarden({ chunkWidth })
   const bounds = { minX: -Infinity, maxX: Infinity, minZ: -16, maxZ: 14 }
   let disposed = false, time = 0
+  let localMinute = -1, daylight = scene.userData.petpackDaylight || sampleDaylight(localHour())
   function chunkCenter(i) { return { x: indexOf(i) * chunkWidth, z: -1.25 } }
   function landmark(i) {
     i = indexOf(i)
@@ -50,6 +54,8 @@ export function createMap(scene, { seed = 1, chunkWidth = CHUNK_W } = {}) {
     const wet = (x, z) => terrain.waterShape(cx + x, z)
     const reserved = (x, z) => terrain.isRoad(cx + x, z, .35) || (Math.abs(x) < 4.4 && z > -7 && z < .25)
     const occupied = []
+    const lamps = []
+    const lowProps = []
     const reserve = (x, z, w, d) => occupied.push({ x, z, w: w / 2, d: d / 2 })
     const blocked = (x, z) => occupied.some(o => Math.abs(x - o.x) < o.w + .2 && Math.abs(z - o.z) < o.d + .2)
     const columns = Math.ceil(chunkWidth * 2), cell = chunkWidth / columns
@@ -99,7 +105,10 @@ export function createMap(scene, { seed = 1, chunkWidth = CHUNK_W } = {}) {
       // The apron keeps its walking width even when optional chunks are narrower.
       const x = side * Math.max(3.2, 3.85 * fit)
       if (!wet(x, 3.8)) { flowers(p, x, 3.8, 1.45, .7, random, 18); reserve(x, 3.8, 1.7, 1) }
-      if (!wet(side * 4.4 * fit, -.45)) { lantern(p, side * 4.4 * fit, -.45); reserve(side * 4.4 * fit, -.45, .8, .5) }
+      if (!wet(side * 4.4 * fit, -.45)) {
+        lantern(p, side * 4.4 * fit, -.45); reserve(side * 4.4 * fit, -.45, .8, .5)
+        lamps.push({ x: side * 4.4 * fit + .42, z: -.45, panel: true })
+      }
     }
     signpost(p, -3.7 * fit, -.55, type.icon, 1)
     reserve(-3.7 * fit, -.55, 1.8, .4)
@@ -141,18 +150,42 @@ export function createMap(scene, { seed = 1, chunkWidth = CHUNK_W } = {}) {
         p.box(x, .08, z, .07, .16, .07, '#ded0a4')
         p.box(x, .18, z, .24, .09, .21, '#c59474')
         p.box(x - .055, .23, z, .045, .02, .045, '#ecdcb3')
+        lowProps.push({ x, z })
       } else p.stone(x, .065, z, .13 + random() * .2, .13, .16, j % 3 ? '#a7ab85' : '#c0bd94', random() * 3)
     }
-    p.finish()
+    const scenery = p.finish()
     const architecture = createChunkLandmark(group, type.kind, { scale: .85 * fit })
     const air = createMapAmbient(group, {
       random, bounds: { minX: -half, maxX: half, minZ: -16, maxZ: 14 },
       waterShape: wet, chimney: architecture.chimney,
       clear: (x,z) => !wet(x,z) && !reserved(x,z) && !blocked(x,z),
+      havens: occupied.filter(o => o.w >= 1.2 && o.d >= 1.2),
     })
+    // Reserve low props only after ambient generation: grass placements and
+    // its RNG stream must remain exactly the same in the approved daytime art.
+    const matrix = new THREE.Matrix4(), pos = new THREE.Vector3(), size = new THREE.Vector3(), rotation = new THREE.Quaternion()
+    for (const mesh of scenery) if (mesh.name === 'village-stone') for (let j = 0; j < mesh.count; j++) {
+      mesh.getMatrixAt(j, matrix); matrix.decompose(pos, rotation, size)
+      reserve(pos.x, pos.z, Math.max(size.x, size.z), Math.max(size.x, size.z))
+    }
+    for (const prop of lowProps) reserve(prop.x, prop.z, .33, .33)
+    // Architecture windows remain emissive in their original hue; only their
+    // strength changes. Save each base once instead of multiplying every frame.
+    const glowing = []
+    group.traverse(object => {
+      if (object.material?.userData.nightGlow) glowing.push({ material: object.material, base: object.material.emissiveIntensity })
+    })
+    if (type.kind === 'resource') lamps.push({ x: 0, z: -2.4, radius: 1.5 })
+    else if (type.kind !== 'technique') lamps.push({ x: -.9, z: -1.3, radius: .8 })
+    const lights = createNightLights(group, { lamps, ground: (x,z) => terrain.ground(cx+x,z), waterShape: wet })
+    const gardenClear = (x,z) => !terrain.isWater(cx+x,z) && !reserved(x,z) && !blocked(x,z)
+    garden.mount(i, group, { kind: type.kind, clear: gardenClear, ground: (x,z) => terrain.ground(cx+x,z) })
     root.add(group)
-    const chunk = { group, update(dt,t) { architecture.update(dt,t); air.update(dt,t) }, dispose() {
-      air.dispose(); architecture.dispose(); group.removeFromParent()
+    const chunk = { group, update(dt,t) {
+      architecture.update(dt,t); air.setNight(daylight.night); air.update(dt,t); lights.setNight(daylight.night)
+      for (const glow of glowing) glow.material.emissiveIntensity = glow.base + daylight.night * 3.2
+    }, dispose() {
+      garden.unmount(i); lights.dispose(); air.dispose(); architecture.dispose(); group.removeFromParent()
       const geometries = new Set(), materials = new Set()
       group.traverse(object => {
         if (object.geometry) geometries.add(object.geometry)
@@ -179,7 +212,20 @@ export function createMap(scene, { seed = 1, chunkWidth = CHUNK_W } = {}) {
     bounds, chunkWidth, ensure, chunkCenter, landmark, spotsIn,
     landmarks: { workshop: landmark(0), library: landmark(1), dojo: landmark(2), campfire: landmark(-1) },
     spots: [-1,0,1,2].flatMap(spotsIn), ground: terrain.ground, path: navigation.path,
-    update(dt, t = 0) { if (disposed) return; time = Number.isFinite(t) ? t : time; for (const chunk of chunks.values()) chunk.update(dt,time) },
-    dispose() { if (disposed) return; disposed = true; for (const chunk of chunks.values()) chunk.dispose(); chunks.clear(); root.removeFromParent() },
+    bloom(item) { if (!disposed) return garden.bloom(item) },
+    setGarden(items) { if (!disposed) return garden.setGarden(items) },
+    gardenSnapshot() { return garden.snapshot() },
+    update(dt, t = 0) {
+      if (disposed) return
+      time = Number.isFinite(t) ? t : time
+      if (scene.userData.petpackDaylight) daylight = scene.userData.petpackDaylight
+      else {
+        const minute = Math.floor(Date.now() / 60000)
+        if (minute !== localMinute) { localMinute = minute; daylight = sampleDaylight(localHour()) }
+      }
+      for (const chunk of chunks.values()) chunk.update(dt,time)
+      garden.update(dt,time)
+    },
+    dispose() { if (disposed) return; disposed = true; for (const chunk of chunks.values()) chunk.dispose(); chunks.clear(); garden.dispose(); root.removeFromParent() },
   }
 }
