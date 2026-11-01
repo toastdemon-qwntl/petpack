@@ -183,6 +183,7 @@ function frame(now) {
 }
 requestAnimationFrame(frame)
 addEventListener('mousemove', e => window.petpack?.setInteractive(Boolean(world.pick(e.clientX, e.clientY))))
+window.petpack?.onAgentCall(({ tool }) => ({ tool, note: 'the pack brain (app/renderer/index.html) is not in this build' }))
 `
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -209,72 +210,54 @@ function pick(mods, ...names) {
 
 const ctx = () => ({ userData: USER_DATA, profile: PROFILE, pet: config().pet, name: config().name, demo: config().demo,
   answersDir: path.join(USER_DATA, 'answers'), noExec: Boolean(flags['no-answer']) })
+/** Stable per machine (per profile): random, never a username or email (CONTRACT). */
+function myId() {
+  if (!settings.id) { settings.id = crypto.randomUUID(); saveSettings() }
+  return settings.id
+}
+
 let codex = null
 async function loadCodex() {
-  const [core, catalog, answer, pets, skills, install] = await Promise.all(['index', 'catalog', 'answer', 'pets',
-    'skills', 'install'].map(name => importOptional(`app/codex/${name}.js`)))
-  const all = [core, catalog, answer, skills, install]
-  const fallbackId = () => {
-    if (!settings.id) { settings.id = crypto.randomUUID(); saveSettings() }
-    return settings.id
-  }
-  const getMe = pick([core], 'getMe')
-  const packSkill = pick(all, 'packSkill')
-  const installSkill = pick(all, 'installSkill')
-  const installItem = pick(all, 'installItem')
-  const getCatalog = pick(all, 'getCatalog', 'buildCatalog')
-  const readItem = pick(all, 'readItem')
-  const answerAsk = pick(all, 'answerAsk')
-  const getPet = pick([pets], 'getPet')
-  const listSkills = pick([skills], 'listSkills')
-  // Until L3a's index.js lands: compose getMe from its pets/skills modules.
-  const composedMe = async () => {
-    const pet = getPet ? await getPet(ctx()).catch(() => null) : null
-    let list = []
-    try { list = listSkills ? listSkills(ctx()) : [] } catch {}
-    return { id: fallbackId(), petName: pet?.petName ?? null, displayName: config().name || pet?.displayName || 'You',
-      spriteUrl: pet?.spriteUrl ?? null,
-      skills: list.map(s => ({ id: s.id ?? s.name, name: s.name, description: s.description ?? '' })) }
-  }
+  const [core, catalog, answer] = await Promise.all(['index', 'catalog', 'answer']
+    .map(name => importOptional(`app/codex/${name}.js`)))
+  const createCodex = pick([core], 'createCodex')
+  const api = createCodex ? createCodex({ pet: config().pet, cacheDir: path.join(USER_DATA, 'pets') }) : null
+  const installItem = pick([catalog], 'installItem')
+  const getCatalog = pick([catalog], 'getCatalog')
+  const readItem = pick([catalog], 'readItem')
+  const answerAsk = pick([answer], 'answerAsk')
+  const unavailable = async () => { throw new Error('unavailable in this build') }
   codex = {
-    loaded: { core: Boolean(core), catalog: Boolean(catalog), answer: Boolean(answer) },
-    getMe: getMe ? () => getMe(ctx()) : composedMe,
-    packSkill: packSkill || (async () => { throw new Error('skills are unavailable in this build') }),
-    installSkill: installSkill || (async () => ({ installed: false, reason: 'unavailable' })),
-    installItem: installItem || (installSkill ? (item, from) => installSkill(item, from)
-      : async () => ({ installed: false, reason: 'unavailable' })),
+    loaded: { core: Boolean(api), catalog: Boolean(catalog), answer: Boolean(answer) },
+    async getMe() {
+      const me = api ? await api.getMe(myId()) : { id: myId(), petName: null, displayName: 'You', spriteUrl: null, skills: [] }
+      if (config().name) me.displayName = config().name
+      return me
+    },
+    packSkill: api ? id => api.packSkill(id) : unavailable,
+    installSkill: api ? (pkg, fromName) => api.installSkill(pkg, fromName) : async () => ({ installed: false, reason: 'unavailable' }),
+    installItem: installItem ? (item, fromName) => installItem(item, fromName, ctx()) : async () => ({ installed: false, reason: 'unavailable' }),
     getCatalog: getCatalog ? () => getCatalog(ctx()) : async () => [],
-    readItem: readItem || (async () => { throw new Error('unavailable') }),
-    answerAsk: answerAsk || (async () => ({ ok: false, text: "I can't answer that here." })),
-    status: pick(all, 'watchStatus', 'onStatus', 'subscribeStatus', 'startStatus'),
-    readStatus: pick(all, 'getStatus', 'readStatus', 'currentStatus'),
+    readItem: readItem ? (ref, as) => readItem(ref, as, ctx()) : unavailable,
+    answerAsk: answerAsk ? request => answerAsk(request, ctx()) : async () => ({ ok: false, text: "I can't answer that here." }),
+    onStatus: api ? cb => api.onStatus(cb) : () => () => {},
+    dispose: () => api?.dispose(),
   }
   log('codex modules', codex.loaded)
 }
 
 let lastStatus = { status: 'idle', at: Date.now() }
 function startStatus() {
-  const push = s => {
-    if (!s) return
-    const given = typeof s === 'string' ? { status: s } : s
-    if (given.status === lastStatus.status && (given.at === undefined || given.at === lastStatus.at)) return
-    const next = { at: Date.now(), ...given }
-    lastStatus = next
-    if (win && !win.isDestroyed()) win.webContents.send('petpack:status', lastStatus)
-  }
   try {
-    if (codex.status) return codex.status(push, ctx())
-    if (codex.readStatus) {
-      let busy = false
-      const timer = setInterval(async () => {
-        if (busy) return
-        busy = true
-        try { push(await codex.readStatus(ctx())) } catch {} finally { busy = false }
-      }, 1000)
-      return () => clearInterval(timer)
-    }
-  } catch (error) { console.error(`petpack: status watcher failed: ${error.message}`) }
-  return () => {}
+    return codex.onStatus(s => {
+      if (!s?.status) return
+      lastStatus = { ...s, at: s.at ?? Date.now() }
+      if (win && !win.isDestroyed()) win.webContents.send('petpack:status', { status: lastStatus.status, at: lastStatus.at })
+    })
+  } catch (error) {
+    console.error(`petpack: status watcher failed: ${error.message}`)
+    return () => {}
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -332,13 +315,13 @@ function handle(channel, fn) {
 }
 ipcMain.on('petpack:config', event => { event.returnValue = trusted(event) ? config() : null })
 handle('petpack:getMe', () => codex.getMe())
-handle('petpack:status', () => lastStatus)
-handle('petpack:packSkill', id => codex.packSkill(id, ctx()))
-handle('petpack:installSkill', (pkg, fromName) => codex.installSkill(pkg, fromName, ctx()))
-handle('petpack:installItem', (item, fromName) => codex.installItem(item, fromName, ctx()))
+handle('petpack:status', () => ({ status: lastStatus.status, at: lastStatus.at }))
+handle('petpack:packSkill', id => codex.packSkill(id))
+handle('petpack:installSkill', (pkg, fromName) => codex.installSkill(pkg, fromName))
+handle('petpack:installItem', (item, fromName) => codex.installItem(item, fromName))
 handle('petpack:getCatalog', () => codex.getCatalog())
-handle('petpack:readItem', (ref, as) => codex.readItem(ref, as, ctx()))
-handle('petpack:answerAsk', request => codex.answerAsk(request, ctx()))
+handle('petpack:readItem', (ref, as) => codex.readItem(ref, as))
+handle('petpack:answerAsk', request => codex.answerAsk(request))
 ipcMain.on('petpack:interactive', (event, on) => { if (trusted(event)) clickThrough?.set(on) })
 ipcMain.on('petpack:agent-ready', (event, ready) => {
   if (!trusted(event)) return
@@ -454,6 +437,12 @@ async function runSmoke() {
   try {
     bridge = await win.webContents.executeJavaScript(`(() => { const p = window.petpack; return p ? { keys: Object.keys(p).sort(), config: p.config } : null })()`)
   } catch {}
+  let me = null
+  try {
+    const m = await codex.getMe()
+    me = { id: m.id, petName: m.petName, displayName: m.displayName, sprite: Boolean(m.spriteUrl), atlas: m.atlas ?? null,
+      skills: m.skills?.length ?? 0 }
+  } catch (error) { me = { error: error.message } }
   const display = screen.getDisplayMatching(win.getBounds())
   const bounds = win.getBounds()
   const errors = consoleLog.filter(e => e.level === 'error')
@@ -470,7 +459,7 @@ async function runSmoke() {
     expected: dockBounds({ display, dock: settings.dock, align: settings.align, top: topFraction, scale: paneScale }),
     isAlwaysOnTop: win.isAlwaysOnTop(), isVisible: win.isVisible(),
     ipc: ipcServer ? { endpoint: ipcServer.endpoint || ipcServer.path || null } : null,
-    codex: codex.loaded, bridge,
+    codex: codex.loaded, me, bridge,
     drew: { opaqueFraction: +(opaque / pixels).toFixed(3), sampledColours: colours.size },
     errors, warnings: consoleLog.filter(e => e.level === 'warning').slice(0, 50),
   }
@@ -495,7 +484,7 @@ app.whenReady().then(async () => {
   await loadCodex()
   createWindow()
   const stopStatus = startStatus()
-  app.on('before-quit', () => { try { stopStatus?.() } catch {} })
+  app.on('before-quit', () => { try { stopStatus?.(); codex.dispose() } catch {} })
   startMcpIpc()
   for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(event, () => dock())
   if (process.platform === 'win32') setInterval(() => win && raiseToTop(win), 10000)
