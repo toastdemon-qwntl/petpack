@@ -381,6 +381,10 @@ function createWindow() {
   win.once('ready-to-show', show)
   setTimeout(show, 4000)
   win.on('closed', () => { win = null; clickThrough?.dispose() })
+  // type:'panel' already floats over full-screen apps on every Space; this is the belt-and-braces flag (build B1).
+  if (process.platform === 'darwin' && flags['all-workspaces']) {
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
+  }
   if (DEBUG) wc.openDevTools({ mode: 'detach' })
   wc.loadURL(ENTRY).catch(error => consoleLog.push({ level: 'error', message: `loadURL: ${error.message}` }))
 }
@@ -481,6 +485,7 @@ app.whenReady().then(async () => {
   session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
   session.defaultSession.setPermissionCheckHandler(() => false)
   protocol.handle('petpack', serve)
+  if (process.platform === 'darwin') app.dock?.hide()
   await loadCodex()
   createWindow()
   const stopStatus = startStatus()

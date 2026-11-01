@@ -50,12 +50,14 @@ async function mcpServerModule(root) {
 }
 
 /** The command Codex should run. Under npx it is npx itself; from a checkout or a local install, this exact bin. */
-export function mcpServerCommand(root, nodePath = process.env.PETPACK_NODE || process.execPath) {
+export function mcpServerCommand(root, profile = '', nodePath = process.env.PETPACK_NODE || process.execPath) {
+  const tail = profile ? ['--profile', profile] : []
   if (/[\\/]_npx[\\/]/.test(root)) {
-    return process.platform === 'win32' ? ['cmd', '/c', 'npx', '-y', 'petpack', 'mcp'] : ['npx', '-y', 'petpack', 'mcp']
+    const npx = ['npx', '-y', 'petpack', 'mcp', ...tail]
+    return process.platform === 'win32' ? ['cmd', '/c', ...npx] : npx
   }
   const node = /electron/i.test(path.basename(nodePath)) ? 'node' : nodePath
-  return [node, path.join(root, 'bin', 'petpack.js'), 'mcp']
+  return [node, path.join(root, 'bin', 'petpack.js'), 'mcp', ...tail]
 }
 
 /** 'registered' | 'unregistered', from Codex's config.toml. */
@@ -74,7 +76,7 @@ export async function registerMcp({ root, profile = '', force = false, log = con
   const stateFile = path.join(userDataDir(profile), 'codex-mcp.json')
   if (!force && readJson(stateFile, {}).registered) return { state: 'registered', skipped: true }
   const server = await mcpServerModule(root)
-  const command = mcpServerCommand(root)
+  const command = mcpServerCommand(root, profile)
   let result
   try {
     result = server.installIntoCodex({ command })
