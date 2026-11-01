@@ -48,6 +48,6 @@ export function spring(state, target, dt, stiffness = 220, damping = 23) {
   return state.x
 }
 
-export const ANIMATIONS = new Set(['idle', 'run', 'wave', 'jump', 'failed', 'waiting', 'review'])
+export const ANIMATIONS = new Set(['idle', 'run', 'wave', 'jump', 'failed', 'waiting', 'working', 'review'])
 export const motionState = (x = 0) => ({ x, v: 0 })
 export const safeDelta = dt => Math.min(.1, Math.max(0, Number.isFinite(dt) ? dt : 0))

@@ -3,7 +3,7 @@ import { ANIMATIONS, createContactShadow, motionState, safeDelta, spring } from 
 
 const COLS = 8, ROWS = 9
 const ART_W = 48, ART_H = 52
-const rowForAnim = { idle: 0, wave: 3, jump: 4, failed: 5, waiting: 6, review: 8 }
+const rowForAnim = { idle: 0, wave: 3, jump: 4, failed: 5, waiting: 6, working: 7, review: 8 }
 
 function sourceGrid(width, height, hint) {
   // Keep the normalized texture at 8×9. The final two rows of 8×11 sheets

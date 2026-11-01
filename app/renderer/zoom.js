@@ -8,7 +8,7 @@
 //
 // stage.focus clamps span to 80 world units, so the widest view is 80 / 14 = 5.7 chunks.
 
-const MAX_SPAN = 80
+const MAX_SPAN = 100
 const LABELS_HIDE_AT = 2.25 // level (chunks across) above which name labels hide
 const sheet = typeof CSSStyleSheet === 'function' ? new CSSStyleSheet() : null
 sheet?.replaceSync(`

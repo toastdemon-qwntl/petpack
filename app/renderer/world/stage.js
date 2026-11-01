@@ -181,7 +181,7 @@ export function createStage(canvas, { pixelScale = 2, timeOfDay = null, flip = f
       if (disposed) return
       if (Number.isFinite(nextX)) goal.x = nextX
       if (Number.isFinite(nextZ)) goal.z = nextZ
-      if (Number.isFinite(nextSpan)) goal.span = THREE.MathUtils.clamp(nextSpan, 4, 80)
+      if (Number.isFinite(nextSpan)) goal.span = THREE.MathUtils.clamp(nextSpan, 4, 100)
     },
     toScreen(point) {
       projected.copy(point).project(camera)

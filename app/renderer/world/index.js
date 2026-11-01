@@ -7,7 +7,7 @@ import { createFx } from './fx.js'
 import { createMoments } from './fx-moments.js'
 import { createJoyDirector } from './fx-director.js'
 
-const animations = new Set(['idle', 'run', 'wave', 'jump', 'failed', 'waiting', 'review'])
+const animations = new Set(['idle', 'run', 'wave', 'jump', 'failed', 'waiting', 'working', 'review'])
 const statuses = new Set(['idle', 'working', 'waiting', 'done', 'failed'])
 const parents = new WeakMap()
 const finite = Number.isFinite
