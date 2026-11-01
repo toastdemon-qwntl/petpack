@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld('petpack', {
   currentNeed: () => call('petpack:currentNeed'),
   // L3a: Codex's live task ({ title, status, ... } | null) and its transitions ({ type, title, at }).
   currentTask: () => call('petpack:currentTask'),
+  setFace: pngDataUrl => ipcRenderer.send('petpack:face', String(pngDataUrl || '')),
   onCodexEvent(cb) {
     if (typeof cb !== 'function') return () => {}
     const h = (_e, ev) => cb(ev)

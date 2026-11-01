@@ -637,6 +637,11 @@ async function petIcon() {
   }
   return petFace || undefined
 }
+// The page sends our pet's first frame as a PNG (it decodes WebP sheets; nativeImage can't).
+ipcMain.on('petpack:face', (event, dataUrl) => {
+  if (!trusted(event) || !/^data:image\/png;base64,/.test(String(dataUrl))) return
+  try { const face = nativeImage.createFromDataURL(dataUrl); if (!face.isEmpty()) petFace = face } catch { /* keep the old one */ }
+})
 const notifications = new Set() // held until clicked or closed (a collected notification loses its click)
 function startCodexEvents() {
   return codex.onCodexEvent(async ev => {

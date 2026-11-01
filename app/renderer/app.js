@@ -161,6 +161,7 @@ bridge.onMeChanged?.(async () => {
     const fresh = (await bridge.getMe?.()) || {}
     const sprite = await spriteUpload(fresh.spriteUrl, fresh.atlas)
     me.spriteUrl = fresh.spriteUrl
+    sendFace(fresh.spriteUrl, fresh.atlas)
     brain.setMe({ name: config.name || fresh.displayName || fresh.petName, spriteUrl: fresh.spriteUrl || null, atlas: fresh.atlas || null,
       skills: Array.isArray(fresh.skills) ? fresh.skills : undefined, sprite })
     if (relays.length) connectNet() // hello carries the new sprite; the relay keeps our seat for the same id
@@ -492,6 +493,28 @@ async function takePhoto() {
     else Object.assign(document.createElement('a'), { href: shot, download: `petpack-${Date.now()}.png` }).click()
   } catch (error) { console.warn('petpack photo', error?.message || error) }
 }
+
+/** Our pet's first frame as a PNG for main's Codex notifications (main can't decode WebP sheets itself). */
+async function sendFace(url, atlas) {
+  if (!bridge.setFace || !url || typeof url !== 'string') return
+  try {
+    const image = new Image()
+    image.src = url
+    await image.decode()
+    const cols = Number(atlas?.cols) || 8
+    const rows = Number(atlas?.rows) || Math.max(9, Math.round(image.naturalHeight / (image.naturalWidth / cols / 192 * 208)))
+    const cellW = Number(atlas?.cellW) || Math.floor(image.naturalWidth / cols)
+    const cellH = Number(atlas?.cellH) || Math.floor(image.naturalHeight / rows)
+    const canvas = document.createElement('canvas')
+    canvas.width = 128
+    canvas.height = Math.round(128 * cellH / cellW)
+    const ctx = canvas.getContext('2d')
+    ctx.imageSmoothingEnabled = false
+    ctx.drawImage(image, 0, 0, cellW, cellH, 0, 0, canvas.width, canvas.height)
+    bridge.setFace(canvas.toDataURL('image/png'))
+  } catch (error) { console.warn('petpack face', error?.message || error) }
+}
+sendFace(me.spriteUrl, me.atlas)
 
 /** Peers always get a plain 8x9 sheet: crop the top 9 rows of our atlas and re-encode as WebP (~1 MB). */
 async function spriteUpload(url, atlas) {
