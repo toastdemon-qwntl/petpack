@@ -53,7 +53,7 @@
 //           { t, op: 'share', to } or { t, op: 'move', to, flip: true }   share seat `to` facing the other way
 //           { t, op: 'bump', side, share: true }    bump fallback for 'across': the later bumper shares the seat
 //           { t, op: 'unlink' }                     tray Unlink: drop this laptop's links and any across pairing
-//   sit     { t, sit: 'side'|'across' }             change how this pane sits (pairs/unpairs as above)
+//   sit     { t, sit: 'side'|'across', unlink? }   change how this pane sits; in a pair, only with unlink: true
 //   catalog { t, items: Item[] }                    on change, at most every 5 s
 //   fetch   { t, fid, owner, ref, as: 'text'|'pkg' }
 //   fetched { t, fid, to, ok, sha, text?, pkg?, reason? }    owner's reply to a forwarded fetch
@@ -61,6 +61,8 @@
 //   answer  { t, qid, to, ok, text, share?, pkg?, reason? }  reason 'busy' = re-route once
 //   gift    { t, to, gid, skill: { id, name, description, files: [{ path, b64 }] } }
 //   fx      { t, kind: FX_KINDS[number], ...anything }  learned: { kind:'learned', skill: Skill } also updates skills
+//   layout? { t: 'layout?' }                       ask for the full layout (send when a layout heartbeat's v differs
+//                                                 from the last v you applied; spectators may send it too)
 //
 // Server -> client
 //   welcome { t, v, room, you: { id, seat, x, z, facing, resumed, takeover }, peers: Peer[] /* online, not you */,
@@ -90,6 +92,17 @@
 //           within 60 s; target not online: { ok:false, reason:'away' } from the relay at once
 //   gift    { t, v, from, gid, skill }           target only
 //   fx      { t, v, from, kind, ... }            room except the sender
+//   layout  { t, v /* = LAYOUT version, not the protocol version */, layoutVersion, seats, held, flipped, across,
+//             links, neighbours, sits: { [id]: 'side'|'across' } }   the relay is the single source of truth for the
+//           room layout; every change bumps v (monotonic per room, persisted, never below the wall clock) and sends
+//           one full layout. Every 10 s a heartbeat { t:'layout', v, layoutVersion, beat: true } carries only v: if it
+//           differs from yours, send layout? and apply the full reply. welcome.layout carries the full layout too, and
+//           seat messages carry layoutVersion. Apply a layout wholesale (it replaces seats/flips/links/sits).
+//   sit     { t, sit, corrected: true }       the relay corrected your sit to match your pair (apply it; don't fight)
+//           Pairs agree: the initiator's sit wins (nextTo/bump/share/auto); a sit that contradicts your pair is
+//           corrected, not split. To leave a pair send { t:'sit', sit, unlink: true } or seat { op:'unlink' }.
+//           Auto pairing on join: face to face (opposite docks) within the window or on the same public IP; both side
+//           -> co-work link; either across -> both across (one seat, the newcomer flipped).
 //
 // HTTP on the same host: GET /healthz -> 200 JSON; GET /s/<sha>.webp -> sprite bytes (immutable, CORS open).
 // ---------------------------------------------------------------------------------------------------------------
@@ -118,6 +131,7 @@ export const TEST_PROFILE = /^(it-|s1|rel|smoke|l2|pair)/i
 export function isTestHello (h) {
   return !!h && (h.test === true || h.dock === 'none' || (typeof h.profile === 'string' && TEST_PROFILE.test(h.profile)))
 }
+export const LAYOUT_HEARTBEAT_MS = 10000
 export const OPEN_TIMEOUT_MS = 4000
 export const PRIMARY_PROBE_MS = 15000
 
@@ -143,8 +157,8 @@ export const T = Object.freeze({
   gift: 'gift', fx: 'fx', sit: 'sit'
 })
 
-export const CLIENT_TYPES = Object.freeze(['hello', 'state', 'seat', 'catalog', 'fetch', 'fetched', 'ask', 'answer', 'gift', 'fx', 'sit'])
-export const SERVER_TYPES = Object.freeze(['welcome', 'join', 'leave', 'state', 'seat', 'catalog', 'fetch', 'fetched', 'ask', 'answer', 'gift', 'fx'])
+export const CLIENT_TYPES = Object.freeze(['hello', 'state', 'seat', 'catalog', 'fetch', 'fetched', 'ask', 'answer', 'gift', 'fx', 'sit', 'layout?'])
+export const SERVER_TYPES = Object.freeze(['welcome', 'join', 'leave', 'state', 'seat', 'layout', 'sit', 'catalog', 'fetch', 'fetched', 'ask', 'answer', 'gift', 'fx'])
 
 export const FX_KINDS = Object.freeze(['seek', 'gift', 'learned', 'ask', 'think', 'answer', 'fetch', 'pulse', 'bump', 'wave', 'say'])
 export const SEAT_OPS = Object.freeze(['bump', 'move', 'share', 'nextTo', 'unlink'])

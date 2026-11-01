@@ -105,6 +105,7 @@ export function createRelay (opts = {}) {
     host: opts.host,
     dockPairWindowMs: opts.dockPairWindowMs ?? P.DOCK_PAIR_WINDOW_MS,
     sameIpCowork: opts.sameIpCowork ?? true,
+    layoutHeartbeatMs: opts.layoutHeartbeatMs ?? P.LAYOUT_HEARTBEAT_MS,
     publicUrl: opts.publicUrl ?? process.env.PETPACK_PUBLIC_URL ?? null,
     now: opts.now ?? Date.now,
     batchMs: opts.batchMs ?? P.STATE_BATCH_MS,
@@ -158,7 +159,7 @@ export function createRelay (opts = {}) {
       const data = {
         v: 1, savedAt: now(),
         rooms: [...rooms.values()].filter((r) => r.name !== P.SCRATCH_ROOM).map((r) => ({
-          name: r.name, links: r.links,
+          name: r.name, links: r.links, layoutVersion: r.layoutVersion || 0,
           members: [...r.members.values()].filter((m) => !m.test).map((m) => ({
             id: m.id, name: m.name, color: m.color, dock: m.dock, skills: m.skills, catalog: m.catalog,
             sprite: m.sprite, spriteSha: m.spriteSha ?? null, device: m.device ?? null, seat: m.seat, lastSeen: m.online ? now() : m.lastSeen,
@@ -203,6 +204,7 @@ export function createRelay (opts = {}) {
             byId.set(s.id, name)
           }
           if (!fold) room.links = arr(r.links).filter((l) => Array.isArray(l) && room.members.has(l[0]) && room.members.has(l[1]))
+          if (!fold && Number.isFinite(r.layoutVersion)) room.layoutVersion = Math.max(room.layoutVersion || 0, r.layoutVersion)
           if (!room.members.size) rooms.delete(name); else if (!fold) nRooms++
         }
       }
@@ -274,9 +276,63 @@ export function createRelay (opts = {}) {
   function sendWs (ws, data) { if (ws.readyState === 1) ws.send(data) }
 
   function broadcast (room, msg, exceptId = null) {
+    if (msg.t === 'seat') { commitLayout(room); msg = { ...msg, layoutVersion: room.layoutVersion } }
     const data = P.encode(msg)
     for (const m of room.members.values()) if (m.online && m.id !== exceptId) send(m, data)
     for (const ws of room.spectators) sendWs(ws, data) // spectators see everything the room sees
+  }
+
+  // ---- the room LAYOUT: the relay is its single source of truth ----------------------------------------------------
+  // seats, flips, across pairs, links, neighbours and each pane's sit. Every change bumps layoutVersion (monotonic,
+  // persisted; never below the wall clock so a restart can't go backwards) and broadcasts one `layout` message.
+
+  function layoutOf (room) {
+    const s = seatMsg(room, 'layout')
+    const sits = {}
+    for (const m of room.members.values()) if (m.seat != null) sits[m.id] = m.sit || 'side'
+    return { seats: s.seats, held: s.held, flipped: s.flipped, across: s.across, links: s.links, neighbours: s.neighbours, sits }
+  }
+
+  // in a `layout` message, v is the LAYOUT version (not the protocol version); layoutVersion repeats it
+  const layoutMsg = (room) => ({ t: 'layout', ...layoutOf(room), v: room.layoutVersion || 0, layoutVersion: room.layoutVersion || 0 })
+
+  function commitLayout (room, { exceptId = null, quiet = false } = {}) {
+    const l = layoutOf(room)
+    const key = JSON.stringify([l.seats, l.held, l.flipped, l.links, l.sits])
+    if (key === room.layoutKey) return false
+    room.layoutKey = key
+    room.layoutVersion = Math.max((room.layoutVersion || 0) + 1, now())
+    if (!quiet) {
+      const data = P.encode(layoutMsg(room))
+      for (const m of room.members.values()) if (m.online && m.id !== exceptId) send(m, data)
+      for (const ws of room.spectators) sendWs(ws, data)
+    }
+    markDirty()
+    return true
+  }
+
+  function layoutBeat () {
+    for (const room of rooms.values()) {
+      if (!room.spectators.size && !online(room).length) continue
+      const data = P.encode({ t: 'layout', v: room.layoutVersion || 0, layoutVersion: room.layoutVersion || 0, beat: true })
+      for (const m of room.members.values()) if (m.online) send(m, data)
+      for (const ws of room.spectators) sendWs(ws, data)
+    }
+  }
+
+  // the other pane of a pair gets a corrective sit (in the same layout version) when the pair's sit wins over its own
+  function correctSit (room, m, sit) {
+    if (!m || m.sit === sit) return
+    m.sit = sit; m.sitAt = now()
+    send(m, { t: 'sit', sit, corrected: true })
+  }
+  const pairedAcross = (room, m) => !!m.shareWith || hosting(room, m)
+  const pairedSide = (room, m) => room.links.some(([a, b]) => a === m.id || b === m.id)
+  // a side (co-work) pair: the initiator is side now; the other follows unless it is in an across pair of its own
+  function pairSide (room, m, other) {
+    correctSit(room, m, 'side')
+    const o = other?.shareWith ? room.members.get(other.shareWith) : other
+    if (o && !pairedAcross(room, o)) correctSit(room, o, 'side')
   }
 
   // ---- seats: chains of linked laptops, one empty chunk between chains, never compacted ---------------------------
@@ -445,16 +501,25 @@ export function createRelay (opts = {}) {
   // whose facing side is free: first the most recent one that joined within dockPairWindowMs; failing that, one on
   // the same public IP (the venue NAT), nearest in time. The newcomer moves beside the partner, who stays put.
   function dockAutoLink (room, m) {
-    const usable = (x) => x.online && x.seat != null && x.sit !== 'across' && !x.shareWith && !hosting(room, x)
+    const usable = (x) => x.online && x.seat != null && !x.shareWith && !hosting(room, x)
     if (!m || !usable(m) || (m.dock !== 'left' && m.dock !== 'right')) return null
     if (room.links.some(([a, b]) => a === m.id || b === m.id)) return null
     const want = m.dock === 'right' ? 'left' : 'right'
+    const linked = (x) => room.links.some(([a, b]) => a === x.id || b === x.id)
     const facingFree = (x) => !(x.dock === 'left' ? leftOf(room, x.id) : rightOf(room, x.id))
-    const cands = online(room).filter((x) => x.id !== m.id && x.dock === want && usable(x) && facingFree(x))
+    // an across partner must be wholly free (it will share a seat); a side partner needs only its facing side free
+    const cands = online(room).filter((x) => x.id !== m.id && x.dock === want && usable(x) &&
+      (m.sit === 'across' || x.sit === 'across' ? !linked(x) : facingFree(x)))
     const dt = (x) => Math.abs((m.dockAt ?? 0) - (x.dockAt ?? 0))
     let partner = cands.filter((x) => dt(x) <= cfg.dockPairWindowMs).sort((a, b) => (b.dockAt ?? 0) - (a.dockAt ?? 0))[0]
     if (!partner && cfg.sameIpCowork && m.ip) partner = cands.filter((x) => x.ip === m.ip).sort((a, b) => dt(a) - dt(b))[0]
     if (!partner) return null
+    if (m.sit === 'across' || partner.sit === 'across') {
+      // smart inference: face to face and one of them sits across -> both across, sharing one seat (newcomer flipped)
+      if (!makeGuest(room, m, partner)) return null
+      correctSit(room, partner, 'across'); m.sit = 'across'; m.sitAt = now() // the newcomer learns it in its welcome
+      return { ok: true, across: true, pair: [partner.id, m.id] }
+    }
     const r = coworkPlace(room, m, partner, sideFor(m.dock))
     return r.ok ? r : null
   }
@@ -494,15 +559,16 @@ export function createRelay (opts = {}) {
     const partner = cands[0]
     room.bumps = room.bumps.filter((b) => b !== partner)
     const pm = room.members.get(partner.id)
-    if (share || partner.share || (m.sit === 'across' && pm?.sit === 'across')) {
-      // bump fallback for battleships: the later bumper shares the earlier one's seat, facing the other way
+    if (share || partner.share || m.sit === 'across') {
+      // battleships bump: the later bumper (the initiator, whose sit wins) shares the other's seat, facing the other way
       const ok = makeGuest(room, m, pm)
+      if (ok) { correctSit(room, m, 'across'); correctSit(room, pm, 'across') }
       broadcast(room, seatMsg(room, 'bump', ok ? { ids: [pm.id, m.id] } : { ids: [pm.id, m.id], shrug: true }))
       return
     }
     // same rule as nextTo: the later bumper sits beside the earlier one (who stays), on the edge it bumped
     const r = coworkPlace(room, m, pm, side === 'right' ? 'left' : 'right')
-    if (r.ok) broadcast(room, seatMsg(room, 'cowork', { cowork: r.pair, ids: r.pair, via: 'bump' }))
+    if (r.ok) { pairSide(room, m, pm); broadcast(room, seatMsg(room, 'cowork', { cowork: r.pair, ids: r.pair, via: 'bump' })) }
     else if (r.full) broadcast(room, seatMsg(room, 'full', { ids: r.ids, via: 'bump' }))
     else broadcast(room, seatMsg(room, 'bump', { ids: [m.id, partner.id], shrug: true }))
   }
@@ -609,13 +675,18 @@ export function createRelay (opts = {}) {
     }
     ws._petpack = { room, m }
     if (!wasOnline || m.dockAt == null || prevDock !== m.dock) m.dockAt = now() // joined or re-docked
-    const sit = P.SITS.includes(h.sit) ? h.sit : (m.sit || 'side')
+    // a pane already in a pair keeps the pair's sit: a contradicting hello.sit is corrected, not split (unlink splits)
+    let sit = P.SITS.includes(h.sit) ? h.sit : (m.sit || 'side')
+    let corrected = false
+    if (pairedAcross(room, m) && sit !== 'across') { sit = 'across'; corrected = true }
+    if (!pairedAcross(room, m) && pairedSide(room, m) && sit !== 'side') { sit = 'side'; corrected = true }
     if (!wasOnline || m.sitAt == null || sit !== m.sit) m.sitAt = now()
-    if (sit === 'side' && m.sit === 'across') unpair(room, m)
     m.sit = sit
     syncGuests(room) // a returning guest follows its host's seat
     const across = m.sit === 'across' ? acrossPair(room, m) : false
-    const docked = across || (m.sit === 'side' ? dockAutoLink(room, m) : false)
+    const docked = across || dockAutoLink(room, m)
+    const inferredAcross = !!docked?.across
+    if (m.sit !== sit) corrected = true
     if (!known) { // a new agent starts where its client says, else at its seat's home
       m.x = num(h.x, P.seatCenterX(m.seat))
       m.z = num(h.z, 0)
@@ -623,18 +694,20 @@ export function createRelay (opts = {}) {
     } // a known agent resumes at its registry position (absolute, across sessions); the client adopts welcome.you
     m.anim = P.ANIMS.includes(h.anim) ? h.anim : 'idle'
 
+    commitLayout(room, { exceptId: id }) // the newcomer gets the fresh layout inside its welcome
     const views = registryViews(room)
     send(m, {
       t: 'welcome', room: roomName,
-      you: { id, seat: m.seat, flipped: !!m.flipped, sit: m.sit, x: m.x, z: m.z, facing: m.facing, resumed: known, takeover: wasOnline },
+      you: { id, seat: m.seat, flipped: !!m.flipped, sit: m.sit, sitCorrected: corrected, x: m.x, z: m.z, facing: m.facing, resumed: known, takeover: wasOnline },
+      layout: layoutMsg(room),
       ...views,
       peers: views.peers.filter((p) => p.id !== id),
       agents: views.agents.filter((a) => a.id !== id)
     })
     if (!wasOnline) broadcast(room, { t: 'join', peer: peerView(m) }, id)
     else m.dirty = true // a takeover: no join/leave churn, just a fresh state for everyone
-    if (docked || snapshot(room) !== before || !wasOnline) broadcast(room, seatMsg(room, across ? 'across' : docked ? 'dock' : 'join', docked?.pair ? { cowork: docked.pair } : {}))
-    cfg.log('hello', roomName, id, 'seat', m.seat, docked ? 'dock-linked' : '')
+    if (docked || snapshot(room) !== before || !wasOnline) broadcast(room, seatMsg(room, across || inferredAcross ? 'across' : docked ? 'dock' : 'join', docked?.pair ? { cowork: docked.pair } : {}))
+    cfg.log('hello', roomName, id, 'seat', m.seat, 'ip', ipTag(m.ip), docked ? 'dock-linked' : '')
     markDirty()
   }
 
@@ -676,7 +749,10 @@ export function createRelay (opts = {}) {
       onHello(ws, req, msg)
       return
     }
-    if (ctx.spectator) return // read-only: a spectator sends nothing but pings
+    if (ctx.spectator) { // read-only: a spectator sends nothing but pings and layout?
+      if (msg.t === 'layout?') sendWs(ws, P.encode(layoutMsg(ctx.room)))
+      return
+    }
     const { room, m } = ctx
     if (m.ws !== ws) return
     m.lastSeen = now()
@@ -695,17 +771,28 @@ export function createRelay (opts = {}) {
         if (msg.op === 'bump' && (msg.side === 'left' || msg.side === 'right')) { bump(room, m, msg.side, msg.share === true); break }
         if (msg.op === 'nextTo') { // co-work: seat me beside target (agent id or name); the target stays put
           const target = findAgent(room, msg.target)
+          if (target && m.sit === 'across') { // the initiator's sit wins: an across pane shares the target's seat
+            const host = target.shareWith ? room.members.get(target.shareWith) : target
+            if (m.shareWith && m.shareWith !== host?.id) unpair(room, m)
+            const ok = host && host.id !== m.id && (m.shareWith === host.id || makeGuest(room, m, host))
+            if (ok) { correctSit(room, host, 'across'); broadcast(room, seatMsg(room, 'across', { cowork: [host.id, m.id], ids: [host.id, m.id] })) }
+            else broadcast(room, seatMsg(room, 'full', { ids: [m.id, target.id] }))
+            break
+          }
           const r = target ? coworkPlace(room, m, target, sideFor(m.dock)) : { ok: false, reason: 'not found' }
-          if (r.ok) broadcast(room, seatMsg(room, 'cowork', { cowork: r.pair, ids: r.pair }))
+          if (r.ok) { pairSide(room, m, target); broadcast(room, seatMsg(room, 'cowork', { cowork: r.pair, ids: r.pair })) }
           else if (r.full) broadcast(room, seatMsg(room, 'full', { ids: r.ids }))
           else send(m, seatMsg(room, 'cowork', { ids: [m.id], shrug: true, reason: r.reason }))
           break
         }
         let why = null
         if ((msg.op === 'share' || (msg.op === 'move' && msg.flip === true)) && Number.isFinite(msg.to)) {
-          // "share seat N facing the other way": become the flipped guest of whoever owns seat N
+          // "share seat N facing the other way": become the flipped guest of whoever owns seat N; both sit across
           const host = seated(room).find((x) => x.id !== m.id && x.seat === Math.floor(msg.to))
-          if (host && host.id !== m.shareWith) { if (m.shareWith) unpair(room, m); makeGuest(room, m, host) }
+          if (host && host.id !== m.shareWith) {
+            if (m.shareWith) unpair(room, m)
+            if (makeGuest(room, m, host)) { correctSit(room, m, 'across'); correctSit(room, host, 'across') }
+          }
           why = 'move'
         } else if (msg.op === 'move' && Number.isFinite(msg.to)) {
           if (m.shareWith) unpair(room, m)
@@ -714,15 +801,26 @@ export function createRelay (opts = {}) {
         if (why) broadcast(room, seatMsg(room, why, snapshot(room) === before ? { ids: [m.id] } : {}))
         break
       }
-      case 'sit': { // { t:'sit', sit:'side'|'across' }: change how this pane sits with its neighbour
+      case 'sit': { // { t:'sit', sit, unlink? }: change how this pane sits; a pair keeps its sit unless unlink: true
         if (!P.SITS.includes(msg.sit)) break
         const before = snapshot(room)
+        const pairSit = pairedAcross(room, m) ? 'across' : pairedSide(room, m) ? 'side' : null
+        if (pairSit && msg.sit !== pairSit && msg.unlink !== true) { // contradicts its pair: corrected, not split
+          if (m.sit !== pairSit) { m.sit = pairSit; m.sitAt = now() }
+          send(m, { t: 'sit', sit: pairSit, corrected: true, layoutVersion: room.layoutVersion })
+          break
+        }
+        if (msg.unlink === true) { unpair(room, m); unlinkAll(room, m.id); layout(room) }
         if (msg.sit !== m.sit) { m.sit = msg.sit; m.sitAt = now() }
-        let paired = false
-        if (m.sit === 'across') { unlinkAll(room, m.id); layout(room); paired = acrossPair(room, m) } else unpair(room, m)
-        if (paired || snapshot(room) !== before) broadcast(room, seatMsg(room, paired ? 'across' : 'sit'))
+        let paired = null
+        if (m.sit === 'across' && !pairedAcross(room, m)) {
+          unlinkAll(room, m.id); layout(room)
+          paired = acrossPair(room, m) || dockAutoLink(room, m)
+        }
+        broadcast(room, seatMsg(room, paired ? 'across' : 'sit'))
         break
       }
+      case 'layout?': send(m, layoutMsg(room)); break // self-healing: a client whose v differs asks for the full layout
       case 'catalog': {
         m.catalog = arr(msg.items)
         broadcast(room, { t: 'catalog', id: m.id, items: m.catalog }, m.id)
@@ -908,6 +1006,7 @@ export function createRelay (opts = {}) {
   function start () {
     timers.push(setInterval(flushState, cfg.batchMs))
     timers.push(setInterval(housekeep, 5000))
+    timers.push(setInterval(layoutBeat, cfg.layoutHeartbeatMs))
     timers.push(setInterval(() => {
       for (const ws of wss.clients) {
         if (!ws._alive) { ws.terminate(); continue }

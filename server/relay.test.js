@@ -8,7 +8,7 @@ import { DEFAULT_ROOM, SCRATCH_ROOM } from '../shared/protocol.js'
 
 let relay, url
 before(async () => {
-  relay = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: null })
+  relay = createRelay({ port: 0, host: '127.0.0.1', log: process.env.RELAY_LOG ? console.log : () => {}, dataDir: null })
   ;({ url } = await relay.listen())
 })
 after(() => relay.close())
@@ -27,7 +27,7 @@ function client (hello, wsUrl = url) {
         const i = inbox.findIndex(pred)
         if (i >= 0) return Promise.resolve(inbox.splice(i, 1)[0])
         return new Promise((res, rej) => {
-          const w = { pred, res, timer: setTimeout(() => { waiters.splice(waiters.indexOf(w), 1); rej(new Error(`${hello.id}: timed out waiting`)) }, ms) }
+          const w = { pred, res, timer: setTimeout(() => { waiters.splice(waiters.indexOf(w), 1); rej(new Error(`${hello.id}: timed out waiting; inbox: ${inbox.map((x) => x.t + (x.why ? ':' + x.why : '') + (x.peer ? ':' + x.peer.id : '')).join(' ')}`)) }, ms) }
           waiters.push(w)
         })
       },
@@ -391,6 +391,7 @@ test('never duplicated: the same id again takes the agent over, no leave/join ch
   const old = createNet({ urls: [url], hello: () => ({ t: 'hello', v: 2, id: 'dup-a', room: 'dup', name: 'Rex' }), onStatus: (s) => statuses.push(s), random: () => 0 })
   old.connect()
   await b.next((m) => m.t === 'join' && m.peer.id === 'dup-a')
+  while (!old.connected) await sleep(10) // its welcome may land just after b sees the join
   old.send({ t: 'state', x: 9.5, z: 1.25, facing: -1, anim: 'run', status: 'working' })
   await b.next(has('dup-a'))
   const second = await client({ id: 'dup-a', room: 'dup', x: 0, z: 0 }) // e.g. a second pane, sending its home
@@ -470,9 +471,10 @@ test('a spectator sees every agent on every seat, read-only, with no seat', asyn
 })
 
 test("battleships: two 'across' panes share one seat, the later one flipped; side panes are unaffected", async () => {
-  const r = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: null, dockPairWindowMs: 300 })
+  const r = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: null, dockPairWindowMs: 300, sameIpCowork: false })
   const u = (await r.listen()).url
   const side = await client({ id: 'ac-side', room: 'across', dock: 'left' }, u)
+  await sleep(400) // the side pane is out of the window (and no same-IP inference here)
   const a = await client({ id: 'ac-a', room: 'across', sit: 'across', dock: 'right' }, u)
   const b = await client({ id: 'ac-b', room: 'across', sit: 'across', dock: 'left' }, u)
   const s = await a.next((m) => m.t === 'seat' && m.why === 'across')
@@ -495,8 +497,11 @@ test("battleships: two 'across' panes share one seat, the later one flipped; sid
   const shared = await c.next((m) => m.t === 'seat' && m.why === 'move' && m.flipped['ac-c'])
   assert.equal(shared.seats['ac-c'], shared.seats['ac-side'])
 
-  // switching back to side unpairs: the flipped pane gets its own seat at the end
+  // a plain sit that contradicts the pair is corrected (pair kept); only an explicit unlink splits it
   b.send({ t: 'sit', sit: 'side' })
+  const fix = await b.next((m) => m.t === 'sit' && m.corrected)
+  assert.equal(fix.sit, 'across')
+  b.send({ t: 'sit', sit: 'side', unlink: true }) // switching back to side for real: the flipped pane gets its own seat
   const back = await a.next((m) => m.t === 'seat' && m.why === 'sit')
   assert.ok(!back.flipped['ac-b']); assert.notEqual(back.seats['ac-b'], back.seats['ac-a'])
   assert.deepEqual(back.across, [['ac-side', 'ac-c']])
@@ -557,6 +562,48 @@ test('auto co-work: opposite docks on the same public IP pair even outside the w
   assert.equal(s.seats['ip-a'], a.welcome.you.seat, 'the earlier laptop stays put')
   assert.deepEqual(b.welcome.neighbours['ip-b'], { left: 'ip-a', right: null, across: null })
   await Promise.all([a.close(), b.close()])
+  await r.close()
+})
+
+test('layout: one source of truth, monotonic version, heartbeat heals a missed update, pairs agree, reconnect keeps it', async () => {
+  const r = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: null, layoutHeartbeatMs: 150 })
+  const u = (await r.listen()).url
+  const a = await client({ id: 'ly-a', room: 'layout', dock: 'right', sit: 'side' }, u)
+  assert.ok(a.welcome.layout.v > 0 && a.welcome.layout.seats['ly-a'] === a.welcome.you.seat, 'welcome carries the full layout')
+  const v0 = a.welcome.layout.v
+  // B docks face to face on the same IP and sits across: they pair, the initiator's across wins, A is corrected
+  const b = await client({ id: 'ly-b', room: 'layout', dock: 'left', sit: 'across' }, u)
+  const l1 = await a.next((m) => m.t === 'layout' && !m.beat && m.seats['ly-b'] !== undefined)
+  assert.ok(l1.v > v0, 'version goes up')
+  assert.deepEqual(l1.flipped, { 'ly-b': true }); assert.deepEqual(l1.across, [['ly-a', 'ly-b']])
+  assert.deepEqual(l1.sits, { 'ly-a': 'across', 'ly-b': 'across' }, 'the pair agrees')
+  assert.equal(l1.seats['ly-a'], l1.seats['ly-b'])
+  const fix = await a.next((m) => m.t === 'sit' && m.corrected)
+  assert.equal(fix.sit, 'across')
+  assert.equal(b.welcome.layout.v, l1.v); assert.equal(b.welcome.you.flipped, true)
+
+  // A contradicts its pair: corrected, not split
+  a.send({ t: 'sit', sit: 'side' })
+  assert.equal((await a.next((m) => m.t === 'sit' && m.corrected)).sit, 'across')
+
+  // C joins: A "misses" that layout; the heartbeat shows a different v, A asks layout? and heals
+  const c = await client({ id: 'ly-c', room: 'layout', dock: 'right' }, u)
+  const missed = await a.next((m) => m.t === 'layout' && !m.beat && m.seats['ly-c'] !== undefined) // dropped on purpose
+  const beat = await a.next((m) => m.t === 'layout' && m.beat && m.v === missed.v)
+  assert.ok(beat.v > l1.v && beat.seats === undefined, 'a heartbeat carries only v')
+  a.send({ t: 'layout?' })
+  const healed = await a.next((m) => m.t === 'layout' && !m.beat && m.v === beat.v)
+  assert.deepEqual(healed.seats, missed.seats)
+
+  // reconnect: B drops and returns (its saved sit even says side): same seat, still flipped, still across
+  await b.close()
+  const b2 = await client({ id: 'ly-b', room: 'layout', dock: 'left', sit: 'side' }, u)
+  assert.equal(b2.welcome.you.seat, healed.seats['ly-a']); assert.equal(b2.welcome.you.flipped, true)
+  assert.equal(b2.welcome.you.sit, 'across'); assert.equal(b2.welcome.you.sitCorrected, true)
+  assert.ok(b2.welcome.layout.v > healed.v)
+  const vs = [v0, l1.v, missed.v, b2.welcome.layout.v]
+  assert.deepEqual([...vs].sort((x, y) => x - y), vs, 'monotonic')
+  await Promise.all([a.close(), b2.close(), c.close()])
   await r.close()
 })
 
