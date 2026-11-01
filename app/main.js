@@ -436,7 +436,7 @@ handle('petpack:elicitShare', async ({ fromName, title } = {}) => {
 // A teammate's question our catalog can't answer at once: a new Codex thread with it typed in (tray toggle).
 const promptedAsks = new Set()
 handle('petpack:askInCodex', async ({ id, fromName, question } = {}) => {
-  if (settings.answerInCodex === false || SMOKE || !id || !question || promptedAsks.has(id)) return { ok: false, skipped: true }
+  if (settings.answerInCodex !== true || SMOKE || !id || !question || promptedAsks.has(id)) return { ok: false, skipped: true }
   promptedAsks.add(id)
   const open = pick([await importOptional('app/mcp/open-prompt.js')], 'openCodexWithPrompt')
   if (!open) return { ok: false, reason: 'unavailable' }
@@ -727,7 +727,7 @@ app.whenReady().then(async () => {
   for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(event, () => dock())
   if (process.platform === 'win32') setInterval(() => win && raiseToTop(win), 10000)
   if (SMOKE) { runSmoke().catch(error => { console.error(error); app.exit(1) }); return }
-  tray = createTray({ state: () => ({ room: settings.room, seat: settings.seat, dock: settings.dock, sit: settings.sit === 'across' ? 'across' : 'side', answerInCodex: settings.answerInCodex !== false,
+  tray = createTray({ state: () => ({ room: settings.room, seat: settings.seat, dock: settings.dock, sit: settings.sit === 'across' ? 'across' : 'side', answerInCodex: settings.answerInCodex === true,
     align: settings.align, codex: codexState }), actions: trayActions(), pane: () => win, userData: USER_DATA,
     // A new pet from the tray: the page re-reads getMe() and re-sends its sprite (no reload, the walk goes on).
     onPetChange: () => { petFace = null; if (win && !win.isDestroyed()) win.webContents.send('petpack:me-changed') } })

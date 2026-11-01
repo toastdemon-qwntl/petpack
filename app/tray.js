@@ -194,7 +194,7 @@ export function createTray({ state, actions, onPetChange, pane, userData }) {
         submenu: petMenu(pets, choose, chooseFolder) },
       { label: 'Codex', submenu: [...codex,
         ...(actions.setAnswerInCodex ? [{ type: 'separator' }, { label: 'Answer teammates in Codex', type: 'checkbox',
-          checked: s.answerInCodex !== false, click: item => actions.setAnswerInCodex(item.checked) }] : [])] },
+          checked: s.answerInCodex === true, click: item => actions.setAnswerInCodex(item.checked) }] : [])] },
       { type: 'separator' },
       { label: 'Quit petpack', click: () => actions.quit() },
     ])
