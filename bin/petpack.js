@@ -27,6 +27,7 @@ Options:
   --dock left|right    screen edge to dock to (remembered; default right)
   --room <code>        join a team room (remembered; default: everyone on your network)
   --seat <n>           ask for a seat on the shared map
+  --sit side|across    laptops side by side (one long strip) or facing each other across a table (remembered)
   --demo               add demo pets so one laptop shows the whole story
   --pet <name>         which Codex pet to bring (default: the one Codex has selected)
   --name <name>        the name shown over your pet

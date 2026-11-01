@@ -93,7 +93,7 @@ const brain = createBrain({
   me: { id: myId, name: config.name || me.displayName || me.petName || 'Pip', spriteUrl: me.spriteUrl || null, atlas: me.atlas || null,
     skills: Array.isArray(me.skills) ? me.skills : [], catalog, sprite },
   config: { demo, seat: config.seat, dock, room: config.room || null, sharing: config.sharing || null, dnd: !!config.dnd,
-    sit: config.sit === 'across' ? 'across' : 'side' },
+    sit: config.sit === 'across' ? 'across' : 'side', device: config.device || null },
   view: {
     // One text bubble per pane at a time, and only for pets this pane shows.
     ask: (a, b, o) => queueText({ ids: [a, b], hold: 4800, first: true, run: () => world.ask(a, b, o) }),

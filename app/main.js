@@ -94,6 +94,8 @@ function config() {
     profile: PROFILE || null, version: VERSION, platform: process.platform,
     pane: { ...paneSize(paneScale), scale: paneScale }, debug: DEBUG,
     sharing: brainSharing(), dnd: Boolean(traySharing()?.dnd), sit: settings.sit === 'across' ? 'across' : 'side',
+    // Device registry fingerprint (hello.device): this machine + profile, hashed; the relay keys agents by id first.
+    device: crypto.createHash('sha256').update(`${os.hostname()}|${PROFILE || ''}`).digest('hex').slice(0, 32),
   }
 }
 
