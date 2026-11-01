@@ -318,6 +318,12 @@ bridge.onPanelCommand?.(msg => {
   else if (cmd === 'mute') joy.setMuted(!!on, true)
   else if (cmd === 'party') brain.party?.()
   else if (cmd === 'sit') brain.setSit?.(msg.sit === 'across' ? 'across' : 'side')
+  else if (cmd === 'people') reportPeople(true)
+  else if (cmd === 'cowork' && msg.id) {
+    Promise.resolve(brain.coworkWith ? brain.coworkWith(msg.id) : { ok: false, message: `couldn't sit next to ${msg.name || 'them'} right now` })
+      .catch(error => ({ ok: false, message: String(error?.message || error) }))
+      .then(r => { try { bridge.panelReport?.({ cowork: { name: msg.name, ...(r || {}) }, people: panelPeople() }) } catch { /* bridge gone */ } })
+  }
   else if (cmd === 'sharing' && msg.sharing) { // main already saved it (settings.json `share`); the live brain follows
     const s = msg.sharing
     brain.setSharing?.({ mode: s.mode === 'off' ? 'never' : s.mode, items: s.items || Object.fromEntries((s.hidden || []).map(ref => [ref, false])) })
@@ -342,7 +348,26 @@ brain.on?.('involved', info => { if (info?.kind) activity(`${info.kind}${info.wi
 brain.on?.('visitor-enter', v => { if (v?.name && !v.bot) activity(`${v.name} walked onto this screen`, 'visit') })
 brain.on?.('need', n => { if (n?.item?.title) activity(`stuck? ${n.item.title} might help`, 'need') })
 brain.on?.('online', info => bridge.panelReport?.({ online: info ? brain.pets().filter(p => !p.bot).length : null }))
+/** Everyone online in the room but us, for the popover's co-working list; side = the seat beside ours. */
+function panelPeople() {
+  const seats = brain._?.seats
+  return brain.pets().filter(p => !p.isMe && !p.away).map(p => {
+    const seat = seats?.get?.(p.id)
+    const side = seat === brain.seat - 1 ? 'left' : seat === brain.seat + 1 ? 'right' : null
+    const spriteUrl = p.spriteUrl && !p.local ? relayAsset(net?.url || relays[0], p.spriteUrl) : (p.spriteUrl || null)
+    return { id: p.id, name: p.displayName, spriteUrl, atlas: p.atlas || null, status: p.status || 'idle', dnd: !!p.dnd, side }
+  })
+}
+let peopleSig = ''
+function reportPeople(force) {
+  const people = panelPeople()
+  const sig = JSON.stringify(people.map(p => [p.id, p.status, p.dnd, p.side, p.name]))
+  if (!force && sig === peopleSig) return
+  peopleSig = sig
+  try { bridge.panelReport?.({ people }) } catch { /* bridge gone */ }
+}
 setInterval(() => {
+  reportPeople(false) // sprites are big: only when someone arrives, leaves or changes
   const mine = brain.me || {}
   const busyWith = mine.job && mine.job.mode !== 'return' ? (mine.jobWith || null) : null
   try { bridge.panelReport?.({ name: mine.name, status: mine.status, home: chunkOf(mine.x) === brain.seat, dnd: !!brain.dnd, muted: joy.muted, busyWith }) } catch { /* bridge gone */ }
