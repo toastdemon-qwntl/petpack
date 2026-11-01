@@ -72,7 +72,14 @@ if (['celebrate', 'knock', 'handshake'].some(name => typeof world[name] === 'fun
   joy.play = await attach('./world/play.js', 'attachPlay', { container: viewport })
   joy.mood = await attach('./world/mood.js', 'attachMood')
 }
-joy.mute = () => { joy.muted = !joy.muted; world.setMuted?.(joy.muted); flash(joy.muted ? 'sound off' : 'sound on') }
+joy.setMuted = (on, quiet) => {
+  joy.muted = !!on; world.setMuted?.(joy.muted)
+  if (!quiet) flash(joy.muted ? 'sound off' : 'sound on')
+  bridge.panelReport?.({ muted: joy.muted })
+}
+joy.mute = () => joy.setMuted(!joy.muted)
+// LIFE (life.js): the free-time effects overlay (sparks, pages, embers) the brain's 'life' calls draw.
+try { (await import('./life.js')).attachLifeFx?.(world, { container: viewport }) } catch (error) { console.warn('petpack: life fx unavailable', error?.message || error) }
 let net = null
 // Render-side state the brain's view callbacks touch (declared before the brain exists).
 const shown = new Map() // id -> upserted info key
@@ -85,7 +92,7 @@ const brain = createBrain({
   net: { send: msg => net?.send(msg) ?? false },
   me: { id: myId, name: config.name || me.displayName || me.petName || 'Pip', spriteUrl: me.spriteUrl || null, atlas: me.atlas || null,
     skills: Array.isArray(me.skills) ? me.skills : [], catalog, sprite },
-  config: { demo, seat: config.seat, dock, room: config.room || null },
+  config: { demo, seat: config.seat, dock, room: config.room || null, sharing: config.sharing || null, dnd: !!config.dnd },
   view: {
     // One text bubble per pane at a time, and only for pets this pane shows.
     ask: (a, b, o) => queueText({ ids: [a, b], hold: 4800, first: true, run: () => world.ask(a, b, o) }),
@@ -117,6 +124,11 @@ function withPet(id, fn) {
   list.push(fn)
   petWaiters.set(id, list.slice(-6))
 }
+// LIFE: the brain relays life's world calls (ours and peers'); each waits for its pet to be in this pane.
+const LIFE_CALLS = new Set(['lifeFx', 'sleep', 'weather', 'celebrate', 'knock'])
+brain.on?.('life', ({ method, args = [] } = {}) => {
+  if (LIFE_CALLS.has(method) && typeof world[method] === 'function') withPet(args[0], () => world[method](...args))
+})
 // Shared moments carry wall-clock times; the world runs on this page's frame clock (seconds).
 const worldTimeOf = epochMs => (Number.isFinite(epochMs) ? performance.now() + (epochMs - Date.now()) : performance.now()) / 1000
 if (demo) {
@@ -198,7 +210,8 @@ function advance(now) {
 }
 function syncPets() {
   const seen = new Set()
-  for (const p of brain.pets()) {
+  const list = brain.pets()
+  for (const p of list) {
     seen.add(p.id)
     shownX.set(p.id, p.x)
     if (p.isMe) shownMe = p
@@ -213,6 +226,7 @@ function syncPets() {
     if (waiting) { petWaiters.delete(p.id); for (const fn of waiting) { try { fn() } catch (error) { console.warn('petpack joy', error) } } }
   }
   for (const id of [...shown.keys()]) if (!seen.has(id)) { world.removePet(id); shown.delete(id); shownX.delete(id) }
+  drawDndSigns(list)
 }
 
 function frame(now) {
@@ -254,7 +268,8 @@ let selectedUntil = 0
 let hoverSaid = 0
 window.addEventListener('mousemove', event => {
   const id = world.playHitTest?.(event.clientX, event.clientY) ?? world.pick(event.clientX, event.clientY)
-  const want = !!id
+  // Pets, the share request, the chat field and the zoom pip / zoomed-out strip catch the cursor.
+  const want = !!id || !!event.target?.closest?.('.pp-perm, .pp-chat, .pp-mic') || !!zoom?.wantsPointer?.(event.clientX, event.clientY)
   if (want !== interactive) { interactive = want; try { bridge.setInteractive?.(want) } catch { /* bridge gone */ } }
   if (id === myId && performance.now() - hoverSaid > 6000) {
     hoverSaid = performance.now()
@@ -283,7 +298,110 @@ world.onThrow?.((event = {}) => {
 })
 if (typeof world.setGarden === 'function') world.setGarden(brain.garden)
 // Window collapse (COLLAPSE lane): it opens when a pet walks on; subscribes via brain.on (see brain.js Events).
-import('./collapse.js').then(m => m.attachCollapse?.({ world, brain, bridge: window.petpack, root: pane })).catch(() => {})
+let collapse = null
+import('./collapse.js').then(m => { collapse = m.attachCollapse?.({ world, brain, bridge: window.petpack, root: pane }) || null })
+  .catch(error => console.warn('petpack: collapse unavailable', error?.message || error))
+// ZOOM (zoom.js): scroll / pinch pulls the camera out over the strip; double-click or the home pip returns.
+let zoom = null
+import('./zoom.js').then(m => { zoom = m.attachZoom?.({ world, root: viewport, seat: () => brain.seat }) || null })
+  .catch(error => console.warn('petpack: zoom unavailable', error?.message || error))
+// CHAT (chat.js): click your pet or press Enter to ask it in text; hold Space to talk out loud.
+import('./chat.js').then(m => m.attachChat?.({ world, brain, bridge, root: pane }))
+  .catch(error => console.warn('petpack: chat unavailable', error?.message || error))
+
+// ---- TRAY popover: commands in, state and activity out ----
+bridge.onPanelCommand?.(msg => {
+  const { cmd, on } = msg || {}
+  if (cmd === 'recall') { const r = brain.recall?.(); if (r?.message) activity(r.message, 'recall') }
+  else if (cmd === 'dnd') brain.setDnd?.(!!on)
+  else if (cmd === 'mute') joy.setMuted(!!on, true)
+  else if (cmd === 'party') brain.party?.()
+  else if (cmd === 'sharing' && msg.sharing) {
+    const s = msg.sharing
+    const mode = s.mode === 'off' ? 'never' : s.mode
+    brain.setSharing?.({ mode, items: Object.fromEntries((s.hidden || []).map(ref => [ref, false])) })
+    bridge.setShare?.({ mode, off: s.hidden || [] }).catch?.(() => {})
+  }
+})
+function activity(text, kind) { if (text) try { bridge.activity?.({ text: String(text).slice(0, 160), kind }) } catch { /* bridge gone */ } }
+// Heads-down: the pane folds and goes quiet; back on, it opens again.
+brain.on?.('dnd', on => {
+  if (on) collapse?.collapse(); else collapse?.expand()
+  joy.setMuted(on, true)
+  bridge.panelReport?.({ dnd: !!on })
+})
+brain.on?.('errand', snap => {
+  if (!snap) return
+  activity(snap.status === 'running' ? `finding out: ${snap.question}${snap.step ? ` (${snap.step})` : ''}` : snap.message || `errand ${snap.status}`, 'errand')
+  bridge.panelReport?.({ errand: snap.status === 'running' ? { kind: snap.kind || 'find', label: snap.question, with: snap.step || null } : null })
+})
+brain.on?.('involved', info => { if (info?.kind) activity(`${info.kind}${info.with ? ` with ${info.with}` : ''}`, info.kind) })
+brain.on?.('visitor-enter', v => { if (v?.name && !v.bot) activity(`${v.name} walked onto this screen`, 'visit') })
+brain.on?.('need', n => { if (n?.item?.title) activity(`stuck? ${n.item.title} might help`, 'need') })
+brain.on?.('online', info => bridge.panelReport?.({ online: info ? brain.pets().filter(p => !p.bot).length : null }))
+setInterval(() => {
+  const mine = brain.me || {}
+  try { bridge.panelReport?.({ name: mine.name, status: mine.status, home: chunkOf(mine.x) === brain.seat, dnd: !!brain.dnd, muted: joy.muted }) } catch { /* bridge gone */ }
+}, 2000)
+
+// ---- share permission ('ask' mode): the request with ✓/✗ in the pane ----
+const askSheet = new CSSStyleSheet()
+askSheet.replaceSync(`
+.pp-perm { position: absolute; z-index: 9; left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; gap: 6px; align-items: center;
+  max-width: 88%; padding: 5px 6px 5px 11px; border-radius: 999px; background: #fffaf0f2; box-shadow: 0 2px 10px #0c1d3333;
+  font: 600 11px/15px ui-rounded, system-ui, sans-serif; color: #24323d; }
+.pp-perm span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-perm button { flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; font: 700 12px/22px system-ui; color: #fff; }
+.pp-perm .yes { background: #4f9c6c; } .pp-perm .no { background: #c8605b; }
+.pp-dnd { position: absolute; z-index: 6; padding: 0 4px; border-radius: 4px; background: #c8605b; color: #fff; pointer-events: none;
+  font: 700 8px/11px ui-rounded, system-ui, sans-serif; transform: translate(-50%, -100%); }
+`)
+document.adoptedStyleSheets = [...document.adoptedStyleSheets, askSheet]
+const permCards = new Map()
+brain.on?.('permission', request => {
+  if (!request?.id) return
+  const card = Object.assign(document.createElement('div'), { className: 'pp-perm' })
+  const text = Object.assign(document.createElement('span'), { textContent: request.text || `${request.fromName} asks to share` })
+  const yes = Object.assign(document.createElement('button'), { className: 'yes', type: 'button', textContent: '✓', title: 'Share it' })
+  const no = Object.assign(document.createElement('button'), { className: 'no', type: 'button', textContent: '✗', title: 'Not now' })
+  yes.onclick = () => brain.decide?.(request.id, true)
+  no.onclick = () => brain.decide?.(request.id, false)
+  card.append(text, yes, no)
+  for (const old of permCards.values()) old.style.display = 'none' // newest on top
+  permCards.set(request.id, card)
+  viewport.append(card)
+  if (collapse?.collapsed) collapse.expand()
+  activity(request.text, 'ask')
+})
+brain.on?.('permission-end', ({ id, allowed, reason } = {}) => {
+  const card = permCards.get(id)
+  if (!card) return
+  permCards.delete(id)
+  card.remove()
+  const last = [...permCards.values()].pop()
+  if (last) last.style.display = ''
+  activity(allowed ? 'shared it' : reason === 'timeout' ? 'no answer, kept it' : 'kept it to ourselves', 'share')
+})
+
+// ---- a small DND sign over heads-down pets ----
+const dndSigns = new Map()
+function drawDndSigns(list) {
+  const stage = world.stage
+  const seen = new Set()
+  if (stage?.toScreen && stage.camera) {
+    const V3 = stage.camera.position.constructor
+    for (const p of list) {
+      if (!p.dnd || !shown.has(p.id)) continue
+      seen.add(p.id)
+      let sign = dndSigns.get(p.id)
+      if (!sign) { sign = Object.assign(document.createElement('div'), { className: 'pp-dnd', textContent: 'DND' }); viewport.append(sign); dndSigns.set(p.id, sign) }
+      const s = stage.toScreen(new V3(p.x, (world.map?.ground?.(p.x, p.z) || 0) + 2.1, p.z))
+      sign.style.left = `${s.x}px`
+      sign.style.top = `${s.y}px`
+    }
+  }
+  for (const [id, sign] of dndSigns) if (!seen.has(id)) { sign.remove(); dndSigns.delete(id) }
+}
 async function takePhoto() {
   try {
     let shot = await world.photo?.()

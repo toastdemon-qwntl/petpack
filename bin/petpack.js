@@ -97,13 +97,17 @@ async function uninstall(args) {
     } catch {}
   }
 
-  const config = path.join(server.codexHomeDir(), 'config.toml')
-  const read = () => { try { return fs.readFileSync(config, 'utf8') } catch { return '' } }
-  if (server.hasPetpackServer(read())) {
-    spawnSync('codex', ['mcp', 'remove', 'petpack'], { stdio: 'ignore', shell: WIN, timeout: 20000, windowsHide: true })
+  // Every Codex home petpack registers in (CODEX_HOME, %USERPROFILE%\.codex, ~/.codex).
+  let targets = [{ home: server.codexHomeDir(), file: path.join(server.codexHomeDir(), 'config.toml') }]
+  try { targets = (await importRoot('app/mcp/register.js')).codexConfigTargets() } catch {}
+  for (const { home, file: config } of targets) {
+    const read = () => { try { return fs.readFileSync(config, 'utf8') } catch { return '' } }
+    if (!server.hasPetpackServer(read())) continue
+    spawnSync('codex', ['mcp', 'remove', 'petpack'], { stdio: 'ignore', shell: WIN, timeout: 20000, windowsHide: true,
+      env: { ...process.env, CODEX_HOME: home } })
     if (server.hasPetpackServer(read())) fs.writeFileSync(config, withoutPetpackServer(read()))
     if (server.hasPetpackServer(read())) console.error(`petpack: couldn't remove the petpack entry from ${config}`)
-    else done.push('removed petpack from Codex')
+    else done.push(`removed petpack from Codex (${config})`)
   }
   for (const dir of [userData, cacheDir()]) {
     if (!fs.existsSync(dir)) continue
@@ -184,12 +188,7 @@ async function launch(args) {
   })
   const register = flags['no-mcp'] || flags['from-mcp'] || flags.smoke
     ? Promise.resolve()
-    : cli.registerMcp({ root: ROOT, profile, log: () => {} })
-      .then(result => {
-        if (result.status === 'added') console.log(`petpack: added to Codex as the MCP server "petpack" (${NPX} uninstall removes it).`)
-        else if (result.error) console.log(`petpack: couldn't add petpack to Codex (${result.error}).`)
-      })
-      .catch(() => {})
+    : cli.registerMcp({ root: ROOT, profile, log: line => console.log(line) }).catch(() => {}) // says what it changed
   if (detach) {
     child.unref()
     await register

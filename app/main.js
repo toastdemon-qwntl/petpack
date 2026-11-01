@@ -48,6 +48,32 @@ function saveSettings() {
   try { writeJson(SETTINGS_FILE, settings) } catch (error) { console.error(`petpack: settings not saved (${error.message})`) }
 }
 
+// Sharing: L3b's catalog reads settings.json `share` { mode: free|ask|never, off: [ref] }; the TRAY popover writes
+// userData/sharing.json { mode: free|ask|off, hidden: [ref], dnd }. Main keeps the first in step with the second.
+const SHARING_FILE = path.join(USER_DATA, 'sharing.json')
+const traySharing = () => { const s = readJson(SHARING_FILE, null); return s && typeof s === 'object' ? s : null }
+function setShare(patch = {}) {
+  const share = { mode: 'free', off: [], ...(settings.share || {}) }
+  if (['free', 'ask', 'never'].includes(patch.mode)) share.mode = patch.mode
+  else if (patch.mode === 'off') share.mode = 'never'
+  const list = Array.isArray(patch.off) ? patch.off : Array.isArray(patch.hidden) ? patch.hidden : null
+  if (list) share.off = [...new Set(list.map(String))]
+  if (typeof patch.ref === 'string') {
+    const off = new Set(share.off)
+    if (patch.on) off.delete(patch.ref); else off.add(patch.ref)
+    share.off = [...off]
+  }
+  settings.share = share
+  saveSettings()
+  return share
+}
+if (traySharing()) setShare(traySharing())
+/** The brain's seed: { mode, items: { ref: false } } (brain.setSharing's shape). */
+function brainSharing() {
+  const share = settings.share || {}
+  return { mode: share.mode || 'free', items: Object.fromEntries((share.off || []).map(ref => [ref, false])) }
+}
+
 // Every relay in failover order (shared/protocol.js); --relay / PETPACK_RELAY replace it (comma-separated list).
 const relays = relayList((typeof flags.relay === 'string' && flags.relay) || process.env.PETPACK_RELAY || null)
 const relayUrl = relays[0] || DEFAULT_RELAY
@@ -65,6 +91,7 @@ function config() {
     name: typeof flags.name === 'string' ? flags.name : null, pet: typeof flags.pet === 'string' ? flags.pet : null,
     profile: PROFILE || null, version: VERSION, platform: process.platform,
     pane: { ...paneSize(paneScale), scale: paneScale }, debug: DEBUG,
+    sharing: brainSharing(), dnd: Boolean(traySharing()?.dnd),
   }
 }
 
@@ -238,6 +265,9 @@ async function loadCodex() {
   const getCatalog = pick([catalog], 'getCatalog')
   const readItem = pick([catalog], 'readItem')
   const answerAsk = pick([answer], 'answerAsk')
+  const currentNeed = pick([answer], 'currentNeed')
+  const listShareable = pick([catalog], 'listShareable')
+  const readShareSettings = pick([catalog], 'readShareSettings')
   const unavailable = async () => { throw new Error('unavailable in this build') }
   codex = {
     loaded: { core: Boolean(api), catalog: Boolean(catalog), answer: Boolean(answer) },
@@ -252,6 +282,14 @@ async function loadCodex() {
     getCatalog: getCatalog ? () => getCatalog(ctx()) : async () => [],
     readItem: readItem ? (ref, as) => readItem(ref, as, ctx()) : unavailable,
     answerAsk: answerAsk ? request => answerAsk(request, ctx()) : async () => ({ ok: false, text: "I can't answer that here." }),
+    // Our stuck Codex session's need (L3b), or null; the brain polls it while our pet is free.
+    currentNeed: currentNeed ? async () => (await currentNeed(ctx())) || null : async () => null,
+    // The tray panel's sharing list and the settings.json `share` block the catalog filters by (L3b).
+    listShareable: listShareable ? () => listShareable(ctx()) : async () => [],
+    shareSettings: () => {
+      const s = readShareSettings ? readShareSettings(ctx()) : { mode: 'free', off: new Set() }
+      return { mode: s.mode, off: [...(s.off || [])] }
+    },
     onStatus: api ? cb => api.onStatus(cb) : () => () => {},
     // Every pet the person could wear (custom + built-in), sprites as data URLs; demo bots wear these.
     listPets: api?.listPets ? () => api.listPets() : async () => [],
@@ -309,9 +347,31 @@ async function startMcpIpc() {
   try {
     ipcServer = await start({
       onCall: ({ tool, args }) => agentCall(tool, args), log,
+      onClient: (...a) => codexLink?.onClient(...a),
       userData: USER_DATA, profile: PROFILE, version: VERSION,
     })
   } catch (error) { console.error(`petpack: MCP socket failed: ${error.message}`) }
+}
+
+// Codex link (S5 app/mcp/link.js): which Codex sessions are connected; "Codex connected" once, or the restart hint.
+let codexLink = null
+async function startCodexLink() {
+  const create = pick([await importOptional('app/mcp/link.js')], 'createCodexLink')
+  if (!create) return
+  try {
+    codexLink = create({ userData: USER_DATA,
+      onEvent: ev => { if (!(ev?.type === 'hint' && flags['no-mcp'])) agentCall('codex_link', ev).catch(() => {}) },
+      onChange: state => { codexState = state.status === 'unregistered' ? 'unregistered' : 'registered'; refreshTray() } })
+  } catch (error) { console.error(`petpack: Codex link failed: ${error.message}`) }
+}
+
+// Ask your pet (CHAT lane, app/chat-main.js): text through codex exec, voice through OpenAI Realtime.
+async function startChat() {
+  const setup = pick([await importOptional('app/chat-main.js')], 'setupChat')
+  if (!setup) return
+  try {
+    setup({ ipcMain, session: session.defaultSession, win: () => win, root: ROOT, profile: PROFILE, userData: USER_DATA, log })
+  } catch (error) { console.error(`petpack: chat failed: ${error.message}`) }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -337,6 +397,10 @@ handle('petpack:installItem', (item, fromName) => codex.installItem(item, fromNa
 handle('petpack:getCatalog', () => codex.getCatalog())
 handle('petpack:readItem', (ref, as) => codex.readItem(ref, as))
 handle('petpack:answerAsk', request => codex.answerAsk(request))
+handle('petpack:currentNeed', () => codex.currentNeed())
+handle('petpack:listShareable', () => codex.listShareable())
+handle('petpack:shareSettings', () => codex.shareSettings())
+handle('petpack:setShare', patch => setShare(patch))
 // Photo mode (P): the page hands over a PNG data URL; it lands on the Desktop.
 handle('petpack:savePhoto', dataUrl => {
   const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''))
@@ -419,6 +483,11 @@ function refreshTray() { tray?.refresh() }
 function trayActions() {
   return {
     copyRoom: () => settings.room && clipboard.writeText(settings.room),
+    // The popover's room field: remembered, and the page reconnects into it (config is re-read on reload).
+    setRoom: room => {
+      settings.room = typeof room === 'string' && room.trim() ? room.trim() : null
+      saveSettings(); refreshTray(); win?.webContents.reload()
+    },
     setSeat: seat => { settings.seat = seat; saveSettings(); refreshTray(); win?.webContents.reload() },
     setDock: side => {
       if (side === settings.dock) return
@@ -520,17 +589,20 @@ app.whenReady().then(async () => {
   protocol.handle('petpack', serve)
   if (process.platform === 'darwin') app.dock?.hide()
   await loadCodex()
+  await startChat() // before the page loads, so its handlers exist; it also allows our page the microphone
   createWindow()
   const stopStatus = startStatus()
-  app.on('before-quit', () => { try { stopStatus?.(); codex.dispose() } catch {} })
+  app.on('before-quit', () => { try { stopStatus?.(); codex.dispose(); codexLink?.close() } catch {} })
+  await startCodexLink()
   startMcpIpc()
   for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(event, () => dock())
   if (process.platform === 'win32') setInterval(() => win && raiseToTop(win), 10000)
   if (SMOKE) { runSmoke().catch(error => { console.error(error); app.exit(1) }); return }
   tray = createTray({ state: () => ({ room: settings.room, seat: settings.seat, dock: settings.dock,
-    align: settings.align, codex: codexState }), actions: trayActions(),
+    align: settings.align, codex: codexState }), actions: trayActions(), pane: () => win, userData: USER_DATA,
     // A new pet from the tray: the page re-reads getMe() and re-sends its sprite (no reload, the walk goes on).
     onPetChange: () => { if (win && !win.isDestroyed()) win.webContents.send('petpack:me-changed') } })
-  codexMcpState(ROOT).then(state => { codexState = state; refreshTray() }).catch(() => {})
+  if (codexLink) { codexState = codexLink.state().status === 'unregistered' ? 'unregistered' : 'registered'; refreshTray() }
+  else codexMcpState(ROOT).then(state => { codexState = state; refreshTray() }).catch(() => {})
   log('ready', { userData: USER_DATA, profile: PROFILE, relays, os: os.release() })
 })

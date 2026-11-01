@@ -64,6 +64,36 @@ contextBridge.exposeInMainWorld('petpack', {
   readItem: (ref, as) => call('petpack:readItem', ref, as),
   answerAsk: request => call('petpack:answerAsk', request),
   savePhoto: dataUrl => call('petpack:savePhoto', dataUrl),
+  // L3b: our stuck Codex session's need (or null), the sharing list and settings.json `share`.
+  currentNeed: () => call('petpack:currentNeed'),
+  listShareable: () => call('petpack:listShareable'),
+  shareSettings: () => call('petpack:shareSettings'),
+  setShare: patch => call('petpack:setShare', patch),
+  // CHAT lane (app/chat-main.js): ask your pet in text (codex exec) or out loud (OpenAI Realtime, main does the SDP).
+  chat: {
+    ask: request => call('petpack:chat-ask', request),
+    reset: () => call('petpack:chat-reset'),
+    onEvent(cb) {
+      if (typeof cb !== 'function') return () => {}
+      const h = (_e, ev) => cb(ev)
+      ipcRenderer.on('petpack:chat-event', h)
+      return () => ipcRenderer.removeListener('petpack:chat-event', h)
+    },
+  },
+  voice: {
+    prepare: () => call('petpack:voice-prepare'),
+    connect: (sdp, opts) => call('petpack:voice-connect', sdp, opts),
+  },
+  // TRAY popover (app/panel.js): the page reports state and activity lines; the popover sends commands.
+  panelReport: report => ipcRenderer.send('petpack:panel-report', report),
+  activity: line => ipcRenderer.send('petpack:activity', line),
+  askShare: request => call('petpack:ask-share', request),
+  onPanelCommand(cb) {
+    if (typeof cb !== 'function') return () => {}
+    const h = (_e, msg) => cb(msg)
+    ipcRenderer.on('petpack:panel-command', h)
+    return () => ipcRenderer.removeListener('petpack:panel-command', h)
+  },
   // Window collapse (COLLAPSE lane, app/window.js): commands in, window events out.
   window: (cmd, arg) => ipcRenderer.invoke('petpack:window', cmd, arg),
   onWindow: cb => {

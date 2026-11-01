@@ -78,19 +78,14 @@ export async function codexMcpState(root) {
  * Register once. Success is remembered in `userData/codex-mcp.json`, so a person who runs `codex mcp remove petpack`
  * is not re-registered on the next launch. `force` (tray Register, `petpack mcp install`) ignores the memory.
  */
+// Every launch (S5 app/mcp/register.js): each Codex home petpack can see lists the petpack server; a person's own
+// `codex mcp remove petpack` sticks unless `force`. -> { state, added, results, message }
 export async function registerMcp({ root, profile = '', force = false, log = console.log } = {}) {
-  const stateFile = path.join(userDataDir(profile), 'codex-mcp.json')
-  if (!force && readJson(stateFile, {}).registered) return { state: 'registered', skipped: true }
-  const server = await mcpServerModule(root)
-  const command = mcpServerCommand(root, profile)
-  let result
   try {
-    result = server.installIntoCodex({ command })
+    const { ensureCodexRegistration } = await import(pathToFileURL(path.join(root, 'app', 'mcp', 'register.js')).href)
+    return ensureCodexRegistration({ command: mcpServerCommand(root, profile), userData: userDataDir(profile), force, log })
   } catch (error) {
     log(`petpack: couldn't add the petpack tools to Codex (${error.message}).`)
     return { state: 'unregistered', error: error.message }
   }
-  if (result.status === 'added' || force) log(result.message)
-  writeJson(stateFile, { registered: true, at: new Date().toISOString(), command, via: result.via || null })
-  return { state: 'registered', ...result }
 }
