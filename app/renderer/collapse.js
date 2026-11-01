@@ -11,7 +11,7 @@ export function attachCollapse({ world, brain, bridge = window.petpack, root } =
   if (!world || !brain) return null
   const pane = root?.classList?.contains('petpack-pane') ? root : (root?.querySelector?.('.petpack-pane') || document.querySelector('.petpack-pane'))
   if (!pane) return null
-  const dock = (pane.dataset.dock || bridge?.config?.dock) === 'left' ? 'left' : 'right'
+  let dock = (pane.dataset.dock || bridge?.config?.dock) === 'left' ? 'left' : 'right'
   const win = (cmd, arg) => {
     try { return Promise.resolve(bridge?.window?.(cmd, arg)).catch(error => { console.warn('petpack window', error?.message || error); return null }) } catch { return Promise.resolve(null) }
   }
@@ -34,7 +34,25 @@ export function attachCollapse({ world, brain, bridge = window.petpack, root } =
   const fold = Object.assign(document.createElement('button'), { type: 'button', className: 'pp-fold', title: 'Fold petpack (Ctrl/Cmd+Shift+P)',
     textContent: dock === 'left' ? '‹' : '›' })
   fold.dataset.dock = dock
-  pane.append(fold)
+  // The grip (top of the glass frame, on hover) and the frame itself drag the pane; the world never does.
+  const grip = Object.assign(document.createElement('div'), { className: 'pp-grip', title: 'Drag petpack' })
+  pane.append(fold, grip)
+
+  /** Docked (flush on an edge, data-dock shape) or floating (fully rounded; folds to a round puck). */
+  let placement = { mode: 'dock', side: dock }
+  function applyPlacement(p) {
+    if (!p || (p.mode !== 'dock' && p.mode !== 'float')) return
+    placement = p
+    document.body.classList.toggle('pp-floating', p.mode === 'float')
+    if (p.side === 'left' || p.side === 'right') {
+      dock = p.side
+      pane.dataset.dock = dock
+      tab.dataset.dock = dock
+      fold.dataset.dock = dock
+      fold.textContent = dock === 'left' ? '‹' : '›'
+      hint.textContent = dock === 'left' ? '›' : '‹'
+    }
+  }
 
   function paintFace() {
     const me = brain.me || {}
@@ -228,37 +246,76 @@ export function attachCollapse({ world, brain, bridge = window.petpack, root } =
     if (type === 'toggle') toggle({ user: true })
     else if (type === 'collapse') collapse({ user: true })
     else if (type === 'expand') expand({ user: true })
+    else if (type === 'placement') applyPlacement(event.placement)
   })
-  // The chevron shows while the cursor is over the open pane, and holds the mouse while it is under it.
-  let overFold = false
+  // The chevron and the grip show while the cursor is over the open pane; over them (or the glass frame) the pane
+  // holds the mouse so they can be clicked and dragged.
+  let overChrome = false
   let hideTimer = 0
+  const near = (el, x, y, pad = 4) => { const r = el.getBoundingClientRect(); return x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad }
+  function onFrame(x, y) {
+    const p = pane.getBoundingClientRect()
+    const v = pane.querySelector('.world-viewport')?.getBoundingClientRect()
+    if (!v || x < p.left || x > p.right || y < p.top || y > p.bottom) return false
+    return x < v.left || x > v.right || y < v.top || y > v.bottom
+  }
   const onMove = event => {
-    if (state.collapsed) return
-    const inside = event.clientX >= 0 && event.clientY >= 0 && event.clientX < innerWidth && event.clientY < innerHeight
+    if (state.collapsed || dragging) return
+    const x = event.clientX, y = event.clientY
+    const inside = x >= 0 && y >= 0 && x < innerWidth && y < innerHeight
     hovering = inside
     fold.classList.toggle('on', inside)
+    grip.classList.toggle('on', inside)
     clearTimeout(hideTimer)
-    if (inside) hideTimer = setTimeout(() => { fold.classList.remove('on'); hovering = false }, 2500)
-    const r = fold.getBoundingClientRect()
-    const over = inside && event.clientX >= r.left - 4 && event.clientX <= r.right + 4 && event.clientY >= r.top - 4 && event.clientY <= r.bottom + 4
-    if (over !== overFold) {
-      overFold = over
+    if (inside) hideTimer = setTimeout(() => { fold.classList.remove('on'); grip.classList.remove('on'); hovering = false }, 2500)
+    const over = inside && (near(fold, x, y) || near(grip, x, y, 3) || onFrame(x, y))
+    if (over !== overChrome) {
+      overChrome = over
       let pet = false
-      try { pet = !over && Boolean(world.pick?.(event.clientX, event.clientY)) } catch { pet = false }
+      try { pet = !over && Boolean(world.pick?.(x, y)) } catch { pet = false }
       setInteractive(over || pet)
     }
   }
-  const onLeave = () => { hovering = false; fold.classList.remove('on'); overFold = false }
+  const onLeave = () => { if (dragging) return; hovering = false; fold.classList.remove('on'); grip.classList.remove('on'); overChrome = false }
   window.addEventListener('mousemove', onMove)
   document.documentElement.addEventListener('mouseleave', onLeave)
 
+  // ---- drag by the frame / grip: main follows the cursor; on release it docks (near an edge) or floats ----
+  let dragging = false
+  const onDown = event => {
+    if (event.button !== 0 || state.collapsed || dragging) return
+    if (event.target !== grip && event.target !== pane) return // the world (pets, throws) keeps its own pointer
+    event.preventDefault()
+    event.stopPropagation()
+    dragging = true
+    try { pane.setPointerCapture(event.pointerId) } catch { /* not capturable */ }
+    setInteractive(true)
+    document.body.classList.add('pp-dragging')
+    win('drag-start', { ox: event.clientX, oy: event.clientY })
+  }
+  const onUp = async () => {
+    if (!dragging) return
+    dragging = false
+    const result = await win('drag-end')
+    document.body.classList.remove('pp-dragging')
+    applyPlacement(result?.placement)
+    overChrome = false
+  }
+  pane.addEventListener('pointerdown', onDown, true)
+  window.addEventListener('pointerup', onUp)
+  window.addEventListener('pointercancel', onUp)
+  pane.addEventListener('lostpointercapture', onUp)
+
   // The remembered choice comes back once the first frames are drawn.
-  win('state').then(s => { if (s?.remembered && !state.collapsed) setTimeout(() => { if (!state.collapsed && !state.userCollapsed) collapse({ user: true }) }, 1500) })
+  win('state').then(s => {
+    applyPlacement(s?.placement)
+    if (s?.remembered && !state.collapsed) setTimeout(() => { if (!state.collapsed && !state.userCollapsed) collapse({ user: true }) }, 1500)
+  })
 
   const api = {
     collapse: () => collapse({ user: true }), expand: () => expand({ user: true }), toggle: () => toggle({ user: true }),
     get collapsed() { return state.collapsed },
-    get state() { return { ...state, visitors: [...present] } },
+    get state() { return { ...state, visitors: [...present], placement, dragging } },
     dispose() {
       clearInterval(timer)
       clearTimeout(hideTimer)
@@ -268,8 +325,12 @@ export function attachCollapse({ world, brain, bridge = window.petpack, root } =
       document.documentElement.removeEventListener('mouseleave', onLeave)
       try { offWindow?.() } catch { /* ignore */ }
       for (const off of offs) { try { off?.() } catch { /* ignore */ } }
-      tab.remove(); fold.remove()
-      document.body.classList.remove('pp-collapsed', 'pp-hold')
+      pane.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      pane.removeEventListener('lostpointercapture', onUp)
+      tab.remove(); fold.remove(); grip.remove()
+      document.body.classList.remove('pp-collapsed', 'pp-hold', 'pp-floating', 'pp-dragging')
     },
   }
   window.petpackCollapse = api
