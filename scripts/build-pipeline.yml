@@ -3,100 +3,118 @@
 # with the launcher tarball and run (`npx petpack --demo --smoke`) on a fresh hosted machine. No triggers; queued via
 # the REST API. Artifacts: pkg-<job> (the tarballs) and smoke-<job> (result.json, logs, the pane's capture.png).
 # Sources: https://learn.microsoft.com/azure/devops/pipelines/agents/github-hosted (pool "GitHub-hosted Agents")
-# and https://learn.microsoft.com/azure/devops/pipelines/agents/hosted (windows-2025).
+# and https://learn.microsoft.com/azure/devops/pipelines/agents/hosted (windows-2025, macOS-15).
 trigger: none
 pr: none
 
 name: petpack-build-$(Rev:r)
 
+parameters:
+  - name: macArm64
+    type: boolean
+    default: true
+  - name: macX64
+    type: boolean
+    default: true
+  - name: win
+    type: boolean
+    default: true
+  - name: macX64Image
+    type: string
+    default: macOS-15
+
 jobs:
-  - job: mac_arm64
-    displayName: macOS arm64 (builds darwin-arm64 + darwin-x64, smokes arm64)
-    pool:
-      name: GitHub-hosted Agents
-      vmImage: macos-26-arm64
-    timeoutInMinutes: 25
-    steps:
-      - checkout: self
-        fetchDepth: 1
-      - task: UseNode@1
-        inputs:
-          version: 22.x
-      - bash: |
-          set -euo pipefail
-          OUT="$(Build.ArtifactStagingDirectory)/pkg"
-          mkdir -p "$OUT"
-          npm pack --silent --pack-destination "$OUT"
-          node scripts/build-platform.mjs --target darwin-arm64 --out "$OUT"
-          node scripts/build-platform.mjs --target darwin-x64 --out "$OUT"
-          ls -la "$OUT"
-        displayName: build launcher + darwin packages
-      - bash: |
-          OUT="$(Build.ArtifactStagingDirectory)/pkg"
-          node scripts/build-smoke.mjs --launcher "$(ls "$OUT"/qwntllabs-petpack-0*.tgz)" \
-            --platform "$(ls "$OUT"/qwntllabs-petpack-darwin-arm64-*.tgz)" --out "$(Build.ArtifactStagingDirectory)/smoke"
-        displayName: install + smoke (darwin-arm64)
-      - publish: $(Build.ArtifactStagingDirectory)/pkg
-        artifact: pkg-mac
-      - publish: $(Build.ArtifactStagingDirectory)/smoke
-        artifact: smoke-mac-arm64
-        condition: always()
+  - ${{ if parameters.macArm64 }}:
+    - job: mac_arm64
+      displayName: macOS arm64 (builds darwin-arm64 + darwin-x64, smokes arm64)
+      pool:
+        name: GitHub-hosted Agents
+        vmImage: macos-26-arm64
+      timeoutInMinutes: 25
+      steps:
+        - checkout: self
+          fetchDepth: 1
+        - task: UseNode@1
+          inputs:
+            version: 22.x
+        - bash: |
+            set -euo pipefail
+            OUT="$(Build.ArtifactStagingDirectory)/pkg"
+            mkdir -p "$OUT"
+            npm pack --silent --pack-destination "$OUT"
+            node scripts/build-platform.mjs --target darwin-arm64 --out "$OUT"
+            node scripts/build-platform.mjs --target darwin-x64 --out "$OUT"
+            ls -la "$OUT"
+          displayName: build launcher + darwin packages
+        - bash: |
+            OUT="$(Build.ArtifactStagingDirectory)/pkg"
+            node scripts/build-smoke.mjs --launcher "$(ls "$OUT"/qwntllabs-petpack-0*.tgz)" \
+              --platform "$(ls "$OUT"/qwntllabs-petpack-darwin-arm64-*.tgz)" --out "$(Build.ArtifactStagingDirectory)/smoke"
+          displayName: install + smoke (darwin-arm64)
+        - publish: $(Build.ArtifactStagingDirectory)/pkg
+          artifact: pkg-mac
+        - publish: $(Build.ArtifactStagingDirectory)/smoke
+          artifact: smoke-mac-arm64
+          condition: always()
 
-  - job: mac_x64
-    displayName: macOS Intel (builds + smokes darwin-x64)
-    pool:
-      name: GitHub-hosted Agents
-      vmImage: macos-15-intel
-    timeoutInMinutes: 25
-    steps:
-      - checkout: self
-        fetchDepth: 1
-      - task: UseNode@1
-        inputs:
-          version: 22.x
-      - bash: |
-          set -euo pipefail
-          OUT="$(Build.ArtifactStagingDirectory)/pkg"
-          mkdir -p "$OUT"
-          npm pack --silent --pack-destination "$OUT"
-          node scripts/build-platform.mjs --target darwin-x64 --out "$OUT"
-          node scripts/build-smoke.mjs --launcher "$(ls "$OUT"/qwntllabs-petpack-0*.tgz)" \
-            --platform "$(ls "$OUT"/qwntllabs-petpack-darwin-x64-*.tgz)" --out "$(Build.ArtifactStagingDirectory)/smoke"
-        displayName: build + install + smoke (darwin-x64)
-      - publish: $(Build.ArtifactStagingDirectory)/smoke
-        artifact: smoke-mac-x64
-        condition: always()
+  - ${{ if parameters.macX64 }}:
+    - job: mac_x64
+      displayName: macOS Intel (builds + smokes the darwin package for this machine's arch)
+      pool:
+        vmImage: ${{ parameters.macX64Image }}
+      timeoutInMinutes: 25
+      steps:
+        - checkout: self
+          fetchDepth: 1
+        - task: UseNode@1
+          inputs:
+            version: 22.x
+        - bash: |
+            set -euo pipefail
+            ARCH=$(node -p process.arch)
+            echo "machine $(uname -m), node arch $ARCH, $(sw_vers -productVersion)"
+            OUT="$(Build.ArtifactStagingDirectory)/pkg"
+            mkdir -p "$OUT"
+            npm pack --silent --pack-destination "$OUT"
+            node scripts/build-platform.mjs --target "darwin-$ARCH" --out "$OUT"
+            node scripts/build-smoke.mjs --launcher "$(ls "$OUT"/qwntllabs-petpack-0*.tgz)" \
+              --platform "$(ls "$OUT"/qwntllabs-petpack-darwin-"$ARCH"-*.tgz)" --out "$(Build.ArtifactStagingDirectory)/smoke"
+          displayName: build + install + smoke (darwin, this arch)
+        - publish: $(Build.ArtifactStagingDirectory)/smoke
+          artifact: smoke-mac-x64
+          condition: always()
 
-  - job: win_x64
-    displayName: Windows x64 (builds + smokes win32-x64)
-    pool:
-      vmImage: windows-2025
-    timeoutInMinutes: 25
-    steps:
-      - checkout: self
-        fetchDepth: 1
-      - task: UseNode@1
-        inputs:
-          version: 22.x
-      - pwsh: |
-          $ErrorActionPreference = 'Stop'
-          $out = "$(Build.ArtifactStagingDirectory)\pkg"
-          New-Item -ItemType Directory -Force $out | Out-Null
-          npm pack --silent --pack-destination $out
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node scripts/build-platform.mjs --target win32-x64 --out $out
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          Get-ChildItem $out
-        displayName: build launcher + win32-x64 package
-      - pwsh: |
-          $out = "$(Build.ArtifactStagingDirectory)\pkg"
-          $launcher = (Get-ChildItem "$out\qwntllabs-petpack-0*.tgz").FullName
-          $platform = (Get-ChildItem "$out\qwntllabs-petpack-win32-x64-*.tgz").FullName
-          node scripts/build-smoke.mjs --launcher $launcher --platform $platform --out "$(Build.ArtifactStagingDirectory)\smoke"
-          exit $LASTEXITCODE
-        displayName: install + smoke (win32-x64)
-      - publish: $(Build.ArtifactStagingDirectory)/pkg
-        artifact: pkg-win
-      - publish: $(Build.ArtifactStagingDirectory)/smoke
-        artifact: smoke-win
-        condition: always()
+  - ${{ if parameters.win }}:
+    - job: win_x64
+      displayName: Windows x64 (builds + smokes win32-x64)
+      pool:
+        vmImage: windows-2025
+      timeoutInMinutes: 25
+      steps:
+        - checkout: self
+          fetchDepth: 1
+        - task: UseNode@1
+          inputs:
+            version: 22.x
+        - pwsh: |
+            $ErrorActionPreference = 'Stop'
+            $out = "$(Build.ArtifactStagingDirectory)\pkg"
+            New-Item -ItemType Directory -Force $out | Out-Null
+            npm pack --silent --pack-destination $out
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            node scripts/build-platform.mjs --target win32-x64 --out $out
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            Get-ChildItem $out
+          displayName: build launcher + win32-x64 package
+        - pwsh: |
+            $out = "$(Build.ArtifactStagingDirectory)\pkg"
+            $launcher = (Get-ChildItem "$out\qwntllabs-petpack-0*.tgz").FullName
+            $platform = (Get-ChildItem "$out\qwntllabs-petpack-win32-x64-*.tgz").FullName
+            node scripts/build-smoke.mjs --launcher $launcher --platform $platform --out "$(Build.ArtifactStagingDirectory)\smoke"
+            exit $LASTEXITCODE
+          displayName: install + smoke (win32-x64)
+        - publish: $(Build.ArtifactStagingDirectory)/pkg
+          artifact: pkg-win
+        - publish: $(Build.ArtifactStagingDirectory)/smoke
+          artifact: smoke-win
+          condition: always()
