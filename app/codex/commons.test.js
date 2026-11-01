@@ -7,6 +7,7 @@ import os from 'node:os'
 import { buildCatalog, getCatalog, readItem, installNote, installItem, findCurrentProject, parseToml, listShareable, readShareSettings } from './catalog.js'
 import { answerAsk, createAnswerer, scoreItem, rankItems } from './answer.js'
 import { shortQuestion, currentNeed, analyzeRollout, needFrom } from './question.js'
+import { lessonFromSession } from './lesson.js'
 
 const W = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text) }
 
@@ -414,6 +415,45 @@ test('need: working over 3 minutes on one turn asks about the prompt; healthy an
   assert.equal(needFrom(analyzeRollout(slow, T0 + 60 * 1000)), null)
   const done = rollout([started(0), user(1, 'Ship it'), failOut(5, 'Error: flaky'), complete(9)]).split('\n')
   assert.equal(needFrom(analyzeRollout(done, T0 + 10 * 60 * 1000)), null)
+})
+
+test('lesson: a finished session becomes a Library card the team can read and adopt in full', async () => {
+  const fx = fixture()
+  const userData = path.join(fx.root, 'userData')
+  const opts = { ...fx.opts, userData }
+  const exec = [3, 'response_item', { type: 'custom_tool_call', name: 'exec', call_id: 'x1', input: 'await tools.exec_command({cmd:"pwd && npm install ws@8 && node --test server/relay.test.js"})' }]
+  const patch = [4, 'response_item', { type: 'custom_tool_call', name: 'apply_patch', call_id: 'x2', input: '*** Begin Patch\n*** Update File: server/relay.js\n@@\n-old\n+new\n*** End Patch' }]
+  const final = 'The relay now accepts wss on Azure: WebSockets had to be enabled on the App Service and the client pins ws@8. Tests pass with node --test.'
+  const finish = [9, 'event_msg', { type: 'task_complete', turn_id: 't1', last_agent_message: final }]
+  const file = path.join(fx.codex, 'sessions/2026/11/01/rollout-2026-11-01T14-00-00-sess-ok.jsonl')
+  W(file, rollout([started(0), agentsMd(0), user(1, 'Make the relay accept wss on Azure'), exec, failOut(5, "Error: Cannot find module 'ws'"), patch, finish]))
+  const card = await lessonFromSession(fx.codex, 'sess-ok', opts)
+  assert.equal(card.kind, 'memory')
+  assert.equal(card.title, 'Make the relay accept wss on Azure')
+  assert.ok(card.title.length <= 60)
+  assert.equal(card.summary, 'Asked: Make the relay accept wss on Azure. What worked: The relay now accepts wss on Azure: WebSockets had to be enabled on the App Service and the client pins ws@8. Key commands/files: `npm install ws@8`, `node --test server/relay.test.js`, server/relay.js.')
+  assert.ok(card.tags.includes('relay'), card.tags.join())
+  assert.ok(card.path.startsWith(path.join(userData, 'cards')))
+  // listed by getCatalog as a Library item, and readItem serves the whole card
+  const item = (await getCatalog(opts)).find(i => i.ref === card.ref)
+  assert.ok(item, 'card is in the catalog')
+  assert.equal(item.kind, 'memory')
+  const full = await readItem(card.ref, 'pkg', opts)
+  assert.match(full.text, /## What worked\n\nThe relay now accepts wss on Azure[\s\S]*## Commands\n\n- `npm install ws@8`[\s\S]*## Files\n\n- server\/relay\.js[\s\S]*## Errors hit on the way\n\n- Error: Cannot find module 'ws'/)
+  // a teammate adopts it as a real note with the full text, and the result says where
+  const other = fixture()
+  const r = await installItem(full.pkg, 'Bea', other.opts)
+  assert.equal(r.installed, true)
+  assert.equal(r.path, path.join(other.codex, 'skills', r.name))
+  assert.match(fs.readFileSync(path.join(r.path, 'SKILL.md'), 'utf8'), /## What worked[\s\S]*node --test server\/relay\.test\.js/)
+  // once per session turn; by file path too
+  assert.equal((await lessonFromSession(fx.codex, { session: 'sess-ok' }, opts)).existed, true)
+  assert.equal((await lessonFromSession(fx.codex, file, opts)).existed, true)
+  // a failed or unfinished turn makes no card
+  const bad = path.join(fx.codex, 'sessions/2026/11/01/rollout-2026-11-01T14-10-00-sess-bad.jsonl')
+  W(bad, rollout([started(0), user(1, 'Ship it'), complete(5, 'boom')]))
+  assert.equal(await lessonFromSession(fx.codex, 'sess-bad', opts), null)
+  assert.equal(await lessonFromSession(fx.codex, 'nope', opts), null)
 })
 
 test('need: currentNeed reads the newest live non-subagent rollout under CODEX_HOME', async () => {

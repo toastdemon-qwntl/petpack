@@ -462,3 +462,4 @@ export function answerAsk (q, ctx = {}) { return shared.answerAsk(q, ctx) }
 
 export { summarize, shortQuestion }
 export { currentNeed } from './question.js'
+export { lessonFromSession, lessonFromLines } from './lesson.js'

@@ -573,12 +573,31 @@ async function collectAnswers (answersDir, add) {
   }
 }
 
+// Lessons from finished Codex sessions (lesson.js writes them), offered as Library cards.
+function cardsDirOf (opts = {}) {
+  if (opts.cardsDir) return opts.cardsDir
+  if (opts.userData) return path.join(opts.userData, 'cards')
+  return path.join(opts.homeDir || os.homedir(), '.petpack', 'cards')
+}
+
+async function collectCards (cardsDir, add) {
+  for (const e of await readDirSafe(cardsDir)) {
+    if (!e.isFile() || !e.name.endsWith('.md')) continue
+    const file = path.join(cardsDir, e.name)
+    const md = await readText(file)
+    if (!md) continue
+    const first = /^#\s+(.+)$/m.exec(md.text)
+    const title = (first ? first[1] : e.name.replace(/\.md$/, '')).slice(0, 120)
+    add(sectionItem('memory', 'card-' + slugify(e.name.replace(/\.md$/, ''), 60), title, md.text, md.mtime, { file }))
+  }
+}
+
 // ---------------------------------------------------------------- catalog
 
 let lastBuilt = null // { at, key, items, index }
 
 function optsKey (opts) {
-  return JSON.stringify([opts.codexHome, opts.home, opts.homeDir, opts.cwd, opts.answersDir, opts.includeProcessCwd, opts.env?.CODEX_HOME])
+  return JSON.stringify([opts.codexHome, opts.home, opts.homeDir, opts.cwd, opts.answersDir, opts.cardsDir, opts.userData, opts.includeProcessCwd, opts.env?.CODEX_HOME])
 }
 
 // Builds the catalog. Returns {items, index (Map ref -> internal entry), projects, codexHome}.
@@ -608,7 +627,8 @@ export async function buildCatalog (opts = {}) {
     () => collectMemories(codexHome, add),
     () => collectPrompts(codexHome, add),
     () => collectResources(codexHome, add),
-    () => collectAnswers(answersDir, add)
+    () => collectAnswers(answersDir, add),
+    () => collectCards(cardsDirOf(opts), add)
   ]
   for (const step of steps) { try { await step() } catch {} } // one bad source never sinks the catalog
   const all = [...index.values()].map(e => e.item)
