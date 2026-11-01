@@ -195,7 +195,8 @@ const PALETTE = {
 const HEART = ['.##.##.', '#######', '#######', '.#####.', '..###..', '...#...']
 const NOTE = ['..###', '..#.#', '..#.#', '###.#', '###..']
 const STAR = ['..#..', '.###.', '#####', '.###.', '..#..']
-const BOOK = ['##.##', '#####', '#####']
+const BOOK = ['###.###', '#######', '#######', '.##.##.']
+const OUTLINE = 'rgba(52, 38, 34, .55)'
 
 /** Adds world.lifeFx(id, { kind, durationS, tint, with, to, progress }). Returns the world. */
 export function attachLifeFx(world, { container } = {}) {
@@ -217,17 +218,26 @@ export function attachLifeFx(world, { container } = {}) {
     const s = stage.toScreen(new V3(x, (world.map?.ground?.(x, z) || 0) + y, z))
     return { x: s.x, y: s.y }
   }
+  // Every particle drops a one-pixel shadow so it reads on grass, road and roofs alike.
   function px(x, y, color, size = 1) {
     const k = ps()
+    const gx = Math.round(x / k) * k, gy = Math.round(y / k) * k
+    ctx.fillStyle = OUTLINE
+    ctx.fillRect(gx, gy + k, k * size, k * size)
     ctx.fillStyle = color
-    ctx.fillRect(Math.round(x / k) * k, Math.round(y / k) * k, k * size, k * size)
+    ctx.fillRect(gx, gy, k * size, k * size)
   }
-  function sprite(rows, x, y, color, glow) {
+  function sprite(rows, x, y, color, outline) {
     const k = ps()
     const ox = Math.round(x / k) - Math.floor(rows[0].length / 2), oy = Math.round(y / k) - rows.length
+    if (outline) {
+      ctx.fillStyle = outline
+      for (let j = 0; j < rows.length; j++) for (let i = 0; i < rows[j].length; i++) {
+        if (rows[j][i] === '#') ctx.fillRect((ox + i - 1) * k, (oy + j - 1) * k, k * 3, k * 3)
+      }
+    }
     for (let j = 0; j < rows.length; j++) for (let i = 0; i < rows[j].length; i++) {
       if (rows[j][i] !== '#') continue
-      if (glow) { ctx.fillStyle = glow; ctx.fillRect((ox + i) * k - k, (oy + j) * k, k * 3, k) }
       ctx.fillStyle = color; ctx.fillRect((ox + i) * k, (oy + j) * k, k, k)
     }
   }
@@ -249,14 +259,14 @@ export function attachLifeFx(world, { container } = {}) {
         const a = -Math.PI / 2 + (noise(i + Math.floor(age / 0.7) * 7) - 0.5) * 2.2
         const v = 70 + noise(i * 3.1) * 70
         const x = hand.x + Math.cos(a) * v * beat, y = hand.y + Math.sin(a) * v * beat + 160 * beat * beat
-        if (beat < 0.45) px(x, y, i % 3 ? pal[0] : pal[1])
+        if (beat < 0.45) px(x, y, i % 3 ? pal[0] : pal[1], i === 0 ? 2 : 1)
       }
       if (beat < 0.12) px(hand.x - ps(), hand.y - ps(), pal[1], 2)
     } else if (kind === 'pages') {
       // A glowing open book floats at chest height; loose pages drift up out of it.
       const bob = Math.sin(age * 2.2) * ps()
       const book = screen(pet.x + f * 0.45, 0.95, pet.z + 0.05)
-      sprite(BOOK, book.x, book.y + bob, pal[1], (Math.sin(age * 3) > 0 ? pal[0] : null))
+      sprite(BOOK, book.x, book.y + bob, Math.sin(age * 3) > 0 ? pal[1] : pal[0], OUTLINE)
       for (let i = 0; i < 3; i++) {
         const p = (age * 0.6 + i / 3) % 1
         px(book.x + Math.sin((p + i) * 6) * 6 * ps(), book.y - p * 22 * ps(), p < 0.7 ? pal[1] : pal[0], 2)
@@ -271,7 +281,8 @@ export function attachLifeFx(world, { container } = {}) {
         for (let k = 0; k < 5; k++) px(x0 + side * k * ps(), y, i % 2 ? pal[0] : pal[1])
       }
     } else if (kind === 'embers' || kind === 'warm') {
-      const src = kind === 'warm' ? screen(Math.round(pet.x / CHUNK_W) * CHUNK_W, 0.3, 1.0) : hand
+      // Embers rise from the Campfire itself (the apron centre), whichever side the pet tends it from.
+      const src = e.tint === 'resource' || kind === 'warm' ? screen(Math.round(pet.x / CHUNK_W) * CHUNK_W, 0.35, 0.8) : hand
       for (let i = 0; i < 6; i++) {
         const p = (age * 0.55 + i / 6) % 1
         px(src.x + Math.sin(p * 7 + i) * 4 * ps(), src.y - p * 30 * ps(), p < 0.5 ? pal[0] : pal[1])
@@ -280,8 +291,13 @@ export function attachLifeFx(world, { container } = {}) {
       const partner = e.with ? petOf(e.with) : null
       const rows = kind === 'heart' ? HEART : NOTE
       const bob = Math.round(Math.sin(age * 2.4) * 1.5) * ps()
-      const at = partner ? screen((pet.x + partner.x) / 2, 2.1, (pet.z + partner.z) / 2) : head
-      if (age % 2.4 < 1.9) sprite(rows, at.x, at.y - 6 * ps() + bob, pal[0])
+      // Above our own head, leaning toward the friend; the friend gets one too while they're close.
+      const lean = partner ? Math.sign(partner.x - pet.x) * 5 * ps() : 0
+      if (age % 2.4 < 1.9) sprite(rows, head.x + lean, head.y - 6 * ps() + bob, pal[0], OUTLINE)
+      if (partner && Math.abs(partner.x - pet.x) < 2.6 && (age + 1.2) % 2.4 < 1.9) {
+        const top = screen(partner.x, 1.75, partner.z)
+        sprite(kind === 'heart' ? NOTE : HEART, top.x - lean, top.y - 6 * ps() - bob, PALETTE[kind === 'heart' ? 'note' : 'heart'][0], OUTLINE)
+      }
     } else if (kind === 'fish') {
       // A line out to the pond, a bobber that dips now and then, and a ring when it does.
       const to = e.to ? screen(e.to.x, 0.02, e.to.z) : screen(pet.x + 2, 0.02, pet.z + 2)
@@ -300,7 +316,7 @@ export function attachLifeFx(world, { container } = {}) {
     // Progress: a small sparkle above the head as each work loop completes (every ~20 s).
     if (e.progress && e.durationS - age < 1.2) {
       const k = 1 - Math.max(0, e.durationS - age) / 1.2
-      sprite(STAR, head.x, head.y - (4 + k * 8) * ps(), k < 0.8 ? pal[1] : pal[0])
+      sprite(STAR, head.x, head.y - (4 + k * 8) * ps(), k < 0.8 ? pal[1] : pal[0], OUTLINE)
     }
   }
 
