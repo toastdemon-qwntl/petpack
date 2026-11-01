@@ -331,6 +331,59 @@ window.addEventListener('mouseleave', () => { if (interactive) { interactive = f
 window.addEventListener('click', event => {
   if (world.pick(event.clientX, event.clientY) === myId) { selectedUntil = performance.now() + 6000; world.say(myId, '← → to move seat') }
 })
+// ---- right-click: a small menu for our pet, a teammate's pet, or the pane's edge ----
+// Empty glass passes clicks through to the desktop, so the menu opens wherever the pane holds the mouse.
+window.addEventListener('contextmenu', async event => {
+  if (event.target?.closest?.('input, textarea, [contenteditable]')) return // the chat field keeps its own menu
+  event.preventDefault()
+  if (!bridge.contextMenu) return
+  const id = world.playHitTest?.(event.clientX, event.clientY) ?? world.pick(event.clientX, event.clientY)
+  const all = brain.pets()
+  const them = id && id !== myId ? all.find(p => p.id === id && !p.away) : null
+  const others = all.filter(p => !p.isMe && !p.away && (p.local ? demo : true))
+  const items = []
+  if (them) {
+    items.push({ label: `${them.displayName} · ${them.dnd ? 'do not disturb' : them.status || 'idle'}`, enabled: false },
+      { id: `wave:${them.id}`, label: `Wave at ${them.displayName}` },
+      { id: `visit:${them.id}`, label: `Visit ${them.displayName}` })
+    if (!them.local) items.push({ id: `sit:${them.id}`, label: `Sit next to ${them.displayName}` })
+    items.push({ type: 'separator' })
+  }
+  items.push({ id: 'home', label: 'Come home' },
+    { label: 'Send away', submenu: [
+      ...others.map(p => ({ id: `visit:${p.id}`, label: `Visit ${p.displayName}` })),
+      ...(others.length ? [{ type: 'separator' }] : []),
+      { id: 'walk', label: 'Go for a walk' },
+    ] },
+    { id: 'showMe', label: 'Show me' },
+    { type: 'separator' },
+    { id: 'party', label: 'Party' },
+    { id: 'photo', label: 'Take a photo' },
+    { type: 'separator' },
+    { id: 'helpVisits', label: 'Help stuck teammates', checked: !!brain.helpVisits },
+    { id: 'dnd', label: 'Do Not Disturb', checked: !!brain.dnd },
+    { id: 'mute', label: 'Mute', checked: !!joy.muted },
+    { type: 'separator' },
+    { id: 'fold', label: 'Fold pane' })
+  let picked = null
+  try { picked = await bridge.contextMenu(items) } catch { picked = null }
+  if (!picked?.id || picked.handled) return
+  const [what, target] = picked.id.split(/:(.*)/s)
+  const said = r => { if (r?.message) activity(r.message, 'pet') }
+  if (what === 'home') said(brain.recall?.())
+  else if (what === 'walk') said(brain.sendAway?.())
+  else if (what === 'visit') said(brain.sendAway?.(target))
+  else if (what === 'wave') brain.waveAt?.(target)
+  else if (what === 'sit') said(brain.coworkWith?.(target))
+  else if (what === 'showMe') showMe()
+  else if (what === 'party') brain.party?.()
+  else if (what === 'photo') takePhoto()
+  else if (what === 'fold') collapse?.collapse()
+  // No popover to save them (Linux): the live pane still follows.
+  else if (what === 'helpVisits') brain.setHelpVisits?.(!brain.helpVisits)
+  else if (what === 'dnd') brain.setDnd?.(!brain.dnd)
+  else if (what === 'mute') joy.mute?.()
+})
 window.addEventListener('keydown', event => {
   if (event.metaKey || event.ctrlKey || event.altKey) return
   if (event.target?.closest?.('input, textarea, [contenteditable]')) return // typing in the chat field

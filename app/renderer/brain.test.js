@@ -731,6 +731,40 @@ test('help visits: waiting needs 45 s, DND and switching off stop a visit', asyn
   assert.notEqual(brain.me.job?.mode, 'help')
 })
 
+test('right-click: send away visits a teammate or goes for a walk, come home ends it, wave says hi', async () => {
+  const net = fakeNet()
+  const brain = createBrain({ bridge: {}, net, me: { id: 'me', name: 'Pip', skills: [], catalog: [] },
+    config: { seat: 0, dock: 'right', noVisits: true }, random: seeded(8) })
+  welcome(brain, [{ ...BEA, seat: 1, x: CHUNK_W, status: 'idle' }])
+  brain.handle({ t: 'fx', from: 'bea', kind: 'pose', ts: Date.now(), x: CHUNK_W, z: 1.5, m: 0 })
+
+  assert.equal(brain.sendAway('nobody').ok, false)
+  const r = brain.sendAway('Bea')
+  assert.deepEqual([r.ok, r.message], [true, 'off to see Bea'])
+  const chunks = []
+  await run(brain, 40, 0.25, () => { const c = chunkOf(brain.me.x); if (chunks.at(-1) !== c) chunks.push(c) })
+  assert.deepEqual(chunks.slice(0, 3), [0, 1, 0], `visited Bea and came home (${chunks})`)
+  assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'collab' && m.dst === 'bea'))
+
+  // A walk next door, cut short by Come home.
+  assert.equal(brain.sendAway().message, 'going for a walk')
+  await run(brain, 3, 0.25)
+  assert.notEqual(Math.round(brain.me.x * 10), 0)
+  assert.equal(brain.recall().busy, false, 'a walk is not an errand: home at once')
+  await run(brain, 20, 0.25)
+  assert.equal(chunkOf(brain.me.x), 0)
+
+  // Heads-down stays home.
+  brain.setDnd(true)
+  assert.equal(brain.sendAway('Bea').ok, false)
+  brain.setDnd(false)
+
+  assert.equal(brain.waveAt('bea'), true)
+  assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'wave' && m.dst === 'bea'))
+  assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'say' && m.text === 'hi Bea!'))
+  assert.equal(brain.waveAt('me'), false)
+})
+
 test('search and meet helpers', () => {
   const owners = [{ id: 'rex', name: 'Rex', online: false, catalog: REX.catalog }]
   const [hit] = searchCatalogs('windows click through', owners, { now: 0 })

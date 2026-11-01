@@ -46,6 +46,9 @@
 //                                        has been failed 8 s or waiting 45 s (nearest first, 5 min apart per person),
 //                                        offers a hand, brings a freely shared skill, stays until they move on (40 s
 //                                        at most). config.helpVisits seeds it.
+//   sendAway(idOrName?) -> { ok, message }  visit that teammate's pet now (wave, collab, a dot, home), or with no
+//                                        target a walk to the landmark next door and back; recall() ends it early
+//   waveAt(id) -> bool                   our pet waves and says hi to that pet from where it stands
 //   setDnd(on) -> on; dnd                no visits/gifts, pet stays home, asks get "<name> is heads-down right now";
 //                                        pets() carries dnd per pet (draw a small DND sign over those pets)
 //   setSharing({ mode: 'free'|'ask'|'never', items: { [ref]: true|false } }); sharing
@@ -1490,6 +1493,47 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     startJob(mine, 'return', async j => { await goHome(mine, j); mine.hurry = false })
     return { busy: false, message: 'on my way home' }
   }
+  /** Send our pet off on purpose (right-click menu): to a teammate's pet (idOrName) for a visit, or, with no target,
+   *  for a walk to a landmark next door. -> { ok, message }. Come home (recall) brings it back early. */
+  function sendAway(idOrName = null) {
+    wake()
+    if (dnd) return { ok: false, message: 'heads-down: staying home' }
+    if (mine.job && mine.job.mode !== 'visit' && mine.job.mode !== 'return') {
+      return { ok: false, message: mine.jobWith ? `busy helping ${mine.jobWith}` : 'busy right now' }
+    }
+    recallPending = false
+    mine.hurry = false
+    mine.visitAt = time + 120 // no surprise stroll straight after
+    if (idOrName) {
+      const target = agents.has(idOrName) && idOrName !== myId ? member(idOrName) : resolvePeer(idOrName)
+      const m = target && member(target.id)
+      if (!m || !m.online || m.id === myId) return { ok: false, message: `${target?.name || idOrName} isn't around` }
+      startJob(mine, 'visit', job => visitNeighbour(mine, m, job), m.name)
+      fx('say', { src: myId, text: `off to see ${shortTitle(m.name, 14)}` })
+      return { ok: true, message: `off to see ${m.name}` }
+    }
+    const lm = landmarkOf(mySeat + (random() < 0.5 ? -1 : 1))
+    startJob(mine, 'visit', async job => {
+      await walkTo(mine, { x: lm.x - 1, z: lm.z }, job, { timeout: 40 })
+      if (job.cancelled) return
+      setAnim(mine, 'wave', 1.4)
+      await sleep(12 + random() * 8, job)
+      if (!job.cancelled) await goHome(mine, job)
+    })
+    fx('say', { src: myId, text: 'going for a walk' })
+    return { ok: true, message: 'going for a walk' }
+  }
+  /** Our pet waves at someone from where it stands (right-click on their pet). */
+  function waveAt(id) {
+    const m = member(id)
+    if (!m || id === myId) return false
+    wake()
+    mine.faceTo = id
+    setAnim(mine, 'wave', 1.6)
+    fx('wave', { src: myId, dst: id })
+    fx('say', { src: myId, text: `hi ${shortTitle(m.name, 14)}!` })
+    return true
+  }
   /** Heads-down: our pet stays home (no visits, no gifts), asks get "is heads-down right now", peers see a DND
    *  sign over it. WIRE folds the pane and mutes sound on the 'dnd' event. */
   function setDnd(on) {
@@ -2179,6 +2223,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     party: () => maybeConga(true),
     recall, setDnd, get dnd() { return dnd },
     setHelpVisits, get helpVisits() { return helpVisits },
+    sendAway, waveAt,
     leaderboard, get leader() { return leaderId },
     setSharing, get sharing() { return { ...sharing, items: { ...sharing.items } } },
     decide, get permissions() { return [...permissions.values()].map(({ finish, ...p }) => p) },

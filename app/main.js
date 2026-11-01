@@ -1,5 +1,5 @@
 // Electron main: petpack:// protocol + CSP, the docked pane, tray, bridge IPC, Codex data and the MCP socket.
-import { app, BrowserWindow, clipboard, desktopCapturer, ipcMain, nativeImage, net, Notification, protocol, screen, session } from 'electron'
+import { app, BrowserWindow, clipboard, desktopCapturer, ipcMain, Menu, nativeImage, net, Notification, protocol, screen, session } from 'electron'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -459,6 +459,43 @@ handle('petpack:savePhoto', dataUrl => {
   return { saved: true, path: file }
 })
 ipcMain.on('petpack:interactive', (event, on) => { if (trusted(event)) clickThrough?.set(on) })
+// Right-click menu on the pane: the page describes it, main pops the native menu. Settings items (Do Not Disturb, Mute,
+// Help stuck teammates) are saved here through the popover's own commands; everything else goes back to the page.
+// -> { id, handled } for the picked item, or null when the menu closed without a pick.
+const MAIN_ITEMS = new Set(['dnd', 'mute', 'helpVisits'])
+function contextTemplate(items, pick) {
+  return (Array.isArray(items) ? items : []).slice(0, 40).map(item => {
+    if (!item || typeof item !== 'object' || item.type === 'separator') return { type: 'separator' }
+    const label = String(item.label || '').slice(0, 80)
+    if (Array.isArray(item.submenu)) return { label, enabled: item.enabled !== false, submenu: contextTemplate(item.submenu, pick) }
+    const out = { label, enabled: item.enabled !== false && typeof item.id === 'string', click: () => pick(String(item.id)) }
+    if (typeof item.checked === 'boolean') Object.assign(out, { type: 'checkbox', checked: item.checked })
+    return out
+  })
+}
+function runMainItem(id, checked) {
+  const commands = tray?.panel?.commands
+  if (id === 'helpVisits') { trayActions().setHelpVisits(!checked); return true }
+  if (id === 'dnd' && commands?.dnd) { commands.dnd(!checked); return true }
+  if (id === 'mute' && commands?.mute) { commands.mute(); return true }
+  return false // no popover (Linux): the page handles it locally
+}
+ipcMain.handle('petpack:context-menu', (event, items) => {
+  if (!trusted(event) || !win || win.isDestroyed()) return null
+  return new Promise(resolve => {
+    let done = false
+    const finish = value => { if (!done) { done = true; resolve(value) } }
+    const checkedOf = id => {
+      const find = list => { for (const i of list || []) { if (i?.id === id) return i.checked === true; const sub = find(i?.submenu); if (sub != null) return sub } return null }
+      return find(items) === true
+    }
+    const menu = Menu.buildFromTemplate(contextTemplate(items, id => {
+      finish({ id, handled: MAIN_ITEMS.has(id) && runMainItem(id, checkedOf(id)) })
+    }))
+    // The close callback can run before the click on macOS: give the click a moment to land first.
+    menu.popup({ window: win, callback: () => setTimeout(() => finish(null), 150) })
+  })
+})
 ipcMain.on('petpack:agent-ready', (event, ready) => {
   if (!trusted(event)) return
   agentReady = Boolean(ready)

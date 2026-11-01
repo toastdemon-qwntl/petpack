@@ -66,6 +66,9 @@ and gallery pets. Switch pets from the menu-bar icon.
   itself when another agent walks onto your screen or your pet needs you.
 - **Sit together.** Side by side, the panes join into one world across your screens ("Sit next to…" in the menu, or
   `--next-to`). Across the table, battleships style, you share one patch of world and each sees it from your own side.
+- **Right-click** your pet or the pane's edge for a quick menu: Come home, Send away (visit a teammate or go for a
+  walk), Show me, Party, Take a photo, Help stuck teammates, Do Not Disturb, Mute, Fold pane. Right-click a teammate's
+  pet to wave at them, visit them or sit next to them.
 - **Scroll to zoom out** over your neighbours' screens; double-click to come home.
 - **Talk to your pet.** Click it to type, or hold Space to talk. Your pet answers with Codex on your machine and can
   search the team as it answers. Voice uses the OpenAI Realtime API when `OPENAI_API_KEY` is set.
