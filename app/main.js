@@ -362,11 +362,8 @@ async function agentCall(tool, args = {}, { timeoutMs = 58000, progress = null }
     win.webContents.send('petpack:agent-call', { id, tool, args: { ...args, callId: id } })
   })
 }
-/** S5 live progress: whichever progress hook the MCP socket hands onCall (shape settled by S5). */
-function progressHook(call = {}) {
-  for (const name of ['progress', 'onProgress', 'notify', 'step']) if (typeof call[name] === 'function') return call[name]
-  return null
-}
+/** S5 live progress: the MCP socket hands onCall a progress(message, extra) for that call. */
+const progressHook = (call = {}) => (typeof call.progress === 'function' ? call.progress : null)
 let ipcServer = null
 async function startMcpIpc() {
   const mod = await importOptional('app/mcp/ipc.js')
@@ -452,7 +449,8 @@ ipcMain.on('petpack:agent-ready', (event, ready) => {
 ipcMain.on('petpack:agent-step', (event, { callId, text, ...rest } = {}) => {
   if (!trusted(event) || !callId || !text) return
   const pending = pendingCalls.get(callId)
-  try { pending?.progress?.({ callId, text: String(text).slice(0, 300), ...rest }) } catch (error) { log('progress', error.message) }
+  // S5: progress(message, extra) -> notifications/progress on the Codex tool call.
+  try { pending?.progress?.(String(text).slice(0, 300), rest) } catch (error) { log('progress', error.message) }
 })
 ipcMain.on('petpack:agent-result', (event, { id, ok, result, error } = {}) => {
   if (!trusted(event)) return
