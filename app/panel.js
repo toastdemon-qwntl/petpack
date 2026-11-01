@@ -40,6 +40,8 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
   let reply = null // { text, at } the pet's last answer to recall
   let muted = false
   let petName = null
+  let blurredAt = 0
+  let dialogOpen = false
   let pending = new Map() // ask-share id -> resolve
   let askSeq = 0
   const consoleErrors = []
@@ -224,11 +226,12 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
     choosePet: id => choose(id),
     followCodex: () => choose(null),
     chooseFolder: async () => {
+      dialogOpen = true // the open panel takes focus; the popover stays put meanwhile
       const result = await dialog.showOpenDialog(win, {
         title: 'Choose a Codex pet', message: 'Pick a pet folder (pet.json + spritesheet) or its spritesheet file',
         properties: IS_MAC ? ['openDirectory', 'openFile'] : ['openFile'],
         filters: [{ name: 'Codex pet (pet.json, spritesheet)', extensions: ['json', 'webp', 'png'] }],
-      }).catch(() => ({ canceled: true }))
+      }).catch(() => ({ canceled: true })).finally(() => { dialogOpen = false; if (win && !win.isDestroyed()) win.focus() })
       if (result.canceled || !result.filePaths?.[0]) return petsPayload()
       const picked = result.filePaths[0]
       return choose(/\.json$/i.test(picked) ? path.dirname(picked) : picked)
@@ -304,7 +307,8 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
     })
     wc.on('did-finish-load', () => { ready = true })
     wc.on('did-start-loading', () => { ready = false })
-    win.on('blur', () => { if (!pinned) hide() })
+    // Clicking the tray icon while open blurs first; remember when, so that click doesn't open it again (toggle).
+    win.on('blur', () => { if (!pinned && !dialogOpen) { blurredAt = Date.now(); hide() } })
     win.on('closed', () => { win = null; ready = false })
     wc.loadURL(URL_PANEL + (IS_MAC ? '#mac' : '')).catch(error => consoleErrors.push({ where: 'panel', message: `loadURL: ${error.message}` }))
   }
@@ -326,7 +330,10 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
     push({ type: 'shown' })
   }
   function hide () { if (win && !win.isDestroyed() && win.isVisible()) win.hide() }
-  function toggle () { if (win && !win.isDestroyed() && win.isVisible()) hide(); else show() }
+  function toggle () {
+    if (win && !win.isDestroyed() && win.isVisible()) hide()
+    else if (Date.now() - blurredAt > 300) show()
+  }
   create()
 
   const api = {

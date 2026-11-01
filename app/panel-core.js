@@ -32,7 +32,7 @@ export function anchorBounds ({ tray, workArea, bounds = workArea, size = PANEL,
 
 /** The pet's reply to "Come home". state: what the pane last reported ({ errand, home, dnd }). */
 export function recallReply (state = {}, petName = 'your pet') {
-  const errand = state.errand
+  const errand = state.errand || (state.busyWith ? { with: state.busyWith } : null)
   if (errand) {
     const who = errand.with || errand.owner || null
     const what = errand.label ? ` with ${errand.label}` : ''
@@ -50,6 +50,8 @@ export function statusLine (pane = {}, codexStatus = 'idle') {
     const who = pane.errand.with || pane.errand.owner
     return { key: 'away', text: who ? `away on an errand · helping ${who}` : 'away on an errand' }
   }
+  // busyWith: who our pet's current job is with (the pane's 2 s report); home: whether it is on its own screen.
+  if (pane.busyWith) return { key: 'away', text: pane.home === false ? `away · helping ${pane.busyWith}` : `busy · helping ${pane.busyWith}` }
   if (codexStatus === 'waiting') return { key: 'waiting', text: 'waiting for you' }
   if (codexStatus === 'working') return { key: 'working', text: 'working' }
   if (codexStatus === 'failed') return { key: 'failed', text: 'hit a snag' }

@@ -36,6 +36,8 @@ test('recall: a busy pet says who it is helping; a free one comes home', () => {
   assert.equal(statusLine({ errand: { with: 'Bea' } }, 'working').text, 'away on an errand · helping Bea')
   assert.equal(statusLine({ dnd: true }, 'working').key, 'dnd')
   assert.equal(statusLine({}, 'waiting').key, 'waiting')
+  assert.equal(statusLine({ busyWith: 'Bea', home: false }, 'idle').text, 'away · helping Bea')
+  assert.equal(recallReply({ busyWith: 'Bea' }), 'busy helping Bea, back soon')
 })
 
 const rl = (type, payload) => JSON.stringify({ timestamp: '2026-11-01T15:00:00.000Z', type, payload })
