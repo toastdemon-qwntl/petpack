@@ -37,10 +37,11 @@
     import { ROAD_NODES, ROAD_EDGES, groundHeight } from './map-paths.js'
     const params = new URLSearchParams(location.search)
     const places = {
-      library: {x:-20,z:-12.1,span:13}, bridge:{x:0,z:0,span:13}, workshop:{x:18,z:-12,span:13},
-      dojo:{x:18,z:7,span:13},campfire:{x:-16,z:7,span:14},pond:{x:6.5,z:12.5,span:13},overview:{x:0,z:0,span:70},
+      library: {x:-20,z:-13.5,span:13}, bridge:{x:0,z:0,span:13}, workshop:{x:18,z:-13,span:13},
+      dojo:{x:18,z:5.5,span:13},campfire:{x:-16,z:6,span:14},pond:{x:6.5,z:12.5,span:13},overview:{x:0,z:0,span:70},
     }
     let current = params.get('place') || 'library', elapsed = Number(params.get('t') || 0), paused = params.has('paused')
+    let settling = .01
     if (!places[current]) current = 'library'
     const stages = [], maps = [], graphs = []
     for(const [i,canvas] of [...document.querySelectorAll('canvas')].entries()) {
@@ -65,6 +66,7 @@
     }
     function focus(name,settle=false) {
       current=name
+      settling=settle ? .01 : 2
       const p=places[name]
       stages.forEach((stage,i)=>{
         // The pane stays pet-sized; the study shows more context around each landmark.
@@ -78,18 +80,21 @@
     const updateButton=()=>stopButton.textContent=paused?'Resume fly-over':'Pause fly-over'
     updateButton()
     document.querySelectorAll('[data-place]').forEach(button=>button.addEventListener('click',()=>{paused=true;updateButton();focus(button.dataset.place)}))
-    stopButton.addEventListener('click',()=>{paused=!paused;updateButton()})
+    stopButton.addEventListener('click',()=>{paused=!paused;settling=.01;updateButton()})
     const pathToggle=document.querySelector('#paths')
     pathToggle.checked=params.has('graph')
-    pathToggle.addEventListener('change',()=>graphs.forEach(g=>g.visible=pathToggle.checked))
-    const observer=new ResizeObserver(()=>stages.forEach(stage=>stage.resize(stage.renderer.domElement.clientWidth,stage.renderer.domElement.clientHeight)))
+    pathToggle.addEventListener('change',()=>{graphs.forEach(g=>g.visible=pathToggle.checked);settling=.01})
+    const observer=new ResizeObserver(()=>{stages.forEach(stage=>stage.resize(stage.renderer.domElement.clientWidth,stage.renderer.domElement.clientHeight));settling=.01})
     document.querySelectorAll('canvas').forEach(c=>observer.observe(c))
     const tour=['library','bridge','workshop','dojo','pond','campfire']
     let previous=performance.now(),frame,disposed=false
     function tick(now){
       const dt=Math.min(.06,(now-previous)/1000);previous=now
       if(!paused){elapsed+=dt;const name=tour[Math.floor(elapsed/10)%tour.length];if(name!==current)focus(name)}
-      stages.forEach((stage,i)=>{maps[i].update(dt,elapsed);stage.update(dt,elapsed);stage.render()})
+      if(!paused||settling>0){
+        stages.forEach((stage,i)=>{maps[i].update(dt,elapsed);stage.update(dt,elapsed);stage.render()})
+        settling=Math.max(0,settling-dt)
+      }
       frame=requestAnimationFrame(tick)
     }
     frame=requestAnimationFrame(tick)
@@ -98,7 +103,7 @@
       cancelAnimationFrame(frame);observer.disconnect()
       stages.forEach((stage,i)=>{maps[i].dispose();graphs[i].geometry.dispose();graphs[i].material.dispose();stage.dispose()})
     }
-    window.mapPreview={stages,maps,graphs,focus:(name)=>{paused=true;updateButton();focus(name,true)},setTime:t=>elapsed=t,dispose}
+    window.mapPreview={stages,maps,graphs,focus:(name)=>{paused=true;updateButton();focus(name,true)},setTime:t=>{elapsed=t;settling=.01},dispose}
     addEventListener('pagehide',dispose,{once:true})
   </script>
 </body>

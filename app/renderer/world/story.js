@@ -129,7 +129,7 @@ export function createStory(map, { testPet = false } = {}) {
     ])
   }
   for (const [id, side, delay] of [['fern', -1, 0], ['mochi', 1, .7]]) {
-    const home = offset(campfire, side * 1.65, 1.4)
+    const home = offset(campfire, side * 1.65, .1)
     const reading = offset(library, side * 1.15, .8)
     positions[id] = itinerary(map, [
       key(0, home), key(.5 + delay, home), key(16 + delay, reading),
@@ -137,7 +137,7 @@ export function createStory(map, { testPet = false } = {}) {
     ])
   }
   const arrival = offset(campfire, 4.8, .7)
-  const welcome = offset(campfire, .1, 2.1)
+  const welcome = offset(campfire, .1, 1.4)
   positions.nova = itinerary(map, [key(0, arrival), key(44, arrival), key(47, welcome), key(55, welcome), key(59, arrival), key(DURATION, arrival)])
   const testHome = offset(workshop, -.2, 3.2)
   positions.test = itinerary(map, [key(0, testHome), key(12, testHome), key(29, offset(dojo, -.2, 3.2)), key(40, offset(dojo, -.2, 3.2)), key(58, testHome), key(DURATION, testHome)])

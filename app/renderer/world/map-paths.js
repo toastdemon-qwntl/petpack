@@ -25,7 +25,10 @@ export const waterShape = (x, z) => Math.abs(x - streamX(z)) < 1.15 ||
   ((x - 6.5) / 3.8) ** 2 + ((z - 12.5) / 2.8) ** 2 < 1
 
 const onBridge = (x, z) => Math.abs(x) <= 3.5 && Math.abs(z) <= 1.1
-export const isWater = (x, z) => waterShape(x, z) && !onBridge(x, z)
+// Terrain is drawn in half-unit cells. Keep recovery paths off both the analytic
+// shoreline and every cell rendered as water, including its stepped outer edge.
+export const isWater = (x, z) => (waterShape(x, z) ||
+  waterShape(Math.floor(x * 2) / 2 + 0.25, Math.floor(z * 2) / 2 + 0.25)) && !onBridge(x, z)
 export const groundHeight = (x, z) => onBridge(x, z)
   ? 0.32 * Math.min(1, Math.max(0, (3.5 - Math.abs(x)) / 2)) : 0
 

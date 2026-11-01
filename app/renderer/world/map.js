@@ -35,13 +35,15 @@ export function createMap(scene, { seed = 1 } = {}) {
     for (let z = -19.75; z < 20; z += tile) {
       const wet = waterShape(x, z)
       if (wet) {
-        p.box(x, -.2, z, tile, .08, tile, waterColors[Math.floor(random() * waterColors.length)])
+        p.tile(x, -.16, z, tile, tile, waterColors[Math.floor(random() * waterColors.length)])
         continue
       }
       const bank = waterShape(x + .55, z) || waterShape(x - .55, z) || waterShape(x, z + .55) || waterShape(x, z - .55)
       const path = isRoad(x, z) || inApron(x, z) || inSquare(x, z)
       const palette = path ? pathColors : bank ? shoreColors : grassColors
-      p.box(x, -.12, z, tile, .24, tile, palette[Math.floor(random() * palette.length)])
+      const tint = palette[Math.floor(random() * palette.length)]
+      if (bank) p.box(x, -.12, z, tile, .24, tile, tint)
+      else p.tile(x, 0, z, tile, tile, tint)
       if (path && random() < .16 && !(Math.abs(x) < 3.6 && Math.abs(z) < 1.3)) {
         p.box(x + (random() - .5) * .25, .008, z + (random() - .5) * .25, .13 + random() * .21, .014, .1 + random() * .11, random() > .4 ? '#e0cca1' : '#bda47a')
       }
@@ -52,7 +54,7 @@ export function createMap(scene, { seed = 1 } = {}) {
   for (let i = 0; i < 28; i++) {
     const x = -3.375 + i * .25
     const y = groundHeight(x, 0)
-    p.box(x, y - .075, 0, .235, .15, 2.15, i % 3 ? '#bda277' : '#cdb58c')
+    p.box(x, y - .075, 0, .235, .15, 2.2, i % 3 ? '#bda277' : '#cdb58c')
     p.box(x, y + .008, -.75, .06, .018, .07, '#7f7056')
     p.box(x, y + .008, .75, .06, .018, .07, '#7f7056')
   }
@@ -69,7 +71,7 @@ export function createMap(scene, { seed = 1 } = {}) {
     }
   }
   // Readable openings: planting frames the entrance without swallowing two-unit pets.
-  for (const [x, z, w, d] of [[-24.7,-7.4,1.25,2],[-15.15,-7.4,1.2,2],[13,-7.6,1.25,2],[23.15,-7.6,1.25,2],[-19.8,12.7,3.8,.9],[-12.1,12.7,2.7,.9],[14,12.6,2.9,.9],[22,12.6,2.9,.9]]) {
+  for (const [x, z, w, d] of [[-24.7,-5.3,1.25,2],[-15.15,-5.3,1.2,2],[13,-5.3,1.25,2],[23.15,-5.3,1.25,2],[-19.8,12.7,3.8,.9],[-12.1,12.7,2.7,.9],[14,12.6,2.9,.9],[22,12.6,2.9,.9]]) {
     flowers(p, x, z, w, d, random, Math.round(w * d * 12))
     reserve(x, z, w + .3, d + .3)
   }
@@ -89,8 +91,10 @@ export function createMap(scene, { seed = 1 } = {}) {
   const occupied = (x,z) => obstacles.some(o => Math.abs(x-o.x) < o.w+.18 && Math.abs(z-o.z) < o.d+.18)
   // Several tree species, with a loose orchard/forest rhythm and protected paths.
   const planted = []
+  const sightline = (x,z) => Object.values(landmarks).some(l => Math.abs(x-l.x)<3.2 && z>l.z-1 && z<l.z+7) ||
+    (Math.abs(x)<5 && z>-2 && z<7) || (x>2 && x<11 && z>13 && z<18)
   function plant(x,z,type,scale=1) {
-    if (waterShape(x,z) || isRoad(x,z,1.05) || precinct(x,z) || occupied(x,z)) return false
+    if (sightline(x,z) || waterShape(x,z) || isRoad(x,z,1.05) || precinct(x,z) || occupied(x,z)) return false
     if (planted.some(t => Math.hypot(t.x-x,t.z-z) < 2.4)) return false
     tree(p,x,z,type,random,scale)
     planted.push({x,z})

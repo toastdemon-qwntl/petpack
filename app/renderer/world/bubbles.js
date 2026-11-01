@@ -143,7 +143,9 @@ export function createBubbles(overlay, camera, stage) {
       textBubble(element, String(text).slice(0, 64))
       return element
     },
-    projectGift(element, point, opacity) { if (element) project(element, point, -pixelScale * 5, true, opacity) },
+    projectGift(element, point, opacity, lift = 0) {
+      if (element) project(element, point, -pixelScale * (5 + lift), true, opacity)
+    },
     resize(w, h) { width = w; height = h },
     dispose() { root.remove() },
   }

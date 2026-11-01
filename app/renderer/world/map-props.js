@@ -22,13 +22,14 @@ export function createPainter(root) {
   }
   return {
     box: (x, y, z, w, h, d, tint, rotation = 0) => add('box', x, y, z, w, h, d, tint, rotation),
+    tile: (x, y, z, w, d, tint) => add('tile', x, y, z, w, 1, d, tint),
     glow: (x, y, z, w, h, d, tint) => add('glow', x, y, z, w, h, d, tint),
     stone: (x, y, z, w, h, d, tint, rotation = 0) => add('stone', x, y, z, w, h, d, tint, rotation),
     pyramid: (x, y, z, w, h, d, tint, rotation = 0) => add('pyramid', x, y, z, w, h, d, tint, rotation),
     finish() {
       const meshes = []
       for (const [kind, instances] of batches) {
-        const geometry = kind === 'stone' ? new THREE.CylinderGeometry(0.43, 0.5, 1, 5) :
+        const geometry = kind === 'tile' ? new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2) : kind === 'stone' ? new THREE.CylinderGeometry(0.43, 0.5, 1, 5) :
           kind === 'pyramid' ? new THREE.ConeGeometry(0.7, 1, 4) : new THREE.BoxGeometry(1, 1, 1)
         const material = toonMaterial({ color: '#ffffff', emissive: kind === 'glow' ? '#a15c18' : '#000000' })
         const mesh = new THREE.InstancedMesh(geometry, material, instances.length)
@@ -41,7 +42,7 @@ export function createPainter(root) {
           mesh.setMatrixAt(i, dummy.matrix)
           mesh.setColorAt(i, color.set(item.tint))
         })
-        mesh.castShadow = kind !== 'glow'
+        mesh.castShadow = kind !== 'glow' && kind !== 'tile'
         mesh.receiveShadow = true
         mesh.computeBoundingSphere()
         root.add(mesh)

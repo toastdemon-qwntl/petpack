@@ -157,6 +157,7 @@
     pets.push({id,anchor,sprite,baseX:anchor.position.x,pop:0})
   }
   let time=0,last=performance.now(),paused=params.has('paused'),auto=!params.has('paused'),nextAction=2.3,sequence=0,pan=false
+  document.querySelector('[data-action="auto"]').setAttribute('aria-pressed',String(auto))
   const labels={skill:'A NEW SKILL',memory:'PROJECT MEMORY',technique:'LEARN BY DOING',resource:'A LITTLE HELP'}
   function collaborate(kind) { for(const p of pets) fx.setStatus(p.id,'idle'); return fx.collab('pet-0','pet-1',{kind,label:labels[kind]}) }
   async function send() { const arrived=await fx.gift('pet-0','pet-2',{color:'#edc175',label:'IMAGEGEN'});if(arrived)pets[2].pop=1;return arrived }
@@ -173,7 +174,11 @@
       nextAction=time+6
     }
   }
-  function resize() { const {width,height}=view.getBoundingClientRect();stage.resize(width,height);fx.resize(width,height);stage.focus(0,-.25,{span:12});stage.render() }
+  function resize() {
+    const {width,height}=view.getBoundingClientRect()
+    stage.resize(width,height);fx.resize(width,height);stage.focus(0,-.25,{span:12});stage.render()
+    document.querySelector('.hint').textContent=`FX development controls · ${width} × ${height} world · ${pixelScale} CSS pixels per art pixel`
+  }
   const observer=new ResizeObserver(resize);observer.observe(view);resize()
   for(let i=0;i<90;i++)stage.update(1/60,i/60)
   tick(0)

@@ -147,7 +147,7 @@ function tick(now) {
   if (!paused) time += dt
   for (const stage of stages) {
     stage.focus(Math.sin(time * .14) * 1.8, -.9 + Math.cos(time * .11) * .4,
-      { span: stage === stages[0] ? 12 : 15 })
+      { span: stage === stages[0] ? 12 : 16 })
     stage.update(paused ? 0 : dt, time)
     stage.render()
   }
@@ -155,7 +155,7 @@ function tick(now) {
 }
 for (const stage of stages) {
   stage.focus(Math.sin(time * .14) * 1.8, -.9 + Math.cos(time * .11) * .4,
-    { span: stage === stages[0] ? 12 : 15 })
+    { span: stage === stages[0] ? 12 : 16 })
   for (let i = 0; i < 120; i++) stage.update(1 / 30, time)
 }
 frame = requestAnimationFrame(tick)

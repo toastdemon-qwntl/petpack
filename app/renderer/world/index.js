@@ -33,7 +33,7 @@ export function createWorld(container, { pixelScale = 2, clock } = {}) {
   Object.assign(overlay.style, { position: 'absolute', pointerEvents: 'none', overflow: 'hidden' })
   parent.append(overlay)
   const stage = createStage(canvas, { pixelScale })
-  const map = createMap(stage.scene, { seed: 19 })
+  const map = createMap(stage.scene, { seed: 77 })
   const fx = createFx({ scene: stage.scene, camera: stage.camera, overlay, stage })
   const pets = new Map()
   const raycaster = new THREE.Raycaster()
@@ -183,15 +183,17 @@ export function createWorld(container, { pixelScale = 2, clock } = {}) {
   function frame(now) {
     if (disposed) return
     const time = clock ? clock() : now / 1000
-    const realDt = Math.min(.05, Math.max(0, previousFrame === undefined ? 1 / 60 : (now - previousFrame) / 1000))
-    const dt = clock ? Math.min(.05, Math.max(0, previousTime === undefined ? 0 : time - previousTime)) : realDt
+    const elapsed = Math.max(0, previousFrame === undefined ? 1 / 60 : (now - previousFrame) / 1000)
+    const realDt = Math.min(.25, elapsed)
+    const clockDelta = clock ? Math.max(0, previousTime === undefined ? 0 : time - previousTime) : elapsed
+    const dt = Math.min(.1, clockDelta)
     previousFrame = now; previousTime = time
     for (const pet of pets.values()) {
       if (!pet.positioned) continue
       walk(pet, dt)
       const dx = pet.x - pet.lastX
       const dz = pet.z - pet.lastZ
-      pet.speed = dt ? Math.min(8, Math.hypot(dx, dz) / dt) : 0
+      pet.speed = clockDelta ? Math.min(8, Math.hypot(dx, dz) / clockDelta) : 0
       placePet(pet)
       beforePoint.set(pet.lastX, pet.anchor.position.y, pet.lastZ)
       const screenDelta = stage.toScreen(pet.anchor.position).x - stage.toScreen(beforePoint).x
@@ -206,8 +208,9 @@ export function createWorld(container, { pixelScale = 2, clock } = {}) {
     stage.update(realDt, time)
     stage.scene.updateMatrixWorld(true)
     stage.camera.updateMatrixWorld(true)
-    // Let UI springs settle even for a paused, deterministic story capture.
-    fx.update(realDt, time)
+    // Effects follow the story clock even after a slow frame. Paused captures
+    // still let their UI springs settle; hidden tabs never replay a backlog.
+    fx.update(Math.min(3, clockDelta || realDt), time)
     stage.render()
     frameId = requestAnimationFrame(frame)
   }
