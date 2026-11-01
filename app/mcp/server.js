@@ -274,10 +274,13 @@ export function createMcpServer({
 
   // Who we are, for the overlay's Codex link (hello.client): the Codex client and whether the app or the CLI runs us.
   let clientInfo = null
+  let clientCaps = {}
+  const codexWaits = new Map() // our JSON-RPC request id -> resolve (elicitation/create)
+  let codexSeq = 0
   const appKind = detectCodexApp()
   async function hello() {
     const app = await Promise.race([appKind, new Promise((r) => setTimeout(() => r('codex'), 600))])
-    return { kind: 'codex-mcp', app, name: clientInfo?.name || null, title: clientInfo?.title || null,
+    return { kind: 'codex-mcp', app, elicitation: !!clientCaps.elicitation, name: clientInfo?.name || null, title: clientInfo?.title || null,
       version: clientInfo?.version || null, pid: process.pid, cwd: process.cwd() }
   }
 
@@ -285,7 +288,17 @@ export function createMcpServer({
     try { return await connectIpc({ userData, client: await hello() }) } catch (e) { return null }
   }
 
+  // The overlay asks the person through Codex: forward as MCP elicitation/create, send Codex's answer back.
+  function onOverlayFrame(c, frame) {
+    if (frame.t !== 'elicit') return
+    if (!clientCaps.elicitation) { c.sendFrame({ t: 'elicit-result', id: frame.id, result: { action: 'unavailable' } }); return }
+    const rid = `petpack-elicit-${++codexSeq}`
+    codexWaits.set(rid, (msg) => c.sendFrame({ t: 'elicit-result', id: frame.id, result: msg.result || { action: 'cancel', error: msg.error?.message } }))
+    write({ jsonrpc: '2.0', id: rid, method: 'elicitation/create', params: { message: frame.message, requestedSchema: frame.requestedSchema } })
+  }
+
   function adopt(c) {
+    c.onServerFrame?.((frame) => onOverlayFrame(c, frame))
     client = c
     c.onClose(() => { if (client === c) client = null })
     return c
@@ -413,7 +426,8 @@ export function createMcpServer({
   }
 
   async function handle(msg) {
-    if (!msg || typeof msg !== 'object' || typeof msg.method !== 'string') return null // responses / junk: ignore
+    if (msg && typeof msg === 'object' && msg.method === undefined && codexWaits.has(msg.id)) { const w = codexWaits.get(msg.id); codexWaits.delete(msg.id); w(msg); return null }
+    if (!msg || typeof msg !== 'object' || typeof msg.method !== 'string') return null // other responses / junk: ignore
     const isRequest = msg.id !== undefined && msg.id !== null
     const { method, params = {} } = msg
     const reply = (result) => ({ jsonrpc: '2.0', id: msg.id, result })
@@ -423,6 +437,7 @@ export function createMcpServer({
       case 'initialize': {
         const asked = params.protocolVersion
         clientInfo = params.clientInfo && typeof params.clientInfo === 'object' ? params.clientInfo : null
+        clientCaps = params.capabilities && typeof params.capabilities === 'object' ? params.capabilities : {}
         setImmediate(connectQuietly)
         return reply({
           protocolVersion: PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0],

@@ -140,6 +140,9 @@ export async function startIpcServer({ onCall, onClient, profile, userData, endp
   // onClient(event, client): 'connect' | 'call' | 'disconnect', client = the hello's `client` + { conn }.
   const notify = (event, client, extra) => { try { onClient?.(event, client, extra) } catch {} }
   let connSeq = 0
+  const elicitWaits = new Map() // id -> resolve
+  let elicitSeq = 0
+  const codexSockets = new Map() // sock -> client (codex-mcp sessions, newest last)
 
   const sockets = new Set()
   const server = net.createServer((sock) => {
@@ -148,7 +151,7 @@ export async function startIpcServer({ onCall, onClient, profile, userData, endp
     let client = null
     const authTimer = setTimeout(() => { if (!authed) { send(sock, { t: 'denied', error: 'hello required' }); sock.end() } }, 5000)
     authTimer.unref()
-    sock.on('close', () => { sockets.delete(sock); clearTimeout(authTimer); if (client) notify('disconnect', client) })
+    sock.on('close', () => { sockets.delete(sock); codexSockets.delete(sock); clearTimeout(authTimer); if (client) notify('disconnect', client) })
     sock.on('error', () => {})
     frames(sock, async (msg) => {
       if (!authed) {
@@ -158,6 +161,7 @@ export async function startIpcServer({ onCall, onClient, profile, userData, endp
           send(sock, { t: 'welcome', pid: process.pid, version })
           client = { ...(msg.client && typeof msg.client === 'object' ? msg.client : {}), conn: ++connSeq }
           notify('connect', client)
+          if (client.kind === 'codex-mcp') codexSockets.set(sock, client)
         } else {
           clearTimeout(authTimer)
           send(sock, { t: 'denied', error: 'bad token' })
@@ -167,6 +171,7 @@ export async function startIpcServer({ onCall, onClient, profile, userData, endp
         return
       }
       if (msg.t === 'ping') { send(sock, { t: 'pong', id: msg.id }); return }
+      if (msg.t === 'elicit-result') { const w = elicitWaits.get(msg.id); if (w) { elicitWaits.delete(msg.id); w(msg.result || { action: 'cancel' }) } return }
       if (msg.t !== 'call') return
       const { id, tool, args } = msg
       notify('call', client, String(tool))
@@ -209,6 +214,23 @@ export async function startIpcServer({ onCall, onClient, profile, userData, endp
     endpoint,
     token,
     userData,
+    /**
+     * Ask the person IN Codex (MCP elicitation, form mode): a yes/no for a share, or a teammate's question.
+     * Goes to the newest connected Codex session that supports elicitation.
+     * -> { action: 'accept', content } | { action: 'decline'|'cancel'|'timeout'|'unavailable' }
+     */
+    elicit({ message, requestedSchema }, { timeoutMs = 120000 } = {}) {
+      const target = [...codexSockets].reverse().find(([s, c]) => c.elicitation && !s.destroyed)
+      if (!target) return Promise.resolve({ action: 'unavailable' })
+      const id = `el-${++elicitSeq}`
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => { elicitWaits.delete(id); resolve({ action: 'timeout' }) }, timeoutMs)
+        timer.unref?.()
+        elicitWaits.set(id, (r) => { clearTimeout(timer); resolve(r) })
+        send(target[0], { t: 'elicit', id, message: String(message), requestedSchema: requestedSchema || { type: 'object', properties: {} } })
+      })
+    },
+    codexSessions() { return [...codexSockets.values()] },
     async close() {
       if (closed) return
       closed = true
@@ -237,6 +259,7 @@ export async function connectIpc({ profile, userData, client } = {}) {
   }
   const pending = new Map()
   const closeCbs = []
+  const serverFrameCbs = []
   let seq = 0
   let isClosed = false
   let welcomed
@@ -255,6 +278,7 @@ export async function connectIpc({ profile, userData, client } = {}) {
   sock.on('close', () => finish(Object.assign(new Error('petpack connection closed'), { code: 'ECLOSED' })))
   frames(sock, (msg) => {
     if (msg.t === 'welcome') welcomed.res(msg)
+    else if (msg.t === 'elicit') { for (const cb of serverFrameCbs) { try { cb(msg) } catch {} } }
     else if (msg.t === 'denied') { finish(Object.assign(new Error(`petpack refused the connection: ${msg.error}`), { code: 'EDENIED' })); sock.destroy() }
     else if (msg.t === 'progress') {
       const p = pending.get(msg.id)
@@ -290,6 +314,9 @@ export async function connectIpc({ profile, userData, client } = {}) {
     call: (tool, args = {}, { timeoutMs = 20000, onProgress } = {}) => request({ t: 'call', tool, args }, timeoutMs, onProgress),
     ping: (timeoutMs = 2000) => request({ t: 'ping' }, timeoutMs),
     onClose(cb) { closeCbs.push(cb) },
+    // Overlay-initiated frames ({ t:'elicit', ... }); answer with sendFrame({ t:'elicit-result', id, result }).
+    onServerFrame(cb) { serverFrameCbs.push(cb) },
+    sendFrame(frame) { send(sock, frame) },
     close() { sock.end(); sock.destroy(); finish(Object.assign(new Error('closed'), { code: 'ECLOSED' })) },
   }
 }

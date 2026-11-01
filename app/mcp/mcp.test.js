@@ -46,7 +46,7 @@ function mcpChild({ userData, profile, env = {}, argv = [SERVER] }) {
     while ((i = buf.indexOf('\n')) >= 0) {
       const msg = JSON.parse(buf.slice(0, i))
       buf = buf.slice(i + 1)
-      if (msg.id === undefined) notes.push(msg)
+      if (msg.id === undefined || msg.method) notes.push(msg)
       waiting.get(msg.id)?.(msg)
       waiting.delete(msg.id)
     }
@@ -534,6 +534,27 @@ test('live steps: the overlay streams progress over IPC and Codex gets notificat
   const before = c.notes.length
   await c.callTool('petpack_ask', { question: 'again?' })
   assert.equal(c.notes.length, before)
+})
+
+test('elicitation: the overlay asks the person IN Codex (share yes/no) and gets the answer back', async () => {
+  const { userData, profile } = fixture()
+  const ipc = await startIpcServer({ userData, profile, onCall: () => ({ me: { online: true } }) })
+  cleanups.push(() => ipc.close())
+  assert.deepEqual(await ipc.elicit({ message: 'nobody yet' }), { action: 'unavailable' })
+  const c = mcpChild({ userData, profile })
+  await c.request('initialize', { protocolVersion: '2025-06-18', capabilities: { elicitation: { form: {}, url: {} } }, clientInfo: { name: 'codex-mcp-client', title: 'Codex', version: '0.166.0' } })
+  c.notify('notifications/initialized')
+  for (let i = 0; i < 40 && !ipc.codexSessions().length; i++) await new Promise((r) => setTimeout(r, 50))
+  assert.equal(ipc.codexSessions()[0].elicitation, true)
+  const schema = { type: 'object', properties: { share: { type: 'boolean', title: 'Share' } }, required: ['share'] }
+  const answer = ipc.elicit({ message: 'Bea wants your azure-deploy skill. Share it?', requestedSchema: schema }, { timeoutMs: 5000 })
+  let req
+  for (let i = 0; i < 40 && !req; i++) { req = c.notes.find((n) => n.method === 'elicitation/create'); if (!req) await new Promise((r) => setTimeout(r, 50)) }
+  assert.ok(req, 'Codex got elicitation/create')
+  assert.equal(req.params.message, 'Bea wants your azure-deploy skill. Share it?')
+  assert.deepEqual(req.params.requestedSchema, schema)
+  c.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { action: 'accept', content: { share: true } } }) + '\n')
+  assert.deepEqual(await answer, { action: 'accept', content: { share: true } })
 })
 
 test('codex://new?prompt= deep link for a teammate\'s question', async () => {
