@@ -71,6 +71,14 @@ export function installMockBridge(target = window) {
       return { id, petName: petName.toLowerCase(), displayName: petName, spriteUrl, atlas,
         skills: items.filter(i => i.kind === 'skill').map(i => ({ id: i.title, name: i.title, description: i.summary })) }
     },
+    // &botpets=a.webp,b.webp: sheets the demo bots wear (the shell lists real Codex pets instead).
+    async listPets() {
+      const sheets = (params.get('botpets') || '').split(',').map(s => s.trim()).filter(Boolean)
+      return sheets.map(url => {
+        const id = url.split('/').pop().replace(/\.(webp|png)$/i, '')
+        return { id, displayName: id.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), source: 'builtin', spriteUrl: url, atlas: null, available: 'yes', current: false }
+      })
+    },
     onStatus(cb) { statusListeners.add(cb); queueMicrotask(() => cb({ status, at: Date.now() })); return () => statusListeners.delete(cb) },
     async packSkill(skillId) { const item = items.find(i => i.title === skillId); return item ? skillOf(item) : null },
     async installSkill(pkg, fromName) { return bridge.installItem({ kind: 'skill', ...pkg }, fromName) },

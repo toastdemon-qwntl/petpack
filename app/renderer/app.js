@@ -119,11 +119,40 @@ function withPet(id, fn) {
 }
 // Shared moments carry wall-clock times; the world runs on this page's frame clock (seconds).
 const worldTimeOf = epochMs => (Number.isFinite(epochMs) ? performance.now() + (epochMs - Date.now()) : performance.now()) / 1000
-if (demo) brain.addBots()
-if (relays.length) {
+if (demo) {
+  brain.addBots()
+  dressBots() // they start as built-in pixel pets and put on real Codex pets as soon as those load
+}
+function connectNet() {
+  net?.close()
   net = createNet({ urls: relays, hello: () => brain.hello(), onMessage: msg => brain.handle(msg), onStatus: s => { brain.netStatus(s); offlineCue(s) } })
   net.connect()
-} else { brain.netStatus('solo'); offlineCue('solo') }
+}
+if (relays.length) connectNet()
+else { brain.netStatus('solo'); offlineCue('solo') }
+
+/** Demo bots wear real Codex pets (built-ins first, distinct, never the person's own). */
+async function dressBots() {
+  try {
+    const all = (await bridge.listPets?.()) || []
+    const usable = all.filter(p => p && p.spriteUrl && p.available !== 'no' && !p.current && p.spriteUrl !== me.spriteUrl)
+    const favourites = ['dewey', 'fireball', 'bsod', 'rocky', 'seedy', 'stacky', 'null-signal', 'nullsignal', 'codex']
+    const rank = p => { const i = favourites.indexOf(String(p.id || p.displayName || '').toLowerCase().replace(/\s+/g, '-')); return i < 0 ? 99 : i }
+    usable.sort((a, b) => (a.source === 'builtin' ? 0 : 1) - (b.source === 'builtin' ? 0 : 1) || rank(a) - rank(b))
+    brain.dressBots(usable.map(p => ({ displayName: p.displayName, spriteUrl: p.spriteUrl, atlas: p.atlas })))
+  } catch (error) { console.warn('petpack: bots keep their pixel pets', error?.message || error) }
+}
+// The person picked another pet in the tray: our pet changes in place and the room gets the new sprite.
+bridge.onMeChanged?.(async () => {
+  try {
+    const fresh = (await bridge.getMe?.()) || {}
+    const sprite = await spriteUpload(fresh.spriteUrl, fresh.atlas)
+    me.spriteUrl = fresh.spriteUrl
+    brain.setMe({ name: config.name || fresh.displayName || fresh.petName, spriteUrl: fresh.spriteUrl || null, atlas: fresh.atlas || null,
+      skills: Array.isArray(fresh.skills) ? fresh.skills : undefined, sprite })
+    if (relays.length) connectNet() // hello carries the new sprite; the relay keeps our seat for the same id
+  } catch (error) { console.warn('petpack: pet change', error?.message || error) }
+})
 
 bridge.onStatus?.(s => brain.setStatus(typeof s === 'string' ? s : s?.status))
 bridge.onAgentCall?.(async (a, b) => {

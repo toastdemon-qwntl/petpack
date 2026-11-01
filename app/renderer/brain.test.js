@@ -295,6 +295,24 @@ test('events for the window collapse: visitors entering/leaving our chunk, invol
   assert.deepEqual(seen.at(-1), ['involved', { kind: 'gift', with: 'rex' }])
 })
 
+test('quiet status polls stay still; demo bots wear real pets; a new pet of ours goes into hello', async () => {
+  const { brain, net } = makeBrain({ demo: true })
+  welcome(brain)
+  const sent = net.sent.length
+  const quiet = await brain.call('petpack_status', { quiet: true })
+  assert.equal(quiet.room, 'net-test')
+  assert.equal(net.sent.length, sent, 'no state, no wave')
+  brain.addBots()
+  brain.dressBots([{ displayName: 'Dewey', spriteUrl: 'data:image/webp;base64,AA', atlas: { cols: 8, rows: 11 } }, { displayName: 'Fireball', spriteUrl: 'data:image/png;base64,AA' }])
+  const bots = brain.pets().filter(p => p.id.includes('~bot-'))
+  assert.deepEqual(bots.slice(0, 2).map(p => [p.displayName, p.spriteUrl.split(';')[0], p.atlas?.rows ?? null]), [['Dewey', 'data:image/webp', 11], ['Fireball', 'data:image/png', null]])
+  assert.equal(bots[2].spriteUrl, null, 'no third outfit: a built-in pixel pet')
+  brain.setMe({ name: 'Rocky', spriteUrl: 'data:image/webp;base64,BB', atlas: null, sprite: { sha: 'abc', b64: 'BB' } })
+  assert.equal(brain.hello().name, 'Rocky')
+  assert.deepEqual(brain.hello().sprite, { sha: 'abc', b64: 'BB' })
+  assert.equal(brain.pets().find(p => p.isMe).spriteUrl, 'data:image/webp;base64,BB')
+})
+
 test('search and meet helpers', () => {
   const owners = [{ id: 'rex', name: 'Rex', online: false, catalog: REX.catalog }]
   const [hit] = searchCatalogs('windows click through', owners, { now: 0 })

@@ -253,6 +253,8 @@ async function loadCodex() {
     readItem: readItem ? (ref, as) => readItem(ref, as, ctx()) : unavailable,
     answerAsk: answerAsk ? request => answerAsk(request, ctx()) : async () => ({ ok: false, text: "I can't answer that here." }),
     onStatus: api ? cb => api.onStatus(cb) : () => () => {},
+    // Every pet the person could wear (custom + built-in), sprites as data URLs; demo bots wear these.
+    listPets: api?.listPets ? () => api.listPets() : async () => [],
     dispose: () => api?.dispose(),
   }
   log('codex modules', codex.loaded)
@@ -327,6 +329,7 @@ function handle(channel, fn) {
 }
 ipcMain.on('petpack:config', event => { event.returnValue = trusted(event) ? config() : null })
 handle('petpack:getMe', () => codex.getMe())
+handle('petpack:listPets', () => codex.listPets())
 handle('petpack:status', () => ({ status: lastStatus.status, at: lastStatus.at }))
 handle('petpack:packSkill', id => codex.packSkill(id))
 handle('petpack:installSkill', (pkg, fromName) => codex.installSkill(pkg, fromName))
@@ -525,7 +528,9 @@ app.whenReady().then(async () => {
   if (process.platform === 'win32') setInterval(() => win && raiseToTop(win), 10000)
   if (SMOKE) { runSmoke().catch(error => { console.error(error); app.exit(1) }); return }
   tray = createTray({ state: () => ({ room: settings.room, seat: settings.seat, dock: settings.dock,
-    align: settings.align, codex: codexState }), actions: trayActions() })
+    align: settings.align, codex: codexState }), actions: trayActions(),
+    // A new pet from the tray: the page re-reads getMe() and re-sends its sprite (no reload, the walk goes on).
+    onPetChange: () => { if (win && !win.isDestroyed()) win.webContents.send('petpack:me-changed') } })
   codexMcpState(ROOT).then(state => { codexState = state; refreshTray() }).catch(() => {})
   log('ready', { userData: USER_DATA, profile: PROFILE, relays, os: os.release() })
 })

@@ -930,9 +930,9 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   const OFFLINE = 'The team is offline right now (no petpack relay reachable; it keeps retrying). Carry on solo and try again shortly.'
   const teamOffline = () => !online && !bots().length
   const tools = {
-    async petpack_status() {
-      setAnim(mine, 'wave', 1.8)
-      sendState(true)
+    async petpack_status({ quiet = false } = {}) {
+      // quiet: S5 polls during a cold start; no wave, no state.
+      if (!quiet) { setAnim(mine, 'wave', 1.8); sendState(true) }
       if (teamOffline()) return { room: null, offline: true, message: OFFLINE, me: { name: mine.name, pet: mine.name, seat: mySeat, status: mine.status, online: false }, peers: [] }
       const list = members().filter(m => !m.isBot || demo || !online)
       return {
@@ -1291,6 +1291,26 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     for (const bot of bots()) { cancelJob(bot); agents.delete(bot.id) }
     emit('roster')
   }
+  /** Demo bots wear real Codex pets: outfits [{ displayName, spriteUrl, atlas }], one per bot, in order. */
+  function dressBots(outfits = []) {
+    const list = bots()
+    outfits.filter(o => o && o.spriteUrl).slice(0, list.length).forEach((outfit, i) => {
+      const bot = list[i]
+      bot.spriteUrl = outfit.spriteUrl
+      bot.atlas = outfit.atlas || null
+      if (outfit.displayName) bot.name = String(outfit.displayName).slice(0, 24)
+    })
+    emit('roster')
+  }
+  /** The person picked another pet (tray): our own pet changes everywhere; hello carries the new sprite. */
+  function setMe(info = {}) {
+    if (info.name) mine.name = String(info.name).slice(0, 40)
+    if ('spriteUrl' in info) mine.spriteUrl = info.spriteUrl || null
+    if ('atlas' in info) mine.atlas = info.atlas || null
+    if (Array.isArray(info.skills)) for (const s of info.skills) if (!mine.skills.some(k => k.name === s.name)) mine.skills.push(s)
+    if ('sprite' in info) me.sprite = info.sprite || null
+    emit('roster')
+  }
 
   // ---- timers on brain time (fake-clock friendly) ----
   const timers = new Set()
@@ -1392,7 +1412,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   }
 
   return {
-    tick, handle, call, setStatus, netStatus, hello, pets, addBots, removeBots, refreshCatalog, on,
+    tick, handle, call, setStatus, netStatus, hello, pets, addBots, removeBots, dressBots, setMe, refreshCatalog, on,
     moveSeatRequest(delta) { if (online) send({ t: 'seat', op: 'move', to: mySeat + delta }) },
     isSeated(chunk) { for (const [id, seat] of seats) if (id !== myId && seat === chunk) return true; return false },
     party: () => maybeConga(true),

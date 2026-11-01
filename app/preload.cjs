@@ -42,6 +42,13 @@ ipcRenderer.on('petpack:cursor', (_event, c) => {
 contextBridge.exposeInMainWorld('petpack', {
   config,
   getMe: () => call('petpack:getMe'),
+  listPets: () => call('petpack:listPets'),
+  onMeChanged(cb) {
+    if (typeof cb !== 'function') return () => {}
+    const h = () => cb()
+    ipcRenderer.on('petpack:me-changed', h)
+    return () => ipcRenderer.removeListener('petpack:me-changed', h)
+  },
   onStatus(cb) {
     if (typeof cb !== 'function') return () => {}
     const listener = (_event, status) => cb(status)
