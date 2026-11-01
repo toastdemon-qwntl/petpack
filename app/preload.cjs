@@ -69,6 +69,10 @@ contextBridge.exposeInMainWorld('petpack', {
   // L3a: Codex's live task ({ title, status, ... } | null) and its transitions ({ type, title, at }).
   currentTask: () => call('petpack:currentTask'),
   setFace: pngDataUrl => ipcRenderer.send('petpack:face', String(pngDataUrl || '')),
+  // L3b: a lesson from the Codex session that last finished (or the one given).
+  lessonFromSession: session => call('petpack:lessonFromSession', session),
+  // S5 live progress: the brain's step ({ callId, text }) back to the MCP call that asked.
+  agentStep: step => ipcRenderer.send('petpack:agent-step', step && typeof step === 'object' ? step : {}),
   onCodexEvent(cb) {
     if (typeof cb !== 'function') return () => {}
     const h = (_e, ev) => cb(ev)

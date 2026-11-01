@@ -166,6 +166,7 @@ export function createTray({ state, actions, onPetChange, pane, userData }) {
         ? [{ label: 'Codex not found', enabled: false }]
         : [{ label: 'Register', click: () => actions.registerCodex() }]
     return Menu.buildFromTemplate([
+      ...(actions.showMe ? [{ label: 'Show me', click: () => actions.showMe() }] : []),
       ...(panel ? [{ label: 'Open petpack…', click: () => panel.show() }, { type: 'separator' }] : []),
       { label: s.room ? `Room ${s.room} (copy)` : 'Room: everyone on this network', enabled: Boolean(s.room),
         click: () => actions.copyRoom() },

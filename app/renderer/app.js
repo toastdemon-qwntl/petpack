@@ -311,7 +311,9 @@ window.addEventListener('click', event => {
 })
 window.addEventListener('keydown', event => {
   if (event.metaKey || event.ctrlKey || event.altKey) return
+  if (event.target?.closest?.('input, textarea, [contenteditable]')) return // typing in the chat field
   const key = event.key.toLowerCase()
+  if (key === 's' && !event.shiftKey) { showMe(); return }
   if (key === 'p' && !event.shiftKey) { takePhoto(); return }
   if (key === 'm') { joy.mute?.(); return }
   if (key === 'c' || (key === 'p' && event.shiftKey)) { brain.party(); return }
@@ -347,6 +349,7 @@ bridge.onPanelCommand?.(msg => {
   else if (cmd === 'party') brain.party?.()
   else if (cmd === 'sit') brain.setSit?.(msg.sit === 'across' ? 'across' : 'side')
   else if (cmd === 'people') reportPeople(true)
+  else if (cmd === 'showMe') showMe()
   else if (cmd === 'cowork' && msg.id) {
     Promise.resolve(brain.coworkWith ? brain.coworkWith(msg.id) : { ok: false, message: `couldn't sit next to ${msg.name || 'them'} right now` })
       .catch(error => ({ ok: false, message: String(error?.message || error) }))
@@ -382,6 +385,20 @@ brain.on?.('online', info => {
 // Across the table: the later pane of a pair draws the shared seat from the other side.
 brain.on?.('flip', on => { world.setFlip?.(!!on); flash(on ? 'across the table' : 'side by side') })
 brain.on?.('replaced', () => flash('this pet opened on another pane'))
+// "Show me" (tray, popover, S key): the pane opens and the brain brings our pet into view (L2 brain.showMe).
+function showMe() {
+  if (collapse?.collapsed) collapse.expand()
+  zoom?.home?.()
+  if (brain.showMe) brain.showMe()
+  else { const r = brain.recall?.(); if (r?.message) world.say(myId, r.message) }
+}
+// S5 live progress: the brain's steps go back to the MCP call (callId) and into the popover's activity.
+brain.on?.('step', step => {
+  if (!step) return
+  const s = typeof step === 'string' ? { text: step } : step
+  if (s.callId) try { bridge.agentStep?.(s) } catch { /* bridge gone */ }
+  activity(s.text, 'step')
+})
 function activity(text, kind) { if (text) try { bridge.activity?.({ text: String(text).slice(0, 160), kind }) } catch { /* bridge gone */ } }
 // Heads-down: the pane folds and goes quiet; back on, it opens again.
 brain.on?.('dnd', on => {

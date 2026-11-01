@@ -262,10 +262,12 @@ function myId() {
 }
 
 let codex = null
+let lastDone = null // the Codex session that last finished (codex-event done), for lessonFromSession
 async function loadCodex() {
-  const [core, catalog, answer] = await Promise.all(['index', 'catalog', 'answer']
+  const [core, catalog, answer, lesson] = await Promise.all(['index', 'catalog', 'answer', 'lesson']
     .map(name => importOptional(`app/codex/${name}.js`)))
   const createCodex = pick([core], 'createCodex')
+  const lessonFromSession = pick([lesson, answer, catalog, core], 'lessonFromSession')
   const api = createCodex ? createCodex({ pet: config().pet, cacheDir: path.join(USER_DATA, 'pets') }) : null
   const installItem = pick([catalog], 'installItem')
   const getCatalog = pick([catalog], 'getCatalog')
@@ -290,6 +292,13 @@ async function loadCodex() {
     answerAsk: answerAsk ? request => answerAsk(request, ctx()) : async () => ({ ok: false, text: "I can't answer that here." }),
     // Our stuck Codex session's need (L3b), or null; the brain polls it while our pet is free.
     currentNeed: currentNeed ? async () => (await currentNeed(ctx())) || null : async () => null,
+    // L3b: a lesson from the Codex session that last finished ({ session, threadId, title, cwd } from 'done').
+    lessonFromSession: lessonFromSession
+      ? async (session) => {
+        const which = session && typeof session === 'object' ? session : session ? { session } : lastDone
+        return which?.session || which?.file ? (await lessonFromSession(ctx(), which)) || null : null
+      }
+      : async () => null,
     // The tray panel's sharing list and the settings.json `share` block the catalog filters by (L3b).
     listShareable: listShareable ? () => listShareable(ctx()) : async () => [],
     shareSettings: () => {
@@ -343,14 +352,20 @@ function whenAgentReady(ms) {
     agentWaiters.push(done)
   })
 }
-async function agentCall(tool, args = {}, { timeoutMs = 58000 } = {}) {
+async function agentCall(tool, args = {}, { timeoutMs = 58000, progress = null } = {}) {
   if (!(await whenAgentReady(20000)) || !win || win.isDestroyed()) throw new Error('petpack is still starting; try again in a moment')
   const id = crypto.randomUUID()
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { pendingCalls.delete(id); reject(new Error(`${tool} timed out`)) }, timeoutMs)
-    pendingCalls.set(id, { resolve, reject, timer })
-    win.webContents.send('petpack:agent-call', { id, tool, args })
+    pendingCalls.set(id, { resolve, reject, timer, progress })
+    // callId: the brain tags its 'step' events with it, so live progress reaches the MCP call that asked.
+    win.webContents.send('petpack:agent-call', { id, tool, args: { ...args, callId: id } })
   })
+}
+/** S5 live progress: whichever progress hook the MCP socket hands onCall (shape settled by S5). */
+function progressHook(call = {}) {
+  for (const name of ['progress', 'onProgress', 'notify', 'step']) if (typeof call[name] === 'function') return call[name]
+  return null
 }
 let ipcServer = null
 async function startMcpIpc() {
@@ -359,7 +374,7 @@ async function startMcpIpc() {
   if (!start) { log('no app/mcp/ipc.js; MCP calls disabled'); return }
   try {
     ipcServer = await start({
-      onCall: ({ tool, args }) => agentCall(tool, args), log,
+      onCall: call => agentCall(call.tool, call.args, { progress: progressHook(call) }), log,
       onClient: (...a) => codexLink?.onClient(...a),
       userData: USER_DATA, profile: PROFILE, version: VERSION,
     })
@@ -412,6 +427,7 @@ handle('petpack:readItem', (ref, as) => codex.readItem(ref, as))
 handle('petpack:answerAsk', request => codex.answerAsk(request))
 handle('petpack:currentNeed', () => codex.currentNeed())
 handle('petpack:currentTask', () => codex.currentTask())
+handle('petpack:lessonFromSession', session => codex.lessonFromSession(session))
 handle('petpack:listShareable', () => codex.listShareable())
 handle('petpack:shareSettings', () => codex.shareSettings())
 handle('petpack:setShare', patch => setShare(patch))
@@ -431,6 +447,12 @@ ipcMain.on('petpack:agent-ready', (event, ready) => {
   if (!trusted(event)) return
   agentReady = Boolean(ready)
   if (agentReady) for (const done of agentWaiters.splice(0)) done(true)
+})
+// The brain's 'step' events ({ callId, text }) go back to the MCP call that made them.
+ipcMain.on('petpack:agent-step', (event, { callId, text, ...rest } = {}) => {
+  if (!trusted(event) || !callId || !text) return
+  const pending = pendingCalls.get(callId)
+  try { pending?.progress?.({ callId, text: String(text).slice(0, 300), ...rest }) } catch (error) { log('progress', error.message) }
 })
 ipcMain.on('petpack:agent-result', (event, { id, ok, result, error } = {}) => {
   if (!trusted(event)) return
@@ -503,6 +525,12 @@ function trayActions() {
       saveSettings(); refreshTray(); win?.webContents.reload()
     },
     setSeat: seat => { settings.seat = seat; saveSettings(); refreshTray(); win?.webContents.reload() },
+    // "Show me" (L2 brain.showMe): the pane opens and our pet comes to the front.
+    showMe: () => {
+      if (!win || win.isDestroyed()) return
+      win.showInactive(); raiseToTop(win)
+      win.webContents.send('petpack:panel-command', { cmd: 'showMe' })
+    },
     // Sharing changes from the popover land in settings.json `share` (L3b's catalog filter reads it).
     setShare: patch => setShare(patch),
     // "Sitting: side by side / across the table": the page's brain tells the relay; no reload.
@@ -646,6 +674,7 @@ const notifications = new Set() // held until clicked or closed (a collected not
 function startCodexEvents() {
   return codex.onCodexEvent(async ev => {
     if (!ev?.type) return
+    if (ev.type === 'done') lastDone = { session: ev.session || null, threadId: ev.threadId || null, title: ev.title || null, cwd: ev.cwd || null, at: ev.at || Date.now() }
     if (win && !win.isDestroyed()) win.webContents.send('petpack:codex-event', { type: ev.type, title: ev.title || null, at: ev.at || Date.now() })
     if (SMOKE || !['done', 'waiting', 'failed'].includes(ev.type) || !Notification.isSupported()) return
     const message = ev.message || { title: 'Codex', body: ev.title || '' }
