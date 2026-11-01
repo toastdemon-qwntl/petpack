@@ -80,6 +80,19 @@ jobs:
             node scripts/build-smoke.mjs --launcher "$(ls "$OUT"/qwntllabs-petpack-0*.tgz)" \
               --platform "$(ls "$OUT"/qwntllabs-petpack-darwin-"$ARCH"-*.tgz)" --out "$(Build.ArtifactStagingDirectory)/smoke"
           displayName: build + install + smoke (darwin, this arch)
+        - bash: |
+            # Control: the same pane on Electron from the `electron` npm package (the pre-PKG path). If this fails the
+            # same way, the machine (no GPU for WebGL in this VM) is the cause, not the platform package.
+            set -u
+            CTRL=$(mktemp -d)
+            cd "$CTRL" && npm init -y >/dev/null && npm install --no-audit --no-fund electron@45.2.1 >/dev/null
+            EL=$(node -p "require('electron')")
+            echo "control electron: $EL"
+            INST=$(ls -d "$TMPDIR"/petpack-pkg-*/ | head -1)
+            cd "$INST" && PETPACK_ELECTRON="$EL" PETPACK_USER_DATA="$CTRL/ud" npx --no-install petpack --demo --smoke "$(Build.ArtifactStagingDirectory)/smoke/control" --smoke-wait 8 2>&1 | grep -E "^petpack|renderer error" ; echo "control exit ${PIPESTATUS[0]}"
+          displayName: control (same pane on the electron npm package)
+          condition: always()
+          continueOnError: true
         - publish: $(Build.ArtifactStagingDirectory)/smoke
           artifact: smoke-mac-x64
           condition: always()
