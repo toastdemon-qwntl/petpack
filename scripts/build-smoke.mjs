@@ -66,6 +66,13 @@ async function main() {
   result.installed = installed
   check('no electron package installed', !installed.includes('electron'), installed.join(', '))
 
+  if (MAC) {
+    // Worst case: npm ran under an app that quarantines what it writes. Mark the zip; the unpacked app must come out clean.
+    const pkgDir = path.join(nm, '@qwntllabs', `petpack-darwin-${process.arch}`)
+    const zip = path.join(pkgDir, JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8')).petpack.archive)
+    const w = spawnSync('xattr', ['-w', 'com.apple.quarantine', '0081;00000000;Google Chrome;', zip], { encoding: 'utf8' })
+    result.quarantinedZip = { zip, exit: w.status }
+  }
   const bin = path.join(nm, '@qwntllabs', 'petpack', 'bin', 'petpack.js')
   const rt = await run(process.execPath, [bin, 'runtime'], { cwd: inst, log: 'runtime.log', env })
   const runtimePath = rt.out.trim().split(/\r?\n/).pop()
