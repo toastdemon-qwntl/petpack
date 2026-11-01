@@ -30,7 +30,7 @@ export function fakeOnCall({ tool, args }) {
   switch (tool) {
     case 'petpack_status':
       return {
-        room: 'demo', me: { name: 'You', pet: 'Dot', seat: 0, status: 'working' },
+        room: 'demo', me: { name: 'You', pet: 'Dot', seat: 0, status: 'working', online: true },
         peers: [
           { name: 'Rex', pet: 'Rex', seat: 1, where: 'right', status: 'idle', counts: { skill: 3, memory: 2, technique: 1, resource: 0 } },
           { name: 'Mia', pet: 'Mia', seat: 3, where: 'far', status: 'working', counts: { skill: 1, memory: 4, technique: 0, resource: 1 } },

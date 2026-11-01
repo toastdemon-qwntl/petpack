@@ -19,6 +19,10 @@ import { connectIpc, userDataDir } from './ipc.js'
 const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
 const LAUNCH_WAIT_MS = 20000
 const CALL_BUDGET_MS = 56000
+const ONLINE_WAIT_MS = 12000
+const ONLINE_POLL_MS = 500
+const TEAM_TOOLS = new Set(['petpack_search', 'petpack_get', 'petpack_install', 'petpack_ask'])
+const OFFLINE_MESSAGE = 'The team is offline right now; try again in a moment. Carry on solo meanwhile.'
 
 function pkgVersion() {
   try { return JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version || '0.0.0' } catch { return '0.0.0' }
@@ -172,9 +176,12 @@ export function defaultLaunch({ profile, log = () => {} } = {}) {
  *   profile, userData where the overlay's ipc.json lives (default userDataDir(profile))
  *   launch()          start the overlay (default defaultLaunch)
  *   launchWaitMs      how long the first call waits for the overlay (default 20 s)
+ *   onlineWaitMs      how long team tools wait for the overlay to report online (default 12 s;
+ *                     env PETPACK_MCP_ONLINE_WAIT_MS). Status polls carry { quiet: true } (no wave, for the brain).
  */
 export function createMcpServer({
   input = process.stdin, output = process.stdout, profile, userData, launch, launchWaitMs = LAUNCH_WAIT_MS,
+  onlineWaitMs = Number(process.env.PETPACK_MCP_ONLINE_WAIT_MS) || ONLINE_WAIT_MS,
   log = (m) => process.stderr.write(m + '\n'),
 } = {}) {
   userData = userData || userDataDir(profile)
@@ -219,6 +226,45 @@ export function createMcpServer({
     return connecting
   }
 
+  // A cold overlay answers `room: 'solo', online: false` for its first seconds, until the relay connects. Team tools
+  // wait (polling status every 500 ms, up to onlineWaitMs) for `me.online`, once per connection. A wait that just
+  // timed out isn't repeated for a minute, so an unreachable relay costs one wait, not one per call.
+  let onlineClient = null
+  let teamWait = null
+  let offlineSince = 0
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  const isOnline = (st) => !!(st && typeof st === 'object' && st.me && st.me.online === true)
+
+  function waitForTeam(c, deadline) {
+    if (onlineClient === c) return Promise.resolve({ online: true })
+    if (teamWait && teamWait.c === c) return teamWait.p
+    const p = (async () => {
+      const skipWait = Date.now() - offlineSince < 60000
+      let waitUntil = 0 // starts at the first status reply, so a page that is still loading doesn't eat the wait
+      let st = null
+      for (;;) {
+        const left = deadline - Date.now() - 2000
+        if (left <= 0) break
+        try {
+          st = await c.call('petpack_status', { quiet: true }, { timeoutMs: Math.max(1000, Math.min(left, 30000)) })
+        } catch (e) {
+          if (e.code === 'ECLOSED') throw e
+          st = null
+        }
+        if (isOnline(st)) { onlineClient = c; return { online: true, status: st } }
+        if (!waitUntil) waitUntil = Date.now() + (skipWait ? 0 : onlineWaitMs)
+        const until = Math.min(waitUntil, deadline - 2000)
+        if (Date.now() >= until) break
+        await sleep(Math.min(ONLINE_POLL_MS, until - Date.now())) // the last poll lands at the end of the wait
+      }
+      offlineSince = Date.now()
+      return { online: false, status: st }
+    })()
+    teamWait = { c, p }
+    p.finally(() => { if (teamWait && teamWait.p === p) teamWait = null }).catch(() => {})
+    return p
+  }
+
   async function callTool(name, args) {
     const tool = TOOL_MAP.get(name)
     if (!tool) return textResult(`Unknown tool: ${name}`, true)
@@ -226,14 +272,23 @@ export function createMcpServer({
     for (const k of tool.inputSchema.required || []) {
       if (args[k] === undefined || args[k] === null || args[k] === '') return textResult(`Missing required argument: ${k}`, true)
     }
-    // Always answer inside Codex's 60 s tool timeout, launch wait included.
+    // Always answer inside Codex's 60 s tool timeout, launch and online waits included.
     const deadline = Date.now() + CALL_BUDGET_MS
     for (let attempt = 0; attempt < 2; attempt++) {
       let c
       try { c = await getClient() } catch (e) { return textResult(e.message, true) }
       try {
+        if (TEAM_TOOLS.has(name)) {
+          const team = await waitForTeam(c, deadline)
+          // Still offline: with no peers at all (`offline: true`, or no status) say so plainly. Solo with demo bots
+          // still answers from the bots, so the offline `--demo` fallback keeps working.
+          if (!team.online && (!team.status || team.status.offline === true)) {
+            return textResult({ offline: true, message: OFFLINE_MESSAGE })
+          }
+        }
         const timeoutMs = Math.max(3000, Math.min(tool.timeoutMs, deadline - Date.now()))
         const result = await c.call(name, args, { timeoutMs })
+        if (name === 'petpack_status' && isOnline(result)) onlineClient = c
         return textResult(result ?? { ok: true })
       } catch (e) {
         if (e.code === 'ECLOSED' && attempt === 0) continue // overlay restarted under us: reconnect once

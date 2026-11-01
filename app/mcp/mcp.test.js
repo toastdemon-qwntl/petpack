@@ -94,7 +94,7 @@ test('tools/call round trips through the IPC to the overlay (fake onAgentCall)',
     userData, profile, version: 'test',
     onCall: async ({ tool, args }) => {
       calls.push({ tool, args })
-      if (tool === 'petpack_status') return { room: 'r1', me: { name: 'me' }, peers: [{ name: 'Rex', where: 'right', status: 'idle' }] }
+      if (tool === 'petpack_status') return { room: 'r1', me: { name: 'me', online: true }, peers: [{ name: 'Rex', where: 'right', status: 'idle' }] }
       if (tool === 'petpack_search') return [{ id: 'rex/skill:pdf', kind: 'skill', title: 'pdf', owner: 'Rex', online: true }]
       throw new Error('Rex is away (last seen 14:02)')
     },
@@ -127,7 +127,7 @@ test('tools/call round trips through the IPC to the overlay (fake onAgentCall)',
 const BIN = path.join(here, '..', '..', 'bin', 'petpack.js')
 test('`petpack mcp` through bin/petpack.js reaches the overlay', { skip: !fs.existsSync(BIN) && 'no bin yet' }, async () => {
   const { userData, profile } = fixture()
-  const ipc = await startIpcServer({ userData, profile, onCall: ({ tool, args }) => ({ via: 'bin', tool, args }) })
+  const ipc = await startIpcServer({ userData, profile, onCall: ({ tool, args }) => (tool === 'petpack_status' ? { me: { online: true } } : { via: 'bin', tool, args }) })
   cleanups.push(() => ipc.close())
   const c = mcpChild({ userData, profile, argv: [BIN, 'mcp'] })
   const r = await init(c)
@@ -268,6 +268,83 @@ test('installIntoCodex is idempotent (config.toml fallback and the codex CLI)', 
   const cfg = JSON.parse(got.stdout)
   assert.deepEqual([cfg.transport.command, ...cfg.transport.args].slice(-4), ['npx', '-y', PKG_NAME, 'mcp'])
   assert.equal(cfg.startup_timeout_sec, 30)
+})
+
+/** An in-process MCP server over streams, against an overlay whose status the test controls. */
+async function coldOverlay({ statusAt, onlineWaitMs = 1200 }) {
+  const { userData, profile } = fixture()
+  const calls = []
+  const t0 = Date.now()
+  const ipc = await startIpcServer({
+    userData, profile,
+    onCall: ({ tool, args }) => {
+      calls.push({ tool, args, at: Date.now() - t0 })
+      return tool === 'petpack_status' ? statusAt(Date.now() - t0) : { forwarded: tool }
+    },
+  })
+  cleanups.push(() => ipc.close())
+  const input = new PassThrough()
+  const output = new PassThrough()
+  const server = createMcpServer({ input, output, userData, onlineWaitMs, log: () => {}, launch: () => {} })
+  cleanups.push(() => server.close())
+  const waiting = new Map()
+  let buf = ''
+  output.setEncoding('utf8')
+  output.on('data', (d) => {
+    buf += d
+    let i
+    while ((i = buf.indexOf('\n')) >= 0) { const m = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1); waiting.get(m.id)?.(m) }
+  })
+  let id = 0
+  const call = (name, args = {}) => new Promise((resolve) => {
+    const rid = ++id
+    const started = Date.now()
+    waiting.set(rid, (m) => resolve({ ...m.result, ms: Date.now() - started }))
+    input.write(JSON.stringify({ jsonrpc: '2.0', id: rid, method: 'tools/call', params: { name, arguments: args } }) + '\n')
+  })
+  return { call, calls }
+}
+
+test('after a cold start, team tools wait for the overlay to come online; status stays instant', async () => {
+  const solo = { room: 'solo', me: { name: 'Dot', online: false }, peers: [] }
+  const live = { room: 'r1', me: { name: 'Dot', online: true }, peers: [{ name: 'Rex' }] }
+  const o = await coldOverlay({ statusAt: (ms) => (ms < 900 ? solo : live), onlineWaitMs: 5000 })
+  const status = await o.call('petpack_status')
+  assert.ok(status.ms < 300, `status took ${status.ms} ms`)
+  assert.equal(parse(status).me.online, false)
+  const search = await o.call('petpack_search', { query: 'pdf' })
+  assert.equal(search.isError, undefined)
+  assert.deepEqual(parse(search), { forwarded: 'petpack_search' })
+  const forwarded = o.calls.find((c) => c.tool === 'petpack_search')
+  assert.ok(forwarded.at >= 900, `forwarded at ${forwarded.at} ms, before the overlay was online`)
+  const polls = o.calls.filter((c) => c.tool === 'petpack_status' && c.args.quiet === true)
+  assert.ok(polls.length >= 1)
+  // Online once: the next team call goes straight through.
+  const n = o.calls.length
+  const get = await o.call('petpack_get', { id: 'rex/skill:pdf' })
+  assert.deepEqual(parse(get), { forwarded: 'petpack_get' })
+  assert.deepEqual(o.calls.slice(n).map((c) => c.tool), ['petpack_get'])
+})
+
+test('a team that stays offline gets a clear offline result, not an error, and only one wait', async () => {
+  const offline = { room: null, offline: true, me: { name: 'Dot', online: false }, peers: [] }
+  const o = await coldOverlay({ statusAt: () => offline, onlineWaitMs: 800 })
+  const ask = await o.call('petpack_ask', { question: 'how?' })
+  assert.equal(ask.isError, undefined)
+  assert.equal(parse(ask).offline, true)
+  assert.match(parse(ask).message, /team is offline right now, try again|team is offline right now; try again/)
+  assert.ok(ask.ms >= 700, `answered after ${ask.ms} ms without waiting`)
+  assert.equal(o.calls.some((c) => c.tool === 'petpack_ask'), false)
+  const again = await o.call('petpack_search', { query: 'x' })
+  assert.equal(parse(again).offline, true)
+  assert.ok(again.ms < 400, `second offline call waited ${again.ms} ms`)
+})
+
+test('solo with demo bots (online:false, not offline) still forwards after the wait', async () => {
+  const soloBots = { room: 'solo', me: { name: 'Dot', online: false }, peers: [{ name: 'Cleo', bot: true }] }
+  const o = await coldOverlay({ statusAt: () => soloBots, onlineWaitMs: 600 })
+  const search = await o.call('petpack_search', { query: 'azure' })
+  assert.deepEqual(parse(search), { forwarded: 'petpack_search' })
 })
 
 test('TOOLS carry R4 names and required args', () => {
