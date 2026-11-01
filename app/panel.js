@@ -310,6 +310,13 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
       return snapshot()
     },
     answerAsk: ({ id, yes } = {}) => { const done = pending.get(id); pending.delete(id); done?.(yes); return true },
+    // "Show me": the pane opens and the brain runs the core journey for real (L2 brain.showMe, via main).
+    showMe: () => {
+      if (typeof actions.showMe === 'function') actions.showMe()
+      else toPane('petpack:panel-command', { cmd: 'showMe' })
+      addLine({ source: 'pet', kind: 'show', text: 'showing you how the team helps' })
+      return snapshot()
+    },
     recall: () => {
       const s = snapshot()
       const name = report.petName || petName || 'your pet'

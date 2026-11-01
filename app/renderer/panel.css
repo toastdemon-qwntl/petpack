@@ -40,6 +40,8 @@ html.mac .glass { background: rgba(250, 251, 249, .42); }
 
 /* ---------- header ---------- */
 .head { position: relative; display: grid; grid-template-columns: 64px 1fr auto; align-items: center; gap: 10px; padding: 12px 12px 10px; border-bottom: .5px solid var(--line); }
+.head-actions { display: flex; flex-direction: column; gap: 5px; align-items: stretch; }
+#show-me { padding: 8px 14px; font-size: 13px; border-radius: 9px; }
 .pet-frame { width: 64px; height: 64px; border-radius: 14px; background:
   radial-gradient(ellipse 60% 18% at 50% 86%, rgba(44, 58, 63, .16), transparent 70%),
   linear-gradient(180deg, #e7f2f6, #f6f1e4); box-shadow: inset 0 0 0 .5px rgba(0, 0, 0, .08); display: grid; place-items: center; }

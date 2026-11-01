@@ -305,6 +305,9 @@ $('align-down').addEventListener('click', async () => { state = await call('nudg
 // ---------- DND ----------
 $('dnd').addEventListener('change', async () => { state = await call('dnd', $('dnd').checked); render() })
 
+// ---------- show me (the pet runs the core journey for real) ----------
+$('show-me').addEventListener('click', async () => { state = await call('showMe'); render() })
+
 // ---------- recall ----------
 $('recall').addEventListener('click', async () => {
   state = await call('recall')
