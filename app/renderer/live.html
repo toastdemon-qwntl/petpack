@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>petpack live</title>
+  <link rel="stylesheet" href="./world/fx.css">
+  <link rel="stylesheet" href="./live.css">
+  <script type="importmap">{"imports":{"three":"../../node_modules/three/build/three.module.js","three/addons/":"../../node_modules/three/examples/jsm/"}}</script>
+</head>
+<body>
+  <main class="live" aria-label="The whole petpack village, live">
+    <header class="live-top">
+      <span class="live-room"><span id="dot" class="live-dot" aria-hidden="true"></span><span id="room">dde-ldn</span></span>
+      <span id="count" class="live-count">connecting…</span>
+    </header>
+    <div id="band" class="live-band"></div>
+    <div id="seats" class="live-seats" aria-hidden="true"></div>
+    <footer class="live-legend" aria-label="Landmarks">
+      <span><i style="--c:#ffcd78"></i>Workshop · skills</span>
+      <span><i style="--c:#9be5d5"></i>Library · memories</span>
+      <span><i style="--c:#d8d1fb"></i>Dojo · techniques</span>
+      <span><i style="--c:#ffc88a"></i>Campfire · resources</span>
+    </footer>
+  </main>
+  <script type="module" src="./live.js"></script>
+</body>
+</html>
