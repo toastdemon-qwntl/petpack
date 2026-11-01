@@ -474,6 +474,30 @@ test('registry: resume our place, away agents nap in place, leave without away r
   assert.ok(seen.some(e => e[0] === 'replaced'))
 })
 
+test('co-work: nextTo (pending until online), neighbours, one handshake, and visits across the seam and back', async () => {
+  const net = fakeNet()
+  const seen = []
+  const view = new Proxy({}, { get: (_, name) => (...args) => seen.push([name, ...args]) })
+  const brain = createBrain({ bridge: {}, net, view, me: { id: 'me', name: 'Pip', skills: [], catalog: [] },
+    config: { seat: 0, nextTo: 'Bea' }, random: seeded(4) })
+  welcome(brain, [REX]) // Bea isn't here yet
+  assert.equal(net.sent.filter(m => m.t === 'seat').length, 0)
+  assert.equal(brain.coworkWith('Bea').pending, true)
+  brain.handle({ t: 'join', peer: { ...BEA, seat: 2, x: 28 } })
+  assert.deepEqual(net.last('seat'), { v: 2, t: 'seat', op: 'nextTo', target: 'bea' }, 'retried once Bea is online')
+  brain.handle({ t: 'seat', seats: { me: 0, bea: 1, rex: 3 }, links: [['me', 'bea']], why: 'cowork', cowork: ['me', 'bea'],
+    neighbours: { me: { left: null, right: 'bea', across: null } } })
+  assert.deepEqual(seen.filter(e => e[0] === 'neighbours').at(-1)[1], { left: null, right: { id: 'bea', name: 'Bea' }, across: null })
+  assert.equal(seen.filter(e => e[0] === 'handshake').length, 1, 'cowork + link = one handshake')
+  assert.deepEqual(seen.find(e => e[0] === 'handshake')[1], { seat: 0, side: 'right' })
+  // Bea now sits at seat 1: within ~90 s our free pet walks onto her screen and comes home again.
+  brain.handle({ t: 'fx', from: 'bea', kind: 'pose', ts: Date.now(), x: 13, z: 1.5, m: 0 })
+  const chunks = []
+  await run(brain, 60, 0.25, () => { const c = chunkOf(brain.me.x); if (chunks.at(-1) !== c) chunks.push(c) })
+  assert.deepEqual(chunks.slice(0, 3), [0, 1, 0], `visited Bea and came home (${chunks})`)
+  assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'collab' && m.dst === 'bea'))
+})
+
 test('search and meet helpers', () => {
   const owners = [{ id: 'rex', name: 'Rex', online: false, catalog: REX.catalog }]
   const [hit] = searchCatalogs('windows click through', owners, { now: 0 })

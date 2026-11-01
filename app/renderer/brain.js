@@ -18,6 +18,9 @@
 //                                                          call world.setFlip?.(on)
 //   'sit'       ('side'|'across')                          seating changed (setSit)
 //   'replaced'  ()                                         another pane of ours took this agent over; stay quiet
+//   'neighbours' ({ left, right, across })                 each { id, name } | null: draw "← Bea" / "Bea →" edge
+//                                                          tags, or a soft "no one next to you yet" when both are null
+//   'handshake' ({ seat, side })                           a new co-work pair / dock link (deduped per partner)
 //   'sleep'     (id, on)                                   also fires for registry agents that are away: they nap
 //                                                          in place (pets() marks them away: true) and never move
 //
@@ -35,6 +38,10 @@
 //   config.sharing / config.dnd seed the initial settings.
 //   setSit('side'|'across') -> sit; sit, flipped, acrossWith, replaced getters. config.sit / config.device go in hello.
 //   Resume: a welcome with you.resumed / you.takeover starts our pet at you.x/z/facing (not at home).
+//   coworkWith(idOrName) -> { ok, pending, message, target? }: relay {op:'nextTo'}; until that person is online it
+//     retries on every welcome/join (config.nextTo = --next-to <name> does the same at start). neighbours getter.
+//   With a neighbour, our free pet visits their screen every ~45-90 s along the road (wave, collab, a real dot when
+//   we share one freely), then walks home; gifts go to neighbours first.
 import { createTerrain, createStripNavigation, ROAD_Z } from './world/map-paths.js'
 import { createLife } from './life.js'
 
@@ -501,7 +508,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     linkKey = key
     for (const l of added) {
       const [left] = l.split('|')
-      emit('handshake', { seat: mySeat, side: left === myId ? 'right' : 'left' })
+      handshakeWith(left === myId ? l.split('|')[1] : left, left === myId ? 'right' : 'left')
     }
   }
   /** Whole room done within 60 s: the lowest seat starts the conga for everyone. */
@@ -565,6 +572,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       kind: KINDS.includes(p.dot) ? p.dot : undefined, seed: p.seed ? String(p.seed) : undefined, label: '' })
     else if ((kind === 'learned' || kind === 'say') && p.text && p.src) emit('say', p.src, bubbleText(p.text, 30))
     else if (kind === 'wave' && p.src && agents.has(p.src)) setAnim(agents.get(p.src), 'wave', 1.4)
+    else if (kind === 'collab' && p.src && p.dst) emit('collab', p.src, p.dst, { kind: KINDS.includes(p.dot) ? p.dot : 'skill', label: '' })
     else if (kind === 'knock') emit('knock', p.src, p.on !== false)
     else if (kind === 'weather') emit('weather', p.src, p.w === 'rainbow' ? 'rainbow' : 'rain')
     else if (kind === 'celebrate') emit('celebrate', p.src)
@@ -753,6 +761,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         }
         if (Array.isArray(msg.links)) noteLinks(msg.links)
         noteSitting(msg, msg.you)
+        noteNeighbours(msg)
+        retryNextTo()
         if (Number.isInteger(firstSeat)) moveSeat(firstSeat, 'welcome', !welcomed && firstSeat !== mySeat)
         // Resume: this id already has a place (a reload, a restart, another pane of ours handing over).
         if ((msg.you?.resumed || msg.you?.takeover) && Number.isFinite(msg.you.x) && Number.isFinite(msg.you.z)) {
@@ -767,6 +777,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         if (!demo && bots().length) removeBots() // solo fallback bots leave once real peers can arrive
         rehomeBots()
         rebuildGarden()
+        noteNeighbours(msg)
         emit('online', { room, seat: mySeat })
         sendState(true)
         break
@@ -781,6 +792,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
           emit('roster')
           emit('arrive', peer.id)
           if (peer.away) { peer.away = false; emit('sleep', peer.id, false) }
+          retryNextTo()
         }
         break
       }
@@ -790,6 +802,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
           peer.online = false; peer.lastSeen = msg.lastSeen || wall(); seats.delete(msg.id); seatedCache = null
           if (msg.away) napPeer({ id: msg.id, x: msg.x, z: msg.z, facing: msg.facing, lastSeen: msg.lastSeen })
           else if (peer.away) { peer.away = false; emit('sleep', peer.id, false) }
+          noteNeighbours({})
           emit('roster')
         }
         break
@@ -818,6 +831,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         }
         if (Array.isArray(msg.links)) noteLinks(msg.links)
         noteSitting(msg, null)
+        noteNeighbours(msg)
         break
       }
       case 'catalog': {
@@ -867,6 +881,94 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     rehomeBots()
     emit('seat', seat, why)
   }
+  // ---- co-working: sit next to someone, know your neighbours, visit them across the seam ----
+  let pendingNextTo = config.nextTo ? String(config.nextTo) : null // --next-to <name>: retried until they're online
+  let neighbours = { left: null, right: null, across: null }
+  let neighboursKey = ''
+  const shakes = new Map() // partner id -> time of the last handshake
+  function resolvePeer(idOrName) {
+    const want = String(idOrName || '').toLowerCase()
+    for (const p of peers.values()) if (p.id === idOrName || String(p.name).toLowerCase() === want) return p
+    return null
+  }
+  /** Ask the relay to seat us right beside someone (agent id or name). -> { ok, pending, message, target? } */
+  function coworkWith(idOrName) {
+    if (!idOrName) return { ok: false, pending: false, message: 'who should I sit next to?' }
+    const peer = resolvePeer(idOrName)
+    if (!online || !peer || !peer.online) {
+      pendingNextTo = String(idOrName)
+      return { ok: false, pending: true, message: `I'll sit next to ${peer?.name || idOrName} as soon as they're online` }
+    }
+    pendingNextTo = null
+    send({ t: 'seat', op: 'nextTo', target: peer.id })
+    mine.visitAt = Math.min(mine.visitAt, time + 8)
+    return { ok: true, pending: false, message: `Now next to ${peer.name}`, target: peer.id }
+  }
+  function retryNextTo() { if (pendingNextTo && online) { const p = resolvePeer(pendingNextTo); if (p?.online) coworkWith(p.id) } }
+  function handshakeWith(partnerId, side) {
+    if (!partnerId || time - (shakes.get(partnerId) ?? -Infinity) < 15) return
+    shakes.set(partnerId, time)
+    emit('handshake', { seat: mySeat, side })
+    mine.visitAt = Math.min(mine.visitAt, time + 8) // first cross-seam visit soon after we sit together
+  }
+  /** Neighbours from the relay's seat messages (or, failing that, from the seat numbers). */
+  function noteNeighbours(msg) {
+    const mineN = msg?.neighbours?.[myId]
+    const at = seat => { for (const [id, s] of seats) if (id !== myId && s === seat && peers.get(id)?.online) return id; return null }
+    const ids = mineN ? { left: mineN.left || null, right: mineN.right || null, across: mineN.across || null }
+      : { left: at(mySeat - 1), right: at(mySeat + 1), across: neighbours.across?.id || null }
+    const named = id => (id && peers.get(id) ? { id, name: peers.get(id).name } : null)
+    const next = { left: named(ids.left), right: named(ids.right), across: named(ids.across) }
+    const key = JSON.stringify(next)
+    if (key !== neighboursKey) { neighboursKey = key; neighbours = next; emit('neighbours', { ...next }) }
+    if (Array.isArray(msg?.cowork) && msg.cowork.includes(myId) && (msg.why === 'cowork' || msg.why === 'dock')) {
+      const [left, right] = msg.cowork
+      handshakeWith(left === myId ? right : left, left === myId ? 'right' : 'left')
+    }
+  }
+  function neighbourMember() {
+    for (const side of ['right', 'left']) {
+      const n = neighbours[side]
+      const m = n && member(n.id)
+      if (m?.online) return m
+    }
+    return null
+  }
+  /** A visit across the seam: walk the road onto their screen, say hello, work together, bring a dot, walk home. */
+  async function visitNeighbour(agent, nb, job) {
+    fx('seek', { src: agent.id, dst: nb.id })
+    const home = Number.isInteger(nb.seat) ? landmarkOf(nb.seat) : null
+    const target = () => {
+      const m = member(nb.id)
+      if (m && Number.isInteger(nb.seat) && chunkOf(m.x) === nb.seat) return m
+      return home ? { x: home.x, z: home.z } : m
+    }
+    const ok = await walkTo(agent, sideSpot(agent, target), job, { timeout: 40 })
+    if (job.cancelled) return
+    agent.faceTo = nb.id
+    if (ok) {
+      setAnim(agent, 'wave', 1.4)
+      fx('wave', { src: agent.id, dst: nb.id })
+      await sleep(1.6, job)
+      if (job.cancelled) return
+      const kind = KINDS.includes(kindAt(nb.seat ?? mySeat)) ? kindAt(nb.seat ?? mySeat) : 'skill'
+      fx('collab', { src: agent.id, dst: nb.id, dot: kind })
+      // Bring a dot for real: a skill they don't have yet that we share freely.
+      const gift = agent.skills.find(s => !(nb.skills || []).some(k => k.name === s.name) &&
+        ruleFor(mine.catalog.find(i => i.kind === 'skill' && i.title === s.name)?.ref) === 'free')
+      if (gift && receiverCanTake(nb.id)) {
+        await sleep(3, job)
+        if (job.cancelled) return
+        fx('gift', { src: agent.id, dst: nb.id, label: gift.name, dot: 'skill', seed: `${agent.id}/skill:${gift.name}` })
+        let pkg = null
+        try { pkg = await bridge.packSkill?.(gift.id) } catch { pkg = null }
+        send({ t: 'gift', to: nb.id, gid: uid('g'), skill: pkg || { id: gift.id, name: gift.name, description: gift.description || '', files: [] } })
+      }
+    }
+    await sleep(6 + random() * 4, job)
+    if (!job.cancelled) await goHome(agent, job)
+  }
+
   /** An away agent: it stays in the world, napping at x/z, and never moves until its owner is back. */
   function napPeer(a) {
     let peer = peers.get(a.id)
@@ -1494,7 +1596,9 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   function autoGift(agent) {
     if (agent.job || agent.giftBusy || time < agent.giftReadyAt) return
     if (agent.isMe && (codexStatus === 'waiting' || dnd)) return
+    // Neighbours first: the pets on the screens beside ours get our gifts before anyone across the room.
     const everyone = members({ includeMe: true }).filter(m => m.online)
+      .sort((a, b) => Math.abs((a.seat ?? 99) - mySeat) - Math.abs((b.seat ?? 99) - mySeat))
     for (const receiver of everyone) {
       if (receiver.id === agent.id || !receiverCanTake(receiver.id)) continue
       if (agent.isBot && !receiver.local) continue // bots never reach the relay
@@ -1542,6 +1646,10 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   function maybeVisit(agent) {
     if (agent.job || time < agent.visitAt) return
     if (agent.isMe && (dnd || recallPending)) { agent.visitAt = time + 10; return }
+    if (agent.isMe && codexStatus !== 'waiting' && codexStatus !== 'working') {
+      const nb = neighbourMember()
+      if (nb) { agent.visitAt = time + 45 + random() * 45; startJob(agent, 'visit', job => visitNeighbour(agent, nb, job), nb.name); return }
+    }
     if (agent.isMe && codexStatus !== 'idle' && codexStatus !== 'done') { agent.visitAt = time + 10; return }
     agent.visitAt = time + 45 + random() * 45
     const others = members({ includeMe: true }).filter(m => m.online && m.id !== agent.id && (agent.isMe || m.local))
@@ -1757,6 +1865,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     setSharing, get sharing() { return { ...sharing, items: { ...sharing.items } } },
     decide, get permissions() { return [...permissions.values()].map(({ finish, ...p }) => p) },
     find, errand: errandStatus,
+    coworkWith, get neighbours() { return { ...neighbours } },
     setSit, get sit() { return sit }, get flipped() { return flipped }, get acrossWith() { return acrossWith },
     get replaced() { return replaced },
     throwPet,
