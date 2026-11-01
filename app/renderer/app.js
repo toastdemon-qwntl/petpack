@@ -31,7 +31,7 @@ body.petpack-app .petpack-pane { position: fixed; top: 0; width: 100vw; height: 
 .pp-edge.on { opacity: .92; }
 .pp-edge[data-side='left'] { left: 6px; }
 .pp-edge[data-side='right'] { right: 6px; }
-.pp-offline { position: absolute; z-index: 7; bottom: 6px; left: 50%; transform: translateX(-50%); padding: 1px 7px; border-radius: 999px;
+.pp-offline { position: absolute; z-index: 7; top: 10px; left: 12px; padding: 1px 7px; border-radius: 999px;
   font: 600 9px/12px ui-rounded, system-ui, sans-serif; color: #24323d; background: #ffffffa8; opacity: 0; transition: opacity .4s; pointer-events: none; }
 .pp-offline.on { opacity: .75; }
 `)
