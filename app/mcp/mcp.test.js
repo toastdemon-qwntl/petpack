@@ -8,7 +8,7 @@ import net from 'node:net'
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { startIpcServer, connectIpc, endpointFor, readIpcInfo, ipcInfoPath, pidAlive } from './ipc.js'
-import { createMcpServer, installIntoCodex, TOOLS } from './server.js'
+import { createMcpServer, installIntoCodex, TOOLS, PKG_NAME } from './server.js'
 import { PassThrough } from 'node:stream'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -266,7 +266,7 @@ test('installIntoCodex is idempotent (config.toml fallback and the codex CLI)', 
   const got = spawnSync('codex', ['mcp', 'get', 'petpack', '--json'], { env: { ...process.env, CODEX_HOME: home2 }, encoding: 'utf8', shell: process.platform === 'win32' })
   assert.equal(got.status, 0, got.stderr)
   const cfg = JSON.parse(got.stdout)
-  assert.deepEqual([cfg.transport.command, ...cfg.transport.args].slice(-4), ['npx', '-y', 'petpack', 'mcp'])
+  assert.deepEqual([cfg.transport.command, ...cfg.transport.args].slice(-4), ['npx', '-y', PKG_NAME, 'mcp'])
   assert.equal(cfg.startup_timeout_sec, 30)
 })
 
