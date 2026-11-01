@@ -349,6 +349,8 @@ function installCollapse(win) {
       case 'drag-end': return dragEnd(target)
       case 'dock': return placeDock(opts.side, target)
       case 'float': return placeFloat(target)
+      // Another page (tray panel) folding/opening the pane: the pane's page swaps its DOM first, then resizes.
+      case 'request': return requestCollapse(target, ['toggle', 'collapse', 'expand'].includes(opts.type) ? opts.type : 'toggle')
       default: throw new Error(`unknown window command ${cmd}`)
     }
   })
