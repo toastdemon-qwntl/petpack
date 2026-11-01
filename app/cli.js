@@ -5,6 +5,11 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { userDataDir } from './mcp/ipc.js'
 
+// The published npm name (scoped: npm refused the bare `petpack` as too close to `webpack`).
+const PKG_NAME = (() => {
+  try { return JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).name || 'petpack' } catch { return 'petpack' }
+})()
+
 export { userDataDir }
 export const DEFAULT_RELAY = 'wss://petpack-relay.azurewebsites.net/ws'
 const VALUE_FLAGS = new Set(['room', 'seat', 'dock', 'top', 'relay', 'name', 'pet', 'profile', 'smoke', 'pane-scale',
@@ -53,7 +58,7 @@ async function mcpServerModule(root) {
 export function mcpServerCommand(root, profile = '', nodePath = process.env.PETPACK_NODE || process.execPath) {
   const tail = profile ? ['--profile', profile] : []
   if (/[\\/]_npx[\\/]/.test(root)) {
-    const npx = ['npx', '-y', 'petpack', 'mcp', ...tail]
+    const npx = ['npx', '-y', PKG_NAME, 'mcp', ...tail]
     return process.platform === 'win32' ? ['cmd', '/c', ...npx] : npx
   }
   const node = /electron/i.test(path.basename(nodePath)) ? 'node' : nodePath

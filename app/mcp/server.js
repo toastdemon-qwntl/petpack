@@ -318,8 +318,13 @@ export function createMcpServer({
 // Codex registration (S1 calls installIntoCodex() on first run; `npx petpack mcp install` runs it by hand).
 
 /** The command Codex runs. On Windows `npx` is a .cmd shim, so it needs `cmd /c`. */
+// npm refused the bare name `petpack` (too close to `webpack`), so npx needs the published name from package.json.
+export const PKG_NAME = (() => {
+  try { return JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).name || 'petpack' } catch { return 'petpack' }
+})()
+
 export function codexServerCommand(platform = process.platform) {
-  const base = ['npx', '-y', 'petpack', 'mcp']
+  const base = ['npx', '-y', PKG_NAME, 'mcp']
   return platform === 'win32' ? ['cmd', '/c', ...base] : base
 }
 
