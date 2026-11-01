@@ -37,7 +37,7 @@ export function shortQuestion (q, max = SHORT_MAX) {
   const tidy = words.join(' ').replace(/\bout of\b/gi, 'from')
   // Keyword form: proper nouns, acronyms and code-ish words first, then the remaining content words.
   const content = words.map(w => w.replace(/[^\w./+-]/g, '')).filter(w => w && !STOP.has(w.toLowerCase()))
-  const special = content.filter(w => /[A-Z]{2,}|^[A-Z][a-z]|[./_-]|\d/.test(w))
+  const special = content.filter(w => !/^\d+$/.test(w) && /[A-Z]{2,}|^[A-Z][a-z]|[./_-]|\d/.test(w))
   const nouns = content.filter(w => !special.includes(w) && !VERBS.has(w.toLowerCase()))
   const keys = [...new Set([...special, ...nouns])]
   const keysFit = keys.length && keys.length <= 3 && keys.join(' ').length + 1 <= max
@@ -46,7 +46,7 @@ export function shortQuestion (q, max = SHORT_MAX) {
   if (keysFit && (leadsWithVerb || tidy.length + 1 > max)) short = keys.join(' ') // "pull tables out of a PDF" -> "PDF tables"
   else if (tidy.length + 1 <= max) short = tidy // "ship relay to Azure"
   else {
-    for (const k of keys) {
+    for (const k of content.filter(w => !VERBS.has(w.toLowerCase()))) {
       if ((short ? short.length + 1 : 0) + k.length + 1 > max) break
       short = short ? `${short} ${k}` : k
     }
@@ -148,7 +148,7 @@ export function needFrom ({ meta, prompt, turn, errors, now }, { workingMs = STU
   else if (gist) question = `Anyone solved this before: ${gist}?`
   else return null
   question = question.replace(/[?.!]+\?$/, '?')
-  const short = shortQuestion(error ? error.replace(/^(?:error|fatal|failed)[:\s]+/i, '') : gist)
+  const short = shortQuestion(error ? error.replace(/^(?:error|fatal|failed|fail)\b[:\s]*/i, '') : gist)
   const out = { question, short, why, session: meta?.id || null, at: now }
   if (error) out.error = error
   if (gist) out.prompt = gist

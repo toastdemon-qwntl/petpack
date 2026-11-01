@@ -177,6 +177,7 @@ export function bestClause (question, ...texts) {
     let s = 0
     for (const t of q) if (toks.has(t)) s += 1
     if (/^use (this( skill)? )?when\b/i.test(c)) s -= 0.4
+    if (/(?:^|\s)[~.]?\/[\w.-]+\/|[{}]|\w+\.(?:json|md|js|py|ts|txt)\b/.test(c)) s -= 1.5 // paths and file soup read badly in a bubble
     s -= i * 0.001 + Math.max(0, c.length - 140) * 0.002
     if (!best || s > best.s) best = { c, s }
   }
@@ -209,7 +210,13 @@ export function teammateSay (item, question, text = '', { unsure = false } = {})
   const lead = LEAD[kind](title)
   const clause = bestClause(question, item.summary, text)
   const room = SAY_MAX - lead.length - 1
-  const say = clause && room >= 20 ? `${lead} ${clipWords(clause, room - 1).replace(/…$/, '')}.` : lead
+  let part = clause && room >= 20 ? clipWords(clause, room - 1) : ''
+  if (part.endsWith('…')) { // cut back to a whole phrase rather than a dangling word
+    part = part.slice(0, -1)
+    const k = Math.max(part.lastIndexOf(','), part.lastIndexOf(' ('))
+    if (k > part.length * 0.55) part = part.slice(0, k)
+  }
+  const say = part ? `${lead} ${part.replace(/[\s,;:(-]+$/, '')}.` : lead
   return { text: say.replace(/\.\.$/, '.').slice(0, SAY_MAX), short: clipWords(SHORT[kind](item.title), SHORT_MAX) }
 }
 
