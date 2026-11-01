@@ -63,13 +63,15 @@ function unpack(zip, target) {
   fs.rmSync(tmp, { recursive: true, force: true })
   fs.mkdirSync(tmp, { recursive: true })
   // ditto keeps the bundle's symlinks, modes and signatures; tar.exe (bsdtar) reads zips on Windows 10+.
-  const [cmd, args] = process.platform === 'darwin' ? ['/usr/bin/ditto', ['-x', '-k', zip, tmp]]
+  // --noqtn: if npm ran under an app that quarantines what it writes, don't carry that onto the runtime.
+  const [cmd, args] = process.platform === 'darwin' ? ['/usr/bin/ditto', ['-x', '-k', '--noqtn', zip, tmp]]
     : WIN ? ['tar.exe', ['-xf', zip, '-C', tmp]] : ['unzip', ['-q', zip, '-d', tmp]]
   const result = spawnSync(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8', windowsHide: true })
   if (result.status !== 0) {
     fs.rmSync(tmp, { recursive: true, force: true })
     throw new Error(`couldn't unpack ${zip}: ${(result.stderr || result.error?.message || '').trim()}`)
   }
+  if (process.platform === 'darwin') spawnSync('/usr/bin/xattr', ['-dr', 'com.apple.quarantine', tmp], { stdio: 'ignore' })
   try {
     fs.renameSync(tmp, target)
   } catch (error) {
