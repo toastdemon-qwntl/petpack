@@ -370,6 +370,56 @@ test('status: incremental tracker and watcher follow a turn from working to done
   assert.deepEqual(seen, ['working', 'done'])
 })
 
+test('pets: [desktop] selection, the app default pet, cloud ids, picker and saved choice', async () => {
+  const home = tmp('picker')
+  const asar = path.join(home, 'App', 'resources', 'app.asar')
+  makeAsar(asar, 'codex-spritesheet-v6-51045ae208c0.webp', makeWebpX(1536, 2288))
+  // nothing selected, no custom pets, the desktop app installed -> its default pet, Codex
+  let r = await getPet(opt(home, { appAsars: [asar] }))
+  assert.equal(r.petName, 'codex')
+  assert.equal(r.source, 'default')
+  // no app -> the built-in pixel pet
+  assert.equal((await getPet(opt(home))).source, 'none')
+  // the app writes its pick under [desktop]
+  makePet(home, 'mochi', { displayName: 'Mochi' }, 'spritesheet.webp', makeWebpX(1536, 1872))
+  makePet(home, 'other', { displayName: 'Other' }, 'spritesheet.webp', makeWebpX(1536, 1872))
+  touch(path.join(home, 'pets', 'mochi', 'spritesheet.webp'), 600_000); touch(path.join(home, 'pets', 'mochi', 'pet.json'), 600_000)
+  write(path.join(home, 'config.toml'), 'model = "m"\n[desktop]\nselected-avatar-id = "custom:mochi"\n')
+  r = await getPet(opt(home, { appAsars: [asar] }))
+  assert.equal(r.displayName, 'Mochi')
+  // a cloud pet with no local sheet falls through to local pets
+  write(path.join(home, 'config.toml'), '[desktop]\nselected-avatar-id = "pet_abc123"\n')
+  assert.equal((await getPet(opt(home, { appAsars: [asar] }))).displayName, 'Other')
+
+  // the picker: candidates, choose, persisted, back to Codex's choice
+  const ud = tmp('userdata')
+  const codex = createCodex({ home, cacheDir: path.join(ud, 'pets'), fetchPets: false, appAsars: [asar] })
+  const list = await codex.listPets({ sprites: false })
+  assert.deepEqual(list.filter((p) => p.source === 'custom').map((p) => p.displayName).sort(), ['Mochi', 'Other'])
+  assert.ok(list.some((p) => p.source === 'builtin' && p.id === 'codex' && p.available === 'yes'))
+  assert.equal(list.filter((p) => p.current).length, 1)
+  assert.equal(list[0].spriteUrl, undefined)
+  // with sprites (the default): every usable pet carries its sheet, e.g. for demo bots
+  const dressed = (await codex.listPets()).filter((p) => p.spriteUrl)
+  assert.deepEqual(dressed.map((p) => p.displayName).sort(), ['Codex', 'Mochi', 'Other'])
+  assert.ok(dressed.every((p) => /^data:image\/(webp|png);base64,/.test(p.spriteUrl) && p.atlas))
+  const changed = []
+  codex.onPetChange((p) => changed.push(p.displayName))
+  const chosen = await codex.choosePet('codex')
+  assert.equal(chosen.petName, 'codex')
+  assert.equal(chosen.source, 'chosen')
+  assert.deepEqual(changed, ['Codex'])
+  const again = createCodex({ home, cacheDir: path.join(ud, 'pets'), fetchPets: false, appAsars: [asar] })
+  assert.equal((await again.getPet()).petName, 'codex')
+  await assert.rejects(again.choosePet(path.join(home, 'nowhere')))
+  await again.choosePet(path.join(home, 'pets', 'mochi'))
+  assert.equal((await again.getPet()).displayName, 'Mochi')
+  await again.choosePet(null)
+  assert.equal((await again.getPet()).displayName, 'Other') // follows Codex again (pet_abc123 -> newest local pet)
+  assert.equal(fs.existsSync(path.join(ud, 'pet-choice.json')), false)
+  codex.dispose(); again.dispose()
+})
+
 test('index: createCodex wires the pieces for main.js', async () => {
   const home = tmp('idx')
   write(path.join(home, 'skills', 'one', 'SKILL.md'), '---\nname: one\ndescription: first\n---\n')

@@ -1,5 +1,6 @@
-// Menu-bar / system-tray icon (build B4): room code, Seat, Dock, Align, Codex registration, Quit.
-import { Menu, Tray, nativeImage } from 'electron'
+// Menu-bar / system-tray icon (build B4): room code, Seat, Dock, Align, Pet, Codex registration, Quit.
+import { BrowserWindow, Menu, Tray, dialog, nativeImage } from 'electron'
+import path from 'node:path'
 import zlib from 'node:zlib'
 
 // A 16x16 pixel pet head (two ears, two eyes), drawn as rows: '#' body, '.' clear.
@@ -66,11 +67,34 @@ function trayImage() {
   return image
 }
 
+// ---- Pet ▸ picker (L3a): every pet app/codex finds, a check on the current one, and a folder chooser. ----
+let codexModule = null
+const loadCodexModule = async () => (codexModule ??= await import('./codex/index.js'))
+
+function petMenu(pets, choose, chooseFolder) {
+  const items = []
+  const cur = pets.current
+  if (!cur || cur.source === 'none') items.push({ label: 'No Codex pet found: choose one…', click: chooseFolder }, { type: 'separator' })
+  const usable = pets.list.filter(p => p.available !== 'no')
+  const custom = usable.filter(p => p.source === 'custom')
+  const builtin = usable.filter(p => p.source === 'builtin')
+  const item = p => ({ label: p.available === 'download' ? `${p.displayName} (downloads)` : p.displayName,
+    type: 'checkbox', checked: Boolean(p.current), click: () => choose(p.id) })
+  if (custom.length) items.push({ label: 'Your pets', enabled: false }, ...custom.map(item))
+  if (builtin.length) items.push({ label: 'Codex pets', enabled: false }, ...builtin.map(item))
+  if (usable.length) items.push({ type: 'separator' })
+  items.push({ label: 'Use the pet selected in Codex', type: 'checkbox', checked: cur?.source !== 'chosen', click: () => choose(null) })
+  items.push({ label: 'Choose a pet folder…', click: chooseFolder })
+  return items
+}
+
 /**
  * state(): { room, seat (int|null), dock ('left'|'right'), align (DIP), codex ('registered'|'unregistered'|'missing'|null) }
  * actions: copyRoom(), setSeat(seat|null), setDock(side), nudge(dy | 'reset'), registerCodex(), quit()
+ * onPetChange(pet): optional; called after the person picks a pet. Without it the tray reloads petpack's windows,
+ *   which re-runs getMe() and re-sends the sprite to the room.
  */
-export function createTray({ state, actions }) {
+export function createTray({ state, actions, onPetChange }) {
   let tray
   try {
     tray = new Tray(trayImage())
@@ -79,6 +103,44 @@ export function createTray({ state, actions }) {
     return { refresh() {}, destroy() {} }
   }
   tray.setToolTip('petpack')
+  let pets = { list: [], current: null }
+  let retries = 0
+  async function loadPets() {
+    try {
+      const codex = await loadCodexModule()
+      const [list, current] = await Promise.all([codex.listPets({ sprites: false }), codex.currentPet()])
+      if (current === null && retries++ < 20) { setTimeout(loadPets, 1500); return } // Codex core not created yet
+      pets = { list, current }
+      tray.setToolTip(current && current.source !== 'none' ? `petpack · ${current.displayName}` : 'petpack · no Codex pet found')
+    } catch (error) {
+      console.error(`petpack: pet list failed (${error.message})`)
+    }
+    refresh()
+  }
+  async function choose(idOrPath) {
+    try {
+      const codex = await loadCodexModule()
+      const pet = await codex.choosePet(idOrPath)
+      if (typeof onPetChange === 'function') onPetChange(pet)
+      else for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.reload()
+    } catch (error) {
+      dialog.showMessageBox({ type: 'warning', message: 'petpack could not use that pet',
+        detail: `${error.message}\n\nA Codex pet is a folder with pet.json and an 8x9 (or 8x11) spritesheet.webp or .png.` }).catch(() => {})
+    }
+    loadPets()
+  }
+  async function chooseFolder() {
+    const mac = process.platform === 'darwin'
+    const result = await dialog.showOpenDialog({
+      title: 'Choose a Codex pet',
+      message: 'Pick a pet folder (pet.json + spritesheet) or its spritesheet file',
+      properties: mac ? ['openDirectory', 'openFile'] : ['openFile'],
+      filters: [{ name: 'Codex pet (pet.json, spritesheet)', extensions: ['json', 'webp', 'png'] }],
+    }).catch(() => ({ canceled: true }))
+    if (result.canceled || !result.filePaths?.[0]) return
+    const picked = result.filePaths[0]
+    choose(/\.json$/i.test(picked) ? path.dirname(picked) : picked)
+  }
   function build() {
     const s = state()
     const codex = s.codex === 'registered'
@@ -105,6 +167,8 @@ export function createTray({ state, actions }) {
         { label: s.align ? `Reset (${s.align > 0 ? '+' : ''}${s.align})` : 'Reset', enabled: Boolean(s.align),
           click: () => actions.nudge('reset') },
       ] },
+      { label: pets.current && pets.current.source !== 'none' ? `Pet: ${pets.current.displayName}` : 'Pet',
+        submenu: petMenu(pets, choose, chooseFolder) },
       { label: 'Codex', submenu: codex },
       { type: 'separator' },
       { label: 'Quit petpack', click: () => actions.quit() },
@@ -112,5 +176,6 @@ export function createTray({ state, actions }) {
   }
   const refresh = () => { if (!tray.isDestroyed()) tray.setContextMenu(build()) }
   refresh()
-  return { refresh, destroy: () => tray.destroy() }
+  loadPets()
+  return { refresh, refreshPets: loadPets, destroy: () => tray.destroy() }
 }

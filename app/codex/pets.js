@@ -4,7 +4,7 @@
 //   petName     stable id: the custom pet's folder name, or a built-in id ('codex', 'dewey', ...); 'dot' when none
 //   displayName human name from pet.json (or the built-in's name)
 //   spriteUrl   'data:image/webp;base64,...' | 'data:image/png;base64,...' | null (null: the world draws Dot)
-//   source      'override' | 'selected' | 'custom' | 'builtin' | 'none'
+//   source      'override' | 'chosen' | 'selected' | 'custom' | 'default' | 'builtin' | 'none'
 //   path        file the sheet came from (or null)
 //   atlas       { width, height, cols: 8, rows, cellW, cellH, version } (rows 9 for v1 sheets, 11 for v2 sheets)
 // opts: { homes?: string[], home?, env?, pet?: '<dir|name|image file>' (the --pet override), cacheDir?, fetch?: bool,
@@ -12,13 +12,17 @@
 //
 // Lookup order (first usable sheet wins; a malformed candidate is skipped, never thrown):
 //   1. --pet override: a pet folder, a sheet file, a custom pet's folder/id/displayName, or a built-in id
-//   2. the pet selected in Codex: the desktop app's `selected-avatar-id` in <home>/config.toml (any table, see
-//      openai/codex#32685; also looked for in .codex-global-state.json), then the CLI's `[tui] pet`. Values:
-//      'custom:<folder>', a bare folder, a folder path, a built-in id; 'disabled' is skipped.
+//   1b. the pet chosen in petpack's tray (opts.choice, same forms)
+//   2. the pet selected in Codex: the desktop app's `[desktop] selected-avatar-id` in <home>/config.toml (accepted
+//      from any table, openai/codex#32685; legacy: .codex-global-state.json electron-persisted-atom-state), then the
+//      CLI's `[tui] pet`. Values: 'custom:<folder>', a bare folder, a folder path, a built-in id, a cloud 'pet_...'
+//      id (sheet URL from the app's cloud-pet-artwork-cache, when it downloads); 'disabled' is skipped.
 //   3. custom pets in <home>/pets/<folder>/pet.json and <home>/avatars/<folder>/avatar.json (codex-pets.net zips and
 //      Pet Drop pets unzip to the same layout, incl. v2 8x11 sheets); the most recently updated one.
 //      pet.json `frame: { columns, rows }` is honoured when it covers the sheet exactly.
-//   4. none: spriteUrl null (the world's built-in pixel pet)
+//   4. the Codex app's default pet ('codex') when the desktop app is installed or has run: an unset selection
+//      means the app shows Codex
+//   5. none: spriteUrl null (the world's built-in pixel pet)
 // Built-in sheets come from the installed Codex desktop app (app.asar webview/assets/<id>-spritesheet-v*.webp), then
 // the CLI's cache (<home>/cache/tui-pets), then the same CDN the CLI uses, cached under cacheDir.
 //
@@ -29,7 +33,15 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { createRequire } from 'node:module'
 import { codexHomes, isDir } from './home.js'
+
+// Inside Electron, `fs` treats *.asar files as folders, so reading the Codex app's app.asar as bytes needs the
+// unpatched 'original-fs'. Plain Node has no such patch.
+const rawFs = (() => {
+  if (process.versions && process.versions.electron) { try { return createRequire(import.meta.url)('original-fs') } catch {} }
+  return fs
+})()
 
 export const BUILTIN_PETS = {
   codex: 'Codex',
@@ -293,15 +305,15 @@ function asarIndex (file) {
   if (asarCache.has(file)) return asarCache.get(file)
   let idx = null
   try {
-    const fd = fs.openSync(file, 'r')
+    const fd = rawFs.openSync(file, 'r')
     try {
       const head = Buffer.alloc(16)
-      fs.readSync(fd, head, 0, 16, 0)
+      rawFs.readSync(fd, head, 0, 16, 0)
       const pickle = head.readUInt32LE(4)
       const len = head.readUInt32LE(12)
       if (len > 0 && len < 256 * 1024 * 1024) {
         const json = Buffer.alloc(len)
-        fs.readSync(fd, json, 0, len, 16)
+        rawFs.readSync(fd, json, 0, len, 16)
         const header = JSON.parse(json.toString('utf8'))
         const assets = header?.files?.webview?.files?.assets?.files || {}
         const sheets = {}
@@ -313,7 +325,7 @@ function asarIndex (file) {
         }
         idx = { base: 8 + pickle, sheets }
       }
-    } finally { fs.closeSync(fd) }
+    } finally { rawFs.closeSync(fd) }
   } catch { idx = null }
   asarCache.set(file, idx)
   return idx
@@ -324,19 +336,19 @@ function readFromAsar (file, id) {
   const s = idx && idx.sheets[id]
   if (!s || s.size > MAX_SHEET_BYTES) return null
   try {
-    const fd = fs.openSync(file, 'r')
+    const fd = rawFs.openSync(file, 'r')
     try {
       const buf = Buffer.alloc(s.size)
-      fs.readSync(fd, buf, 0, s.size, idx.base + s.offset)
+      rawFs.readSync(fd, buf, 0, s.size, idx.base + s.offset)
       return buf
-    } finally { fs.closeSync(fd) }
+    } finally { rawFs.closeSync(fd) }
   } catch { return null }
 }
 
 export function builtinIdsInApp (opts = {}) {
   const asars = opts.appAsars || appAsarCandidates(opts)
   const ids = new Set()
-  for (const a of asars) { const idx = fs.existsSync(a) && asarIndex(a); if (idx) for (const k of Object.keys(idx.sheets)) ids.add(k) }
+  for (const a of asars) { const idx = rawFs.existsSync(a) && asarIndex(a); if (idx) for (const k of Object.keys(idx.sheets)) ids.add(k) }
   return [...ids]
 }
 
@@ -368,9 +380,7 @@ export async function loadBuiltin (id, opts = {}) {
     const s = sheetFromBuffer(buf)
     return s ? { petName: key, displayName, spriteUrl: s.spriteUrl, source: 'builtin', path: file, atlas: s.atlas } : null
   }
-  // 8x9 (v1) sheets first, because that's the grid every renderer reads; the desktop app ships 8x11 (v2) sheets
-  // whose top 9 rows are the same layout, used when nothing else is reachable.
-  // 1. the CLI's download cache, then ours
+  // 1. the CLI's download cache, then ours (8x9 sheets)
   const rx = new RegExp(`^${key}-spritesheet(-v\\d+)?(-[0-9a-f]+)?\\.(webp|png)$`, 'i')
   const homes = opts.homes || codexHomes(opts)
   const cacheDir = opts.cacheDir || path.join(os.tmpdir(), 'petpack-pets')
@@ -380,7 +390,13 @@ export async function loadBuiltin (id, opts = {}) {
     const r = done(await fsp.readFile(f).catch(() => null), f)
     if (r) return r
   }
-  // 2. the CDN the CLI downloads from
+  // 2. the installed desktop app (offline; 8x11 sheets, which the world and the upload crop to 8x9)
+  for (const a of opts.appAsars || appAsarCandidates(opts)) {
+    if (!rawFs.existsSync(a)) continue
+    const r = done(readFromAsar(a, key), a)
+    if (r) return r
+  }
+  // 3. the CDN the CLI downloads from
   if (opts.fetch !== false && Object.prototype.hasOwnProperty.call(BUILTIN_PETS, key)) {
     const buf = await fetchWithTimeout(`${PET_CDN}/${key}-spritesheet-v4.webp`, opts.timeoutMs || 4000)
     const file = path.join(cacheDir, `${key}-spritesheet-v4.webp`)
@@ -390,16 +406,35 @@ export async function loadBuiltin (id, opts = {}) {
       return r
     }
   }
-  // 3. the installed desktop app
-  for (const a of opts.appAsars || appAsarCandidates(opts)) {
-    if (!fs.existsSync(a)) continue
-    const r = done(readFromAsar(a, key), a)
-    if (r) return r
-  }
   return null
 }
 
 // ---------- resolution ----------
+
+// A cloud pet ('pet_...', Pet Drop adoptions when the app's cloud pets are on) has no local folder. The app's state
+// keeps its sheet URL in `cloud-pet-artwork-cache`; try it once (it may need a signature) and keep a copy.
+async function loadCloudPet (id, opts, source) {
+  try {
+    const cacheDir = opts.cacheDir || path.join(os.tmpdir(), 'petpack-pets')
+    const safe = id.replace(/[^A-Za-z0-9_-]/g, '')
+    const cached = path.join(cacheDir, `${safe}.sheet`)
+    let buf = await fsp.readFile(cached).catch(() => null)
+    let file = cached
+    if (!buf && opts.fetch !== false) {
+      for (const home of opts.homes || []) {
+        const gs = readJsonLoose(path.join(home, '.codex-global-state.json'))
+        const cache = gs && deepFind(gs, 'cloud-pet-artwork-cache')
+        const hit = cache && Array.isArray(cache.pets) && cache.pets.find((p) => p && p.id === id && p.spritesheetUrl)
+        if (!hit) continue
+        buf = await fetchWithTimeout(hit.spritesheetUrl, opts.timeoutMs || 4000)
+        file = hit.spritesheetUrl
+        if (buf && sheetFromBuffer(buf)) { try { await fsp.mkdir(cacheDir, { recursive: true }); await fsp.writeFile(cached, buf) } catch {} ; break }
+      }
+    }
+    const s = buf && sheetFromBuffer(buf)
+    return s ? { petName: safe, displayName: 'My pet', spriteUrl: s.spriteUrl, source, path: file, atlas: s.atlas } : null
+  } catch { return null }
+}
 
 const looksLikePath = (v) => /[/\\]/.test(v) || /^~|^\.\.?$/.test(v) || path.isAbsolute(v)
 
@@ -419,6 +454,7 @@ async function resolveId (id, pets, opts, source, base) {
     if (r) return r
   }
   if (/^custom:/i.test(v)) return null
+  if (/^pet_/i.test(v)) return loadCloudPet(v, opts, source)
   const b = await loadBuiltin(v, opts)
   return b ? { ...b, source } : null
 }
@@ -447,24 +483,133 @@ async function resolveOverride (spec, pets, opts) {
 
 export const NO_PET = Object.freeze({ petName: 'dot', displayName: 'Dot', spriteUrl: null, source: 'none', path: null, atlas: null })
 
+// Is the Codex desktop app here (installed, or has it run with one of these homes)?
+export function desktopAppPresent (opts = {}) {
+  const homes = opts.homes || codexHomes(opts)
+  if (homes.some((h) => fs.existsSync(path.join(h, '.codex-global-state.json')))) return true
+  return (opts.appAsars || appAsarCandidates(opts)).some((a) => rawFs.existsSync(a))
+}
+
+// opts.choice: the pet picked in petpack's tray (saved by index.js), between --pet and Codex's own selection.
+// opts.trace: an array that receives one { step, value, result } entry per lookup step (for `petpack pets`).
 export async function getPet (opts = {}) {
+  const trace = Array.isArray(opts.trace) ? opts.trace : null
+  const note = (step, value, r, why) => { if (trace) trace.push({ step, value: value ?? null, result: r ? `${r.displayName} (${r.path})` : (why || 'not usable') }) ; return r }
   try {
     const homes = opts.homes || codexHomes(opts)
     const o = { ...opts, homes }
     const pets = listPets(o)
     if (opts.pet) {
-      const r = await resolveOverride(opts.pet, pets, o)
+      const r = note('--pet', opts.pet, await resolveOverride(opts.pet, pets, o))
       if (r) return r
     }
-    for (const sel of selectedPetIds(o)) {
-      const r = await resolveId(sel.id, pets, o, 'selected', sel.home)
+    if (opts.choice) {
+      const r = note('petpack choice (tray)', opts.choice, await resolveOverride(opts.choice, pets, o))
+      if (r) return { ...r, source: 'chosen' }
+    }
+    const sels = selectedPetIds(o)
+    if (!sels.length) note('Codex selection', null, null, 'none recorded (app selected-avatar-id, CLI [tui] pet)')
+    for (const sel of sels) {
+      const r = note(`Codex selection (${sel.from})`, sel.id, await resolveId(sel.id, pets, o, 'selected', sel.home))
       if (r) return r
     }
     const newest = [...pets].sort((a, b) => b.updatedAt - a.updatedAt)
+    if (!newest.length) note('custom pets', null, null, 'no pet folders with a sheet')
     for (const c of newest) {
-      const r = await loadCandidate(c, 'custom')
+      const r = note('custom pet (newest first)', c.dir, await loadCandidate(c, 'custom'))
       if (r) return r
     }
+    // The Codex app shows its default pet ('codex') until you pick another, so that is this person's pet too.
+    if (desktopAppPresent(o)) {
+      const r = note('Codex app default pet', 'codex', await loadBuiltin('codex', o))
+      if (r) return { ...r, source: 'default' }
+    } else note('Codex app default pet', null, null, 'Codex desktop app not found')
   } catch {}
   return { ...NO_PET }
+}
+
+async function headerAtlas (file, frame) {
+  let fh
+  try {
+    fh = await fsp.open(file, 'r')
+    const buf = Buffer.alloc(64 * 1024)
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+    const info = imageInfo(buf.subarray(0, bytesRead))
+    return atlasFromFrame(info, frame) || atlasOf(info)
+  } catch { return null } finally { await fh?.close().catch(() => {}) }
+}
+
+// Every pet petpack could show, for the tray picker, `petpack pets` and the demo bots. Never throws.
+// -> [{ id, displayName, source: 'custom'|'builtin', path, atlas, available: 'yes'|'download'|'no', why,
+//       spriteUrl? }]
+//   id is what choosePet()/--pet accept: a custom pet's folder path, or a built-in id.
+//   opts.sprites: also load each usable pet's sheet as `spriteUrl` (data URL). Built-ins missing locally are then
+//   downloaded from the CDN (opts.fetch !== false) and kept in cacheDir, so the next run is offline.
+export async function listPetCandidates (opts = {}) {
+  const out = await listPetMeta(opts)
+  if (!opts.sprites) return out
+  const homes = opts.homes || codexHomes(opts)
+  const o = { ...opts, homes }
+  await Promise.all(out.map(async (c) => {
+    try {
+      const r = c.source === 'custom'
+        ? await loadCandidate(describeFolder(c.id), 'custom')
+        : (c.available !== 'no' ? await loadBuiltin(c.id, o) : null)
+      if (r) Object.assign(c, { spriteUrl: r.spriteUrl, atlas: r.atlas, path: r.path, available: 'yes', why: '' })
+      else c.spriteUrl = null
+    } catch { c.spriteUrl = null }
+  }))
+  return out
+}
+
+async function listPetMeta (opts = {}) {
+  const out = []
+  try {
+    const homes = opts.homes || codexHomes(opts)
+    const o = { ...opts, homes }
+    for (const c of listPets(o)) {
+      let atlas = null; let sheet = null
+      for (const f of c.sheets) { atlas = await headerAtlas(f, c.frame); if (atlas) { sheet = f; break } }
+      out.push({ id: c.dir, displayName: c.displayName, source: 'custom', path: sheet || c.sheets[0], atlas,
+        available: atlas ? 'yes' : 'no', why: atlas ? '' : 'sheet is not an 8x9 or 8x11 grid' })
+    }
+    const asars = (o.appAsars || appAsarCandidates(o)).filter((a) => rawFs.existsSync(a))
+    const cacheDir = o.cacheDir || path.join(os.tmpdir(), 'petpack-pets')
+    const ids = new Set([...Object.keys(BUILTIN_PETS), ...builtinIdsInApp({ ...o, appAsars: asars })])
+    for (const id of ids) {
+      const rx = new RegExp(`^${id}-spritesheet(-v\\d+)?(-[0-9a-f]+)?\\.(webp|png)$`, 'i')
+      let where = null
+      for (const root of [...homes.map((h) => path.join(h, 'cache', 'tui-pets')), cacheDir]) { where = findInDir(root, rx); if (where) break }
+      if (!where) where = asars.find((a) => asarIndex(a)?.sheets[id]) || null
+      const display = BUILTIN_PETS[id] || id
+      if (where) {
+        let atlas = null
+        if (where.endsWith('.asar')) { const buf = readFromAsar(where, id); atlas = buf && atlasOf(imageInfo(buf)) } else atlas = await headerAtlas(where)
+        out.push({ id, displayName: display, source: 'builtin', path: where, atlas, available: atlas ? 'yes' : 'no', why: '' })
+      } else {
+        out.push({ id, displayName: display, source: 'builtin', path: `${PET_CDN}/${id}-spritesheet-v4.webp`, atlas: null,
+          available: Object.prototype.hasOwnProperty.call(BUILTIN_PETS, id) && id !== 'hoots' && opts.fetch !== false ? 'download' : 'no',
+          why: 'not on this machine; downloads from the CDN when chosen' })
+      }
+    }
+  } catch {}
+  return out
+}
+
+// Every place petpack looks, and whether it exists (for `petpack pets`).
+export function checkedPaths (opts = {}) {
+  const homes = opts.homes || codexHomes(opts)
+  const rows = []
+  const add = (p, what) => { let exists = false; try { fs.statSync(p); exists = true } catch {} ; rows.push({ path: p, what, exists }) }
+  for (const h of homes) {
+    add(h, 'Codex home')
+    add(path.join(h, 'config.toml'), 'selection: selected-avatar-id (app), [tui] pet (CLI)')
+    add(path.join(h, '.codex-global-state.json'), 'desktop app state (selected-avatar-id)')
+    add(path.join(h, 'pets'), 'custom pets: <dir>/pet.json + sheet')
+    add(path.join(h, 'avatars'), 'custom pets: <dir>/avatar.json + sheet')
+    add(path.join(h, 'cache', 'tui-pets'), 'CLI built-in sheet cache')
+  }
+  if (opts.cacheDir) add(opts.cacheDir, 'petpack built-in sheet cache')
+  for (const a of opts.appAsars || appAsarCandidates(opts)) add(a, 'Codex desktop app bundle (built-in sheets)')
+  return rows
 }
