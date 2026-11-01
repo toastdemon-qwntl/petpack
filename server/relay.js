@@ -73,7 +73,15 @@ const PURGED = new Set([
   '310947df-223c-4b2f-b199-529161b71feb', 'bcaad74f-f4fe-4b54-af7b-2f94a3a3f56a', '0a84059c-be98-4bae-93c1-5a32cba0bee8',
   '78b50b20-4a58-47ef-8edf-6bcee0cdb417', '4eda69eb-5582-4c02-9f12-fe5751440b9a', '51761670-9aeb-461a-ad7e-6fa303b99bf8',
   '0fc0559f-8fc8-495a-b706-5015501ccf21',
-  'cbe4e8a7-e042-4cb7-bd6c-6b35bafc8ba6', '33027189-4663-404a-83ba-2cf4ae4f213b', 'a497d79f-3935-4ee9-993b-d267a3ecc2d7'
+  'cbe4e8a7-e042-4cb7-bd6c-6b35bafc8ba6', '33027189-4663-404a-83ba-2cf4ae4f213b', 'a497d79f-3935-4ee9-993b-d267a3ecc2d7',
+  // 16:4xZ (operator: "kill any leftover agents should just be the active laptops"): every napper except the two
+  // laptops online at 16:37Z (Stacky b9070b77, Duet 2431e572).
+  'b8ac966b-7c5e-4ac4-8de0-a109636a9f5b', '8d29267b-1bc7-453a-a004-d4bf330adaf7', '39192ce6-6d12-44a5-919a-60bab784c975',
+  '9ae687f3-c4ea-4dca-ae0b-ae320181f58a', '1a3dfe7c-7a34-4333-99b2-abdb91752ccb', 'd6abd780-52d8-48c8-b7b0-1a690d5f39ba',
+  'd4f3f501-9cf7-489b-a96f-dfd5b3340845', '132c7c4c-266d-4511-9112-fa0933789fe9', 'e44233fc-0600-4b2d-b5e4-6fd71420e48f',
+  'c85438cb-6f54-4c50-8b3e-e0efc7883535', 'cf4a66b5-bf11-4a53-8b62-38936c778ced', '2b27af9b-20f0-4558-a4da-69b44b49b0af',
+  'd426ec44-a4c2-42c6-b3a1-7fa6b8b7c587', '64a74aec-2aa2-4f4a-baf7-aee4b2568e31', '5fe4f152-0fb1-43ce-949c-a7ad9eeb22b1',
+  '74cb8a9b-59ad-4b19-b9c6-70950cc24897'
 ])
 
 // short one-way tag of a client IP, kept per agent (<= 8) so a later purge can find devbox-only agents
