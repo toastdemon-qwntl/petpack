@@ -71,6 +71,9 @@ contextBridge.exposeInMainWorld('petpack', {
   setFace: pngDataUrl => ipcRenderer.send('petpack:face', String(pngDataUrl || '')),
   // L3b: a lesson from the Codex session that last finished (or the one given).
   lessonFromSession: session => call('petpack:lessonFromSession', session),
+  // Live in Codex: a share request asked in the Codex app; a teammate's question opened as a new Codex thread.
+  elicitShare: request => call('petpack:elicitShare', request),
+  askInCodex: request => call('petpack:askInCodex', request),
   // S5 live progress: the brain's step ({ callId, text }) back to the MCP call that asked.
   agentStep: step => ipcRenderer.send('petpack:agent-step', step && typeof step === 'object' ? step : {}),
   onCodexEvent(cb) {

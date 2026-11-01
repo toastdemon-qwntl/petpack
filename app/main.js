@@ -425,6 +425,24 @@ handle('petpack:answerAsk', request => codex.answerAsk(request))
 handle('petpack:currentNeed', () => codex.currentNeed())
 handle('petpack:currentTask', () => codex.currentTask())
 handle('petpack:lessonFromSession', session => codex.lessonFromSession(session))
+// Live in Codex (S5): a share request asked IN the Codex app (MCP elicitation), 25 s; 'unavailable' / 'timeout'
+// leave the pane's ✓/✗ card in charge.
+handle('petpack:elicitShare', async ({ fromName, title } = {}) => {
+  if (typeof ipcServer?.elicit !== 'function') return { action: 'unavailable' }
+  return ipcServer.elicit({ message: `${fromName || 'A teammate'} wants your ${title || 'item'}. Share it?`,
+    requestedSchema: { type: 'object', properties: { share: { type: 'boolean', title: 'Share' } }, required: ['share'] } },
+  { timeoutMs: 25000 })
+})
+// A teammate's question our catalog can't answer at once: a new Codex thread with it typed in (tray toggle).
+const promptedAsks = new Set()
+handle('petpack:askInCodex', async ({ id, fromName, question } = {}) => {
+  if (settings.answerInCodex === false || SMOKE || !id || !question || promptedAsks.has(id)) return { ok: false, skipped: true }
+  promptedAsks.add(id)
+  const open = pick([await importOptional('app/mcp/open-prompt.js')], 'openCodexWithPrompt')
+  if (!open) return { ok: false, reason: 'unavailable' }
+  return open(`${fromName || 'A teammate'} asks (via petpack): ${String(question).slice(0, 1500)}\n\n` +
+    `Answer it, then send your answer back with the petpack_answer tool (id ${id}).`)
+})
 handle('petpack:listShareable', () => codex.listShareable())
 handle('petpack:shareSettings', () => codex.shareSettings())
 handle('petpack:setShare', patch => setShare(patch))
@@ -523,6 +541,8 @@ function trayActions() {
       saveSettings(); refreshTray(); win?.webContents.reload()
     },
     setSeat: seat => { settings.seat = seat; saveSettings(); refreshTray(); win?.webContents.reload() },
+    // "Answer teammates in Codex" (default on): questions we can't answer at once open in the Codex app.
+    setAnswerInCodex: on => { settings.answerInCodex = Boolean(on); saveSettings(); refreshTray() },
     // "Show me" (L2 brain.showMe): the pane opens and our pet comes to the front.
     showMe: () => {
       if (!win || win.isDestroyed()) return
@@ -707,7 +727,7 @@ app.whenReady().then(async () => {
   for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(event, () => dock())
   if (process.platform === 'win32') setInterval(() => win && raiseToTop(win), 10000)
   if (SMOKE) { runSmoke().catch(error => { console.error(error); app.exit(1) }); return }
-  tray = createTray({ state: () => ({ room: settings.room, seat: settings.seat, dock: settings.dock, sit: settings.sit === 'across' ? 'across' : 'side',
+  tray = createTray({ state: () => ({ room: settings.room, seat: settings.seat, dock: settings.dock, sit: settings.sit === 'across' ? 'across' : 'side', answerInCodex: settings.answerInCodex !== false,
     align: settings.align, codex: codexState }), actions: trayActions(), pane: () => win, userData: USER_DATA,
     // A new pet from the tray: the page re-reads getMe() and re-sends its sprite (no reload, the walk goes on).
     onPetChange: () => { petFace = null; if (win && !win.isDestroyed()) win.webContents.send('petpack:me-changed') } })

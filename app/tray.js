@@ -192,7 +192,9 @@ export function createTray({ state, actions, onPetChange, pane, userData }) {
       ] },
       { label: pets.current && pets.current.source !== 'none' ? `Pet: ${pets.current.displayName}` : 'Pet',
         submenu: petMenu(pets, choose, chooseFolder) },
-      { label: 'Codex', submenu: codex },
+      { label: 'Codex', submenu: [...codex,
+        ...(actions.setAnswerInCodex ? [{ type: 'separator' }, { label: 'Answer teammates in Codex', type: 'checkbox',
+          checked: s.answerInCodex !== false, click: item => actions.setAnswerInCodex(item.checked) }] : [])] },
       { type: 'separator' },
       { label: 'Quit petpack', click: () => actions.quit() },
     ])

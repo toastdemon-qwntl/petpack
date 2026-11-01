@@ -87,8 +87,22 @@ const shownX = new Map() // id -> displayed x
 const textQueue = []
 let textBusyUntil = 0
 let shownMe = null
+// A teammate's question our catalog can't answer at once (no tier-1 answer within 1.5 s, or none at all) opens in
+// the Codex app as a new thread, once per question; the answer comes back through petpack_answer (inbox id).
+const brainBridge = typeof bridge.answerAsk !== 'function' ? bridge : Object.assign({}, bridge, {
+  answerAsk(request = {}) {
+    const answering = Promise.resolve(bridge.answerAsk(request))
+    const entry = [...(brain._?.inbox?.values?.() || [])].find(e => !e.answered && e.question === String(request.question || '').slice(0, 600))
+    if (entry && bridge.askInCodex) {
+      const toCodex = () => bridge.askInCodex({ id: entry.id, fromName: entry.fromName, question: entry.question }).catch(() => {})
+      const timer = setTimeout(toCodex, 1500)
+      answering.then(r => { clearTimeout(timer); if (r && r.ok === false && !entry.answered && !r.busy) toCodex() }, () => clearTimeout(timer))
+    }
+    return answering
+  },
+})
 const brain = createBrain({
-  bridge,
+  bridge: brainBridge,
   net: { send: msg => net?.send(msg) ?? false },
   me: { id: myId, name: config.name || me.displayName || me.petName || 'Pip', spriteUrl: me.spriteUrl || null, atlas: me.atlas || null,
     skills: Array.isArray(me.skills) ? me.skills : [], catalog, sprite },
@@ -461,6 +475,12 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, askSheet]
 const permCards = new Map()
 brain.on?.('permission', request => {
   if (!request?.id) return
+  // Asked IN the Codex app first (MCP elicitation); unavailable / timeout leaves the card below in charge.
+  Promise.resolve(bridge.elicitShare?.({ fromName: request.fromName, title: request.title, kind: request.kind }))
+    .then(r => {
+      if (r?.action === 'accept') brain.decide?.(request.id, r.content?.share === true)
+      else if (r?.action === 'decline') brain.decide?.(request.id, false)
+    }).catch(() => {})
   const card = Object.assign(document.createElement('div'), { className: 'pp-perm' })
   const text = Object.assign(document.createElement('span'), { textContent: request.text || `${request.fromName} asks to share` })
   const yes = Object.assign(document.createElement('button'), { className: 'yes', type: 'button', textContent: '✓', title: 'Share it' })
