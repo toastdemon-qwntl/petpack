@@ -1,5 +1,5 @@
 import { createBuiltinAtlas, BUILTIN_KINDS } from './cast-creatures.js'
-import { createAtlasCharacter, preparePetAtlas } from './sprite-pet.js'
+import { createAtlasCharacter, preparePetAtlas } from './cast-atlas.js'
 
 const atlases = new Map()
 

@@ -26,6 +26,8 @@
     #labels { position: absolute; inset: 0; pointer-events: none; }
     .label { position: absolute; text-align: center; transform: translate(-50%, 0); color: #6f8066; font-size: 10px; white-space: nowrap; }
     .label strong { font-weight: 650; color: #435948; margin-right: 5px; }
+    .atlas-fixtures .label { font-size: 12px; line-height: 1.65; }
+    .atlas-fixtures .label strong { display: block; margin: 0; }
     #error { position: absolute; left: 42px; top: 330px; color: #a54c39; }
     @media (min-width: 1800px) { #sheet { left: 8%; right: 8%; bottom: 4%; } header { left: 8%; } }
     @media (max-width: 900px) { header { display: none; } #pane { right: 50%; transform: translateX(50%); width: min(520px, 94vw); } .label { font-size: 8px; } }
@@ -46,9 +48,18 @@
     import { createStage } from './stage.js'
     import { createPixelPet } from './pixel-pet.js'
     import { createSpritePet } from './sprite-pet.js'
-    import { makeTestAtlas } from './atlas.js'
+    import { makeTestAtlas, makeAtlasFixtures } from './atlas.js'
 
     const query = new URLSearchParams(location.search)
+    const atlasMode = query.has('atlases')
+    if (atlasMode) {
+      document.body.classList.add('atlas-fixtures')
+      document.querySelector('.eyebrow').textContent = 'petpack / bring your own pet'
+      document.querySelector('h1').innerHTML = 'Any scale.<br>The same little friend.'
+      document.querySelector('header p').textContent = 'Codex atlases at half, original, double and uneven sizes. Missing or broken artwork gets a local pet in your colour.'
+      document.querySelector('.swatches').textContent = 'WebP · PNG · data URLs · blob URLs · sparse animation rows'
+      document.querySelector('#sheet canvas').setAttribute('aria-label', 'Eight sprite compatibility fixtures, including two built-in fallbacks')
+    }
     const pixelScale = Math.max(1, Math.min(4, Number(query.get('px')) || 2))
     const sheet = document.querySelector('#sheet')
     const pane = document.querySelector('#pane canvas')
@@ -71,19 +82,21 @@
     const characters = [], neighbours = [], labels = []
     const p = new THREE.Vector3()
     let paused = query.has('paused'), time = 0, previous, frameRequest, disposed = false
-    let spriteUrl
+    let spriteUrl, fixtureSet
 
-    function addCharacter(pet, col, row) {
-      pet.object3d.position.set((col - 3.5) * 3.75, 0, (row - 2) * 4.75)
+    function addCharacter(pet, col, row, fixture) {
+      if (fixture) pet.object3d.position.set((col - 1.5) * 5.8, 0, (row - .5) * 6.1)
+      else pet.object3d.position.set((col - 3.5) * 3.75, 0, (row - 2) * 4.75)
       const state = { anim: poses[col], facing: col === 2 ? -1 : 1, moving: poses[col] === 'run' ? 1.8 : 0 }
       pet.set(state)
       stage.scene.add(pet.object3d)
-      characters.push({ pet, state, kind: kinds[row], col, row })
+      characters.push({ pet, state, kind: fixture?.id ?? kinds[row], col, row, fixture })
       const element = document.createElement('div')
       element.className = 'label'
       const name = document.createElement('strong')
-      name.textContent = names[row]
-      element.append(name, document.createTextNode(captions[col]))
+      name.textContent = fixture?.label ?? names[row]
+      const caption = fixture ? fixture.width ? `${fixture.width} × ${fixture.height} · ${fixture.urlKind}` : 'safe fallback' : captions[col]
+      element.append(name, document.createTextNode(caption))
       document.querySelector('#labels').append(element)
       labels.push({ element, anchor: pet.object3d })
     }
@@ -91,7 +104,7 @@
     function resize() {
       const width = sheet.clientWidth, height = sheet.clientHeight
       stage.resize(width, height)
-      stage.focus(0, -.45, { span: Math.max(32, 15.2 * width / height) })
+      stage.focus(0, atlasMode ? -.65 : -.45, { span: atlasMode ? Math.max(25, 7.8 * width / height) : Math.max(32, 15.2 * width / height) })
       closeup.resize(pane.clientWidth, pane.clientHeight)
       closeup.focus(0, -1.6, { span: 12 })
     }
@@ -138,25 +151,35 @@
       cancelAnimationFrame(frameRequest); observer.disconnect()
       for (const { pet } of characters) pet.dispose()
       for (const pet of neighbours) pet.dispose()
+      fixtureSet?.dispose()
       for (const floor of floors) { floor.geometry.dispose(); floor.material.dispose() }
       stage.dispose(); closeup.dispose()
     }
     try {
-      spriteUrl = await makeTestAtlas()
-      for (let row = 0; row < kinds.length; row++) {
-        for (let col = 0; col < poses.length; col++) {
-          const pet = row === 4 ? await createSpritePet({ spriteUrl, color: colors[row] }) : createPixelPet({ color: colors[row], kind: kinds[row] })
-          addCharacter(pet, col, row)
+      if (atlasMode) {
+        fixtureSet = await makeAtlasFixtures()
+        for (const [i, fixture] of fixtureSet.fixtures.entries()) {
+          const pet = await createSpritePet(fixture)
+          addCharacter(pet, i % 4, Math.floor(i / 4), fixture)
+        }
+        spriteUrl = fixtureSet.fixtures[1].spriteUrl
+      } else {
+        spriteUrl = await makeTestAtlas()
+        for (let row = 0; row < kinds.length; row++) {
+          for (let col = 0; col < poses.length; col++) {
+            const pet = row === 4 ? await createSpritePet({ spriteUrl, color: colors[row] }) : createPixelPet({ color: colors[row], kind: kinds[row] })
+            addCharacter(pet, col, row)
+          }
         }
       }
       for (let i = 0; i < 4; i++) {
-        const pet = createPixelPet({ kind: kinds[i], color: colors[i] })
+        const pet = atlasMode ? await createSpritePet(fixtureSet.fixtures[i]) : createPixelPet({ kind: kinds[i], color: colors[i] })
         closeup.scene.add(pet.object3d); neighbours.push(pet)
       }
       for (let i = 0; i < 120; i++) { stage.update(1 / 60, 0); closeup.update(1 / 60, 0) }
       step(0)
       window.castDemo = {
-        characters, neighbours, stage, closeup, renderer: stage.renderer, scene: stage.scene, camera: stage.camera, spriteUrl,
+        characters, neighbours, stage, closeup, renderer: stage.renderer, scene: stage.scene, camera: stage.camera, spriteUrl, fixtures: fixtureSet?.fixtures,
         pause(value = true) { paused = value },
         advance(seconds) { for (let t = 0; t < seconds; t += 1 / 60) step(Math.min(1 / 60, seconds - t)); render() },
         pop() { neighbours.forEach(pet => pet.pop()) },

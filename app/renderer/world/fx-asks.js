@@ -1,6 +1,6 @@
 // All timing follows fx.update, so adjacent panes share the same conversation.
 const COLORS = { skill: '#ffcd78', memory: '#9be5d5', technique: '#d8d1fb', resource: '#ffc88a' }
-const ANSWER_AT = 1.35, GIFT_AT = 2.60, FLIGHT = .72
+const THINK_AT = 1.05, ANSWER_AT = 1.45, GIFT_AT = 2.60, FLIGHT = .72
 
 /** Reserve both pets' message queues; independent conversations can run together. */
 export function createAsks(bubbles, gifts, pets) {
@@ -29,9 +29,10 @@ export function createAsks(bubbles, gifts, pets) {
         if (!asker || !answerer || ask.token.cancelled) { finish(ask, false); continue }
         if (!ask.token.ready) continue
         ask.age += dt
-        bubbles.present(ask.token, asker.ui, ask.age < ANSWER_AT ? { text: ask.question } : { status: 'idle' })
+        // One speaking/thinking beat at a time also reads in a scaled laptop preview.
+        bubbles.present(ask.token, asker.ui, ask.age < THINK_AT ? { text: ask.question } : { status: 'idle' })
         bubbles.present(ask.token, answerer.ui, ask.age >= ANSWER_AT ? { text: ask.answer }
-          : { status: ask.age >= .55 ? 'working' : 'idle' })
+          : { status: ask.age >= THINK_AT ? 'working' : 'idle' })
         if (!ask.kind && ask.age >= GIFT_AT) { finish(ask, true); continue }
         if (ask.kind && ask.age >= GIFT_AT && !ask.flight) {
           // The answer names the useful thing; keep the dot itself unlabelled and readable.
