@@ -7,6 +7,7 @@ export const CHUNK_W = 14
 export const WALK_SPEED = 4 // u/s on a seated (visible) chunk: ~3.5 s per pane
 export const FAST_FORWARD = 4 // gap chunks nobody shows are crossed 4x faster
 export const KINDS = ['skill', 'memory', 'technique', 'resource']
+export const DISPLAY_DELAY_MS = 250 // the shared timeline every pane draws at (owner included)
 const DOT_COLORS = { skill: '#ffcd78', memory: '#9be5d5', technique: '#d8d1fb', resource: '#ffc88a' }
 const PALETTE = ['#6d99e5', '#df706d', '#80b291', '#e3a857', '#a98bd8', '#5fb7b0', '#d8799f', '#8fa65a']
 const mod = (n, d) => ((n % d) + d) % d
@@ -26,6 +27,27 @@ export function fnv1a(text) {
   return h >>> 0
 }
 export const colorFor = id => PALETTE[fnv1a(id) % PALETTE.length]
+
+/** Item ids read as short human titles: 'gh-address-comments' -> 'address comments' (max ~22 chars). */
+export function shortTitle(text, max = 22) {
+  let s = String(text || '').trim().replace(/^(skill|memory|technique|resource):/i, '')
+  if (!/\s/.test(s)) s = s.replace(/[-_.]+/g, ' ') // slugs only; natural titles keep their hyphens
+  s = s.replace(/^(gh|github|git|codex|petpack|skill|note)\s+/i, '').replace(/\s+/g, ' ').trim()
+  return clip(s, max)
+}
+/** Bubble text: one line, cut at a word boundary. */
+export function bubbleText(text, max = 44) {
+  let s = String(text || '').replace(/\s+/g, ' ').trim()
+  const slug = s.match(/^([a-z0-9]+(?:[-_][a-z0-9]+)+):\s+(.+)$/i) // tier-1 "slug: summary"
+  if (slug) s = slug[2]
+  return clip(s, max)
+}
+function clip(s, max) {
+  if (s.length <= max) return s
+  const cut = s.slice(0, max - 1)
+  const space = cut.lastIndexOf(' ')
+  return `${(space > max * 0.5 ? cut.slice(0, space) : cut).replace(/[\s,.;:-]+$/, '')}…`
+}
 
 /** One giver per (skill, receiver): the holder with the lowest fnv1a(skill|receiver|giver). */
 export function pickGiver(skill, receiver, holders) {
@@ -210,7 +232,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
 
   function makeAgent({ id, name, color, kind, home, isMe = false, isBot = false, spriteUrl = null, skills = [], catalog = [] }) {
     const spot = homeSpot(home)
-    return { id, name, color, kind, home, isMe, isBot, spriteUrl, skills: skills.slice(), catalog,
+    return { id, name, color, kind, home, isMe, isBot, spriteUrl, skills: skills.slice(), catalog, hist: [],
       x: spot.x, z: spot.z, route: [], walk: null, facing: 1, speed: 0, hurry: false,
       mode: 'home', job: null, anim: null, animUntil: 0, wanderAt: 0, visitAt: 45 + random() * 45,
       pauseUntil: 0, faceTo: null, giftBusy: false, giftReadyAt: 4, botErrandAt: 20 + random() * 25,
@@ -219,7 +241,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   function homeSpot(chunk) {
     const c = chunk * CHUNK_W
     const options = [{ x: c - 4 + random() * 2, z: ROAD_Z }, { x: c + 2.5 + random() * 2, z: ROAD_Z },
-      { x: c - 1.4 + random() * 2.8, z: ROAD_Z + 0.8 + random() * 1.6 }, { x: c - 5 + random() * 10, z: ROAD_Z - 0.6 + random() * 1.2 }]
+      { x: c - 1.4 + random() * 2.8, z: ROAD_Z + 0.6 + random() * 0.6 }, { x: c - 5 + random() * 10, z: ROAD_Z - 0.6 + random() * 1.2 }]
     return options[Math.floor(random() * options.length)]
   }
   const seatedChunks = () => {
@@ -373,11 +395,11 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     }
   }
   function showFx(kind, p) {
-    if (kind === 'gift' || kind === 'fetch') emit('gift', p.src, p.dst, { label: p.label || '', color: DOT_COLORS[p.dot] || DOT_COLORS.skill, kind: p.dot })
-    else if (kind === 'ask') emit('ask', p.src, p.dst, { question: p.question, answer: p.answer, kind: p.dot || undefined, label: p.label || '' })
-    else if (kind === 'say' || kind === 'learned' || kind === 'wave' || kind === 'seek' || kind === 'pulse' || kind === 'think') {
-      if (p.text && p.src) emit('say', p.src, p.text)
-    }
+    // Text only for the moments that matter: the question, the answer and "learned X".
+    if (kind === 'gift' || kind === 'fetch') emit('gift', p.src, p.dst, { label: '', color: DOT_COLORS[p.dot] || DOT_COLORS.skill, kind: p.dot })
+    else if (kind === 'ask') emit('ask', p.src, p.dst, { question: bubbleText(p.question, 44), answer: bubbleText(p.answer, 44), kind: p.dot || undefined, label: '' })
+    else if ((kind === 'learned' || kind === 'say') && p.text && p.src) emit('say', p.src, bubbleText(p.text, 30))
+    else if (kind === 'wave' && p.src && agents.has(p.src)) setAnim(agents.get(p.src), 'wave', 1.4)
     if (kind === 'learned' && p.src && p.skill) {
       const peer = peers.get(p.src)
       if (peer && !peer.skills.some(s => s.name === p.skill.name)) peer.skills.push(p.skill)
@@ -434,7 +456,42 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     if (!force && time - lastSent.at < gap && key === lastSent.key) return
     if (!force && !moving && key === lastSent.key && time - lastSent.at < 1) return
     lastSent = { at: time, key }
-    send({ t: 'state', x: round(mine.x), z: round(mine.z), facing: mine.facing, anim, status: mine.status })
+    const pose = { x: round(mine.x), z: round(mine.z), facing: mine.facing, anim, status: mine.status }
+    // The timestamped pose travels as fx (forwarded at once, fields intact) so every pane, the owner's
+    // included, can draw it on one shared timeline; state keeps the relay's own bookkeeping current.
+    send({ t: 'fx', kind: 'pose', ts: wall(), ...pose })
+    if (force || !moving || time - lastStateAt >= 0.5) { lastStateAt = time; send({ t: 'state', ...pose }) }
+  }
+  let lastStateAt = -Infinity
+  // ---- one shared timeline: every pane draws every pet at (synced now - DISPLAY_DELAY) ----
+  function syncClocks() {
+    if (!online) return
+    for (const peer of peers.values()) {
+      if (!peer.online) continue
+      const due = peer.clock.samples.length < 4 ? 1.5 : 10
+      if (time - peer.clock.sentAt < due) continue
+      peer.clock.sentAt = time
+      send({ t: 'fx', kind: 'clock', dst: peer.id, t0: wall() })
+    }
+  }
+  function onClock(from, p) {
+    if (p.dst !== myId) return
+    if (p.t1 == null) { send({ t: 'fx', kind: 'clock', dst: from, t0: p.t0, t1: wall() }); return }
+    const peer = peers.get(from)
+    if (!peer || !Number.isFinite(p.t0) || !Number.isFinite(p.t1)) return
+    const t2 = wall()
+    const rtt = t2 - p.t0
+    if (rtt < 0 || rtt > 10000) return
+    peer.clock.samples.push({ rtt, offset: p.t1 - (p.t0 + t2) / 2 })
+    if (peer.clock.samples.length > 8) peer.clock.samples.shift()
+    // The lowest round trip gives the tightest offset estimate (NTP-style).
+    peer.clock.offset = peer.clock.samples.reduce((a, b) => (b.rtt < a.rtt ? b : a)).offset
+  }
+  function onPose(from, p) {
+    const peer = peers.get(from)
+    if (!peer || !Number.isFinite(p.x) || !Number.isFinite(p.z) || !Number.isFinite(p.ts)) return
+    peer.posed = true
+    pushSample(peer, p, p.ts - peer.clock.offset)
   }
   const round = v => Math.round(v * 1000) / 1000
   function hello() {
@@ -449,7 +506,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     let peer = peers.get(p.id)
     if (!peer) {
       peer = { id: p.id, name: p.name || 'pet', color: p.color || colorFor(p.id), seat: p.seat ?? null, dock: p.dock,
-        skills: [], catalog: [], sprite: null, status: 'idle', samples: [], online: isOnline, lastSeen: 0, joinedAt: time }
+        skills: [], catalog: [], sprite: null, status: 'idle', samples: [], online: isOnline, lastSeen: 0, joinedAt: time,
+        posed: false, clock: { offset: 0, samples: [], sentAt: -Infinity } }
       peers.set(p.id, peer)
     }
     if (p.name) peer.name = p.name
@@ -466,10 +524,15 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     seatedCache = null
     return peer
   }
-  function pushSample(peer, s) {
-    peer.samples.push({ at: time, x: s.x, z: s.z, facing: s.facing === -1 ? -1 : 1, anim: s.anim || 'idle' })
-    if (peer.samples.length > 30) peer.samples.splice(0, peer.samples.length - 30)
+  function pushSample(peer, s, ts = wall() - 150) {
     if (s.status) peer.status = s.status
+    const list = peer.samples
+    const last = list.at(-1)
+    if (last && ts <= last.ts) return // stale or reordered
+    // After a 1 Hz rest, hold the old spot until just before the new sample, so a start isn't smeared.
+    if (last && ts - last.ts > 300) list.push({ ...last, ts: ts - 100 })
+    list.push({ ts, x: s.x, z: s.z, facing: s.facing === -1 ? -1 : 1, anim: s.anim || 'idle' })
+    if (list.length > 40) list.splice(0, list.length - 40)
   }
   function handle(msg) {
     if (!msg || typeof msg !== 'object') return
@@ -516,7 +579,9 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         for (const s of msg.pets || []) {
           if (s.id === myId) continue
           const peer = peers.get(s.id) || upsertPeer({ id: s.id }, true)
-          if (peer) pushSample(peer, s)
+          if (!peer) continue
+          if (peer.posed) { if (s.status) peer.status = s.status } // timestamped poses carry the position
+          else pushSample(peer, s)
         }
         break
       }
@@ -553,6 +618,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       case 'gift': receiveGift(msg); break
       case 'fx': {
         const { t, v, kind, from, id, ...payload } = msg
+        if (kind === 'pose') { onPose(from, payload); break }
+        if (kind === 'clock') { onClock(from, payload); break }
         if (!payload.src) payload.src = from
         showFx(kind, payload)
         break
@@ -661,7 +728,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     } catch (error) { result = { installed: false, reason: String(error?.message || error) } }
     if (!mine.skills.some(s => s.name === skill.name)) mine.skills.push({ id: skill.id || skill.name, name: skill.name, description: skill.description || '' })
     setAnim(mine, 'jump', 1.1)
-    fx('learned', { src: myId, text: `learned ${skill.name}`, skill: { id: skill.id || skill.name, name: skill.name, description: skill.description || '' } })
+    fx('learned', { src: myId, text: `learned ${shortTitle(skill.name)}`, skill: { id: skill.id || skill.name, name: skill.name, description: skill.description || '' } })
     emit('roster')
     return result
   }
@@ -696,12 +763,12 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       send({ t: 'fetch', fid, owner: owner.id, ref, as })
     })
   }
-  function errandTo(agent, targetId, { kind, label, onArrive, landmarkKind } = {}) {
+  function errandTo(agent, targetId, { kind, label, onArrive, landmarkKind, quiet = false } = {}) {
     // Walk to the live position of whoever owns it; away owners -> that kind's landmark.
     return startJob(agent, 'errand', async job => {
       const target = member(targetId)
       const reachable = target && target.online
-      if (reachable) fx('seek', { src: agent.id, dst: targetId, text: `looking for ${target.name}` })
+      if (reachable) fx('seek', { src: agent.id, dst: targetId }) // the walk itself says it
       const spot = reachable ? sideSpot(agent, () => member(targetId)) : (() => {
         const lm = meetLandmark(landmarkKind || kind, chunkOf(agent.x))
         return { x: lm.x - 1, z: lm.z }
@@ -735,7 +802,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       if (!String(query).trim()) throw new Error('query is required')
       const results = searchCatalogs(query, members(), { kind: KINDS.includes(kind) ? kind : undefined, limit, now: wall() })
       const owners = new Set(results.map(r => r.owner))
-      for (const m of members()) if (owners.has(m.name)) fx('pulse', { src: m.id, text: `✦ ${results.find(r => r.owner === m.name).title}`.slice(0, 40) })
+      for (const m of members()) if (owners.has(m.name)) fx('pulse', { src: m.id })
       return results
     },
     async petpack_get({ id } = {}) {
@@ -747,8 +814,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       const content = fetchItem(owner, item.ref, as)
       errandTo(mine, owner.id, { kind: item.kind, label: item.title, onArrive: async () => {
         await content
-        if (owner.online) fx('fetch', { src: owner.id, dst: myId, label: item.title, dot: item.kind })
-        else fx('say', { src: myId, text: `picked up ${item.title}`.slice(0, 40) })
+        if (owner.online) { fx('fetch', { src: owner.id, dst: myId, dot: item.kind }); await sleep(1.4) }
+        fx('learned', { src: myId, text: `learned ${shortTitle(item.title)}` })
       } })
       const result = await content
       if (!result?.ok) return { kind: item.kind, title: item.title, owner: owner.name, text: '', error: result?.reason || `${owner.name} is away` }
@@ -789,7 +856,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       } catch (error) { result = { installed: false, reason: String(error?.message || error) } }
       fx('gift', { src: owner.online && member(owner.id) ? owner.id : myId, dst: myId, label: item.title, dot: item.kind })
       setAnim(mine, 'jump', 1.1)
-      fx('learned', { src: myId, text: `learned ${item.title}`.slice(0, 40) })
+      fx('learned', { src: myId, text: `learned ${shortTitle(item.title)}` })
       return { installed: !!result?.installed, path: result?.path, ...(result?.reason ? { reason: result.reason } : {}) }
     },
     async petpack_ask({ question = '', to, kind } = {}) {
@@ -833,7 +900,15 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         answer = msg
         pendingAsk.delete(qid)
         const share = msg.share || null
-        settle({ answered_by: target.name, answer: String(msg.text || ''), dot: share ? { kind: share.kind, title: share.title, id: share.ref ? `${target.id}/${share.ref}` : undefined } : null })
+        const result = { answered_by: target.name, answer: String(msg.text || ''),
+          dot: share ? { kind: share.kind, title: share.title, id: share.ref ? `${target.id}/${share.ref}` : undefined } : null }
+        // The dot lands for real: adopt what the answer carries (FSD, no approval), then return.
+        if (agent.isMe && msg.ok !== false && (share || msg.pkg)) {
+          adopt(target, share, msg.pkg).then(inst => {
+            if (inst) { result.installed = { path: inst.path }; state.adopted = inst }
+            settle(result)
+          }, () => settle(result))
+        } else settle(result)
       },
     }
     pendingAsk.set(qid, state)
@@ -841,7 +916,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     if (agents.has(target.id)) botAnswer(agents.get(target.id), { qid, from: agent.id, question, kind, meet: lm })
     else if (agent.isMe) send({ t: 'ask', qid, to: target.id, question, kind: kind || route.item?.kind || null, meet: { x: lm.x, z: lm.z } })
     startJob(agent, 'errand', async job => {
-      fx('seek', { src: agent.id, dst: target.id, text: `asking ${target.name}` })
+      fx('seek', { src: agent.id, dst: target.id })
       const side = agent.x < lm.x ? -1 : 1 // arrive on our own side; the answerer takes the other
       await walkTo(agent, { x: lm.x + side * 1.1, z: lm.z }, job, { timeout: 45 })
       if (job.cancelled) return
@@ -860,7 +935,14 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       const text = answer ? String(answer.text || '').replace(/\s+/g, ' ').slice(0, 90) : `${target.name} couldn't answer in time.`
       fx('ask', { src: agent.id, dst: target.id, question: question.slice(0, 90), answer: text,
         dot: KINDS.includes(shareKind) ? shareKind : null, label: answer?.share?.title || '' })
-      await sleep(4.2, job)
+      await sleep(3.6, job)
+      if (state.adopted && !job.cancelled) {
+        const a = state.adopted
+        fx('learned', { src: agent.id, text: `learned ${shortTitle(a.title)}`,
+          ...(a.kind === 'skill' && a.skill ? { skill: a.skill } : {}) })
+        setAnim(agent, 'jump', 1.1)
+        await sleep(1.2, job)
+      }
       if (!job.cancelled) await goHome(agent, job)
     })
     const timer = setTimeoutSafe(() => {
@@ -868,6 +950,34 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     }, 45000)
     return done.then(r => { clearTimeoutSafe(timer); return r })
   }
+  /** Install what an answer hands over: its inline pkg, else the owner's item by ref, else the shared body. */
+  async function adopt(owner, share, pkg) {
+    if (agents.get(owner.id)?.isBot) return null // demo bots never write into the Codex home
+    const kind = share?.kind || pkg?.kind || 'memory'
+    const title = share?.title || pkg?.title || pkg?.name || 'note'
+    let content = pkg && (Array.isArray(pkg.files) || pkg.text || pkg.command || pkg.url) ? pkg : null
+    if (!content && share?.ref) {
+      const r = await Promise.race([fetchItem(owner, share.ref, kind === 'skill' ? 'pkg' : 'text'),
+        new Promise(resolve => setTimeoutSafe(() => resolve(null), 6000))])
+      if (r?.ok) content = r.pkg || { text: r.text }
+    }
+    if (!content && share?.body) content = { text: `# ${title}\n\n${share.body}\n` }
+    if (!content) return null
+    const input = { ...content, kind, title, ref: share?.ref || content.ref || null, owner: owner.name }
+    let result
+    try {
+      result = bridge.installItem ? await bridge.installItem(input, owner.name)
+        : kind === 'skill' ? await bridge.installSkill?.(content, owner.name) : null
+    } catch { result = null }
+    if (!result?.installed) return null
+    let skill = null
+    if (kind === 'skill') {
+      skill = { id: content.id || content.name || title, name: content.name || title, description: content.description || share?.summary || '' }
+      if (!mine.skills.some(s => s.name === skill.name)) mine.skills.push(skill)
+    }
+    return { path: result.path, kind, title, skill }
+  }
+
   /** Bots answer tier 1 only: no exec, ever. */
   function botAnswer(bot, { qid, from, question, kind, meet }) {
     const result = tier1Answer(question, kind, bot.catalog, { strict: false }) || { ok: true, text: `${bot.name} has nothing on that yet.` }
@@ -916,7 +1026,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     agent.giftBusy = true
     const log = giftLog.get(receiverId) || { last: -Infinity, count: 0 }
     log.last = time; giftLog.set(receiverId, log)
-    errandTo(agent, receiverId, { kind: 'skill', label: skill.name, onArrive: async () => {
+    errandTo(agent, receiverId, { kind: 'skill', label: skill.name, quiet: true, onArrive: async () => {
       const receiver = member(receiverId)
       if (!receiver) return
       fx('gift', { src: agent.id, dst: receiverId, label: skill.name, dot: 'skill' })
@@ -925,7 +1035,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         await sleep(1.4)
         if (!bot.skills.some(s => s.name === skill.name)) bot.skills.push({ ...skill })
         setAnim(bot, 'jump', 1)
-        showFx('learned', { src: bot.id, text: `learned ${skill.name}` })
+        showFx('learned', { src: bot.id, text: `learned ${shortTitle(skill.name)}` })
       } else if (receiverId === myId) {
         await sleep(1.4)
         const item = agent.catalog.find(i => i.kind === 'skill' && i.title === skill.name)
@@ -949,11 +1059,11 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     const target = others.length && random() < 0.7 ? others[Math.floor(random() * others.length)] : null
     startJob(agent, 'visit', async job => {
       if (target) {
-        fx('seek', { src: agent.id, dst: target.id, text: `visiting ${target.name}` })
+        fx('seek', { src: agent.id, dst: target.id })
         const ok = await walkTo(agent, sideSpot(agent, () => member(target.id)), job, { timeout: 40 })
         if (job.cancelled) return
         agent.faceTo = target.id
-        if (ok) { setAnim(agent, 'wave', 1.6); fx('say', { src: agent.id, text: `hi ${target.name}!` }) }
+        if (ok) { setAnim(agent, 'wave', 1.6); fx('wave', { src: agent.id, dst: target.id }) }
       } else {
         const home = agent.isMe ? mySeat : agent.home
         const lm = landmarkOf(home + (random() < 0.5 ? -1 : 1))
@@ -975,7 +1085,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       errandTo(bot, myId, { kind: item.kind, label: item.title, onArrive: async () => {
         fx('fetch', { src: myId, dst: bot.id, label: item.title, dot: item.kind })
         await sleep(1.3)
-        showFx('say', { src: bot.id, text: `thanks for ${item.title}!`.slice(0, 40) })
+        showFx('learned', { src: bot.id, text: `learned ${shortTitle(item.title)}` })
       } })
     } else {
       const q = BOT_QUESTIONS[Math.floor(random() * BOT_QUESTIONS.length)]
@@ -1049,12 +1159,14 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     for (const w of [...waits]) if (time >= w.at || w.job?.cancelled) { waits.delete(w); w.resolve(!w.job?.cancelled) }
     for (const agent of agents.values()) {
       step(agent, dt)
+      record(agent)
       idle(agent)
       if (agent.isBot) { autoGift(agent); botErrand(agent); maybeVisit(agent) }
     }
     if (online || bots().length) autoGift(mine)
     if (!config.noVisits) maybeVisit(mine)
     sendState()
+    syncClocks()
     catalogTimer += dt
     if (catalogTimer > 30) { catalogTimer = 0; refreshCatalog() }
     if (catalogDirty && online && time - lastCatalogSent >= 5) {
@@ -1065,32 +1177,44 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   }
 
   /** Render list: own agent and bots exact, peers interpolated 150 ms behind. */
+  /** Render list. Every pet, our own included, is drawn at (synced now - DISPLAY_DELAY), so the panes
+   *  on both sides of a seam show the same position at the same wall time: one sprite across the bezel. */
   function pets() {
     const out = []
+    const at = wall() - DISPLAY_DELAY_MS
     for (const a of agents.values()) {
+      const s = a.hist.length ? sampleAt(a.hist, at) : { x: a.x, z: a.z, facing: a.facing, anim: renderAnim(a), speed: 0 }
       out.push({ id: a.id, displayName: a.name, color: a.color, kind: a.kind, spriteUrl: a.spriteUrl, atlas: a.atlas || null, isMe: a.isMe,
-        skillCount: a.skills.length, x: a.x, z: a.z, facing: a.facing, speed: a.speed, anim: renderAnim(a), status: a.status })
+        local: true, skillCount: a.skills.length, ...s, status: a.status })
     }
     for (const p of peers.values()) {
       if (!p.online || !p.samples.length) continue
-      const s = sampleAt(p, time - 0.15)
+      const s = sampleAt(p.samples, at)
       out.push({ id: p.id, displayName: p.name, color: p.color, kind: 'cat', spriteUrl: p.sprite || null, isMe: false,
-        skillCount: p.skills.length, ...s, status: p.status })
+        local: false, skillCount: p.skills.length, ...s, status: p.status })
     }
     return out
   }
-  function sampleAt(peer, at) {
-    const list = peer.samples
+  function sampleAt(list, at) {
     let i = list.length - 1
-    while (i > 0 && list[i - 1].at > at) i--
+    while (i > 0 && list[i - 1].ts > at) i--
     const b = list[i], a = list[i - 1]
-    if (!a || at >= b.at) return { x: b.x, z: b.z, facing: b.facing, anim: b.anim, speed: 0 }
-    if (at <= a.at) return { x: a.x, z: a.z, facing: a.facing, anim: a.anim, speed: 0 }
-    const f = (at - a.at) / Math.max(1e-6, b.at - a.at)
-    const span = Math.max(1e-6, b.at - a.at)
+    if (!a || at >= b.ts) return { x: b.x, z: b.z, facing: b.facing, anim: b.anim, speed: 0 }
+    if (at <= a.ts) return { x: a.x, z: a.z, facing: a.facing, anim: a.anim, speed: 0 }
+    const span = Math.max(1e-6, b.ts - a.ts)
+    const f = (at - a.ts) / span
     const d = Math.hypot(b.x - a.x, b.z - a.z)
-    return { x: a.x + (b.x - a.x) * f, z: a.z + (b.z - a.z) * f, facing: Math.abs(b.x - a.x) > 1e-3 ? (b.x > a.x ? 1 : -1) : b.facing,
-      anim: d > 0.01 ? 'run' : b.anim, speed: d > 0.01 ? Math.min(8, d / span) : 0 }
+    const moving = d > 1e-3
+    return { x: a.x + (b.x - a.x) * f, z: a.z + (b.z - a.z) * f, facing: Math.abs(b.x - a.x) > 1e-4 ? (b.x > a.x ? 1 : -1) : b.facing,
+      anim: moving ? 'run' : b.anim, speed: moving ? Math.min(20, d / (span / 1000)) : 0 }
+  }
+  function record(agent) {
+    const now = wall()
+    const hist = agent.hist
+    const last = hist.at(-1)
+    if (last && now <= last.ts) { Object.assign(last, { x: agent.x, z: agent.z, facing: agent.facing, anim: renderAnim(agent) }); return }
+    hist.push({ ts: now, x: agent.x, z: agent.z, facing: agent.facing, anim: renderAnim(agent) })
+    while (hist.length > 2 && now - hist[1].ts > DISPLAY_DELAY_MS + 1500) hist.shift()
   }
 
   async function call(tool, args = {}) {
@@ -1102,6 +1226,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   return {
     tick, handle, call, setStatus, netStatus, hello, pets, addBots, removeBots, refreshCatalog,
     moveSeatRequest(delta) { if (online) send({ t: 'seat', op: 'move', to: mySeat + delta }) },
+    isSeated(chunk) { for (const [id, seat] of seats) if (id !== myId && seat === chunk) return true; return false },
     get time() { return time },
     get seat() { return mySeat },
     get room() { return room },

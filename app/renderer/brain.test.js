@@ -54,18 +54,41 @@ test('ask routes to the best item owner; below 0.3 to the nearest free peer; `to
   assert.equal(vague.target.id, 'rex', 'Bea is working, so the free peer answers')
   assert.equal(routeAsk({ question: 'how do we ship to Azure?', to: 'Bea' }, peers, 0).target.id, 'bea')
 
-  const { brain, net } = makeBrain()
+  const installs = []
+  const bridge = { installItem: async (input, from) => { installs.push({ input, from }); return { installed: true, path: `/codex/skills/petpack-${input.name || input.title}` } } }
+  const { brain, net } = makeBrain({ bridge })
   welcome(brain)
   const pending = brain.call('petpack_ask', { question: 'how do we ship to Azure?', kind: 'skill' })
   await flush()
   const ask = net.last('ask')
   assert.equal(ask.to, 'rex')
   assert.equal(ask.question, 'how do we ship to Azure?')
+  // The answer names an item by ref only: the asker fetches the package and adopts it before returning.
   brain.handle({ t: 'answer', from: 'rex', qid: ask.qid, ok: true, text: 'Use my azure-deploy skill.', share: { kind: 'skill', title: 'azure-deploy', ref: 'skill:azure-deploy' } })
+  await flush()
+  const fetch = net.last('fetch')
+  assert.deepEqual([fetch.owner, fetch.ref, fetch.as], ['rex', 'skill:azure-deploy', 'pkg'])
+  brain.handle({ t: 'fetched', fid: fetch.fid, ok: true, sha: 's', pkg: { kind: 'skill', id: 'azure-deploy', name: 'azure-deploy', description: 'ship', files: [{ path: 'SKILL.md', b64: 'eA==' }] } })
   const result = await pending
   assert.equal(result.answered_by, 'Rex')
   assert.match(result.answer, /azure-deploy/)
   assert.equal(result.dot.id, 'rex/skill:azure-deploy')
+  assert.deepEqual(result.installed, { path: '/codex/skills/petpack-azure-deploy' })
+  assert.equal(installs[0].from, 'Rex')
+  assert.ok(brain.me.skills.some(s => s.name === 'azure-deploy'))
+
+  // A tier-2 answer carries its note inline: installed at once, no fetch.
+  const fetches = net.sent.filter(m => m.t === 'fetch').length
+  const second = brain.call('petpack_ask', { question: 'anything on pane alignment?', to: 'Bea' })
+  await flush()
+  const ask2 = net.last('ask')
+  brain.handle({ t: 'answer', from: 'bea', qid: ask2.qid, ok: true, text: 'Use tray Align.', share: { kind: 'technique', title: 'pane alignment', body: 'Tray Align moves 8 DIP.' },
+    pkg: { kind: 'technique', ref: null, title: 'pane alignment', text: '# pane alignment\n\nTray Align moves 8 DIP.\n' } })
+  const r2 = await second
+  assert.equal(r2.installed.path, '/codex/skills/petpack-pane alignment')
+  assert.equal(installs[1].input.kind, 'technique')
+  assert.match(installs[1].input.text, /Tray Align/)
+  assert.equal(net.sent.filter(m => m.t === 'fetch').length, fetches)
 })
 
 test('an errand crosses every intermediate chunk and fast-forwards through unseated ones', async () => {

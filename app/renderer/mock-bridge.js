@@ -53,7 +53,20 @@ export function installMockBridge(target = window) {
   const bridge = {
     config,
     async getMe() {
-      return { id, petName: petName.toLowerCase(), displayName: petName, spriteUrl: null,
+      const spriteUrl = params.get('sprite') || null
+      let atlas = null
+      if (spriteUrl) {
+        // Like the shell: an 8-column grid of any cell size; real sheets are often 8x11 (top 9 rows standard).
+        try {
+          const image = new Image()
+          image.src = spriteUrl
+          await image.decode()
+          const cellW = Math.floor(image.naturalWidth / 8)
+          const rows = Math.max(9, Math.round(image.naturalHeight / (cellW * 208 / 192)))
+          atlas = { cols: 8, rows, cellW, cellH: Math.floor(image.naturalHeight / rows) }
+        } catch { atlas = null }
+      }
+      return { id, petName: petName.toLowerCase(), displayName: petName, spriteUrl, atlas,
         skills: items.filter(i => i.kind === 'skill').map(i => ({ id: i.title, name: i.title, description: i.summary })) }
     },
     onStatus(cb) { statusListeners.add(cb); queueMicrotask(() => cb({ status, at: Date.now() })); return () => statusListeners.delete(cb) },
