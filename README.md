@@ -90,7 +90,8 @@ example, one Codex session built the gift effect in `app/renderer/world/gift.js`
 - All world art, built-in pets and effects are procedural and were made today.
 - Codex pets belong to their owners. petpack reads the standard pet format (`pet.json` + `spritesheet.webp`).
 
-Made at the DevDay Exchange Community Hackathon, London, 1 November 2026.
+Made at the DevDay Exchange Community Hackathon, London, 1 November 2026, by Lindell Cumes and
+[George Drury](https://github.com/georgedrury), with Codex.
 
 ## Licence
 
