@@ -397,7 +397,7 @@ function panelPeople() {
     const seat = seats?.get?.(p.id)
     const side = seat === brain.seat - 1 ? 'left' : seat === brain.seat + 1 ? 'right' : null
     const spriteUrl = p.spriteUrl && !p.local ? relayAsset(net?.url || relays[0], p.spriteUrl) : (p.spriteUrl || null)
-    return { id: p.id, name: p.displayName, spriteUrl, atlas: p.atlas || null, status: p.status || 'idle', dnd: !!p.dnd, side }
+    return { id: p.id, name: p.displayName, spriteUrl, atlas: p.atlas || null, status: p.status || 'idle', dnd: !!p.dnd, side, bot: !!p.local }
   })
 }
 let peopleSig = ''

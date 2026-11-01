@@ -99,6 +99,11 @@ async function uninstall(args) {
     } catch {}
   }
 
+  // The Codex pet goes back to Codex (L3a; a running pane already did this as it quit).
+  try {
+    const core = await importRoot('app/codex/index.js')
+    if (typeof core.releasePet === 'function' && await core.releasePet({ userData, cacheDir: path.join(userData, 'pets') })) done.push('gave the pet back to Codex')
+  } catch (error) { console.error(`petpack: couldn't hand the pet back to Codex (${error.message})`) }
   // Every Codex home petpack registers in (CODEX_HOME, %USERPROFILE%\.codex, ~/.codex).
   let targets = [{ home: server.codexHomeDir(), file: path.join(server.codexHomeDir(), 'config.toml') }]
   try { targets = (await importRoot('app/mcp/register.js')).codexConfigTargets() } catch {}
