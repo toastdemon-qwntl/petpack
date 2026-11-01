@@ -3,8 +3,14 @@
 // readStatus(opts) -> Promise<{ status, at, session, cwd }>   one look at the rollouts right now
 // watchStatus(cb, opts) -> stop()   polls every opts.intervalMs (1000); calls cb({ status, at, session, cwd }) on the
 //                                   first poll and whenever the status changes. stop.current() is the last status.
-// createStatusTracker(opts) -> { poll(): Promise<status>, sessions(): [{ session, cwd, status, at }], files: Map }
+// createStatusTracker(opts) -> { poll(): Promise<status>, sessions(), task(), files: Map }
 //                                   the incremental reader both use; sessions() is the per-rollout view.
+//   opts.onEvent(e): e = { type: 'started'|'waiting'|'done'|'failed', title, session, threadId, cwd, at } on each
+//                    session's status transition (not for the state found on the first poll).
+// currentTask(opts) -> Promise<{ title (<= 48 chars), status, since, sessions (live count), approvalPending,
+//                     session, threadId, cwd }>. title = the thread's name from <home>/session_index.jsonl, else the
+//                     latest prompt, compressed.
+// compressTitle(text, max = 48) -> one-line title.
 //
 // status: 'working' | 'waiting' | 'done' | 'failed' | 'idle'; at: ms epoch of the event that set it.
 // opts: { homes?, home?, env?, intervalMs?, now?: () => ms }
@@ -54,6 +60,29 @@ const RX_TS = /^\{"timestamp":"([^"]+)"/
 const RX_TURN = /"turn_id":"([^"]+)"/
 const RX_CALL = /"call_id":"([^"]+)"/
 
+// What the person typed: the user message's text, minus the context Codex injects (AGENTS.md, environment, etc.).
+function userText (line) {
+  if (line.length > 256 * 1024) return null
+  try {
+    const p = JSON.parse(line).payload || {}
+    const parts = Array.isArray(p.content) ? p.content : []
+    const text = parts.filter((c) => c && (c.type === 'input_text' || c.type === 'text') && typeof c.text === 'string')
+      .map((c) => c.text).join('\n').trim()
+    if (!text || text.startsWith('<') || /^# AGENTS\.md/.test(text) || /^<?(environment_context|user_instructions)/.test(text)) return null
+    return text.slice(0, 400)
+  } catch { return null }
+}
+
+// <= max chars, one line: the first sentence-ish of a prompt.
+export function compressTitle (s, max = 48) {
+  let t = String(s || '').replace(/```[\s\S]*?```/g, ' ').replace(/[`*_#>]+/g, '').replace(/\s+/g, ' ').trim()
+  t = t.replace(/^(please|pls|can you|could you|hey codex,?|codex,?)\s+/i, '')
+  const stop = t.search(/[.?!\n](\s|$)/)
+  if (stop > 12 && stop < max) t = t.slice(0, stop)
+  if (t.length > max) t = t.slice(0, max - 1).replace(/\s+\S*$/, '') + '…'
+  return t ? t[0].toUpperCase() + t.slice(1) : ''
+}
+
 function applyLine (st, line) {
   if (line.length < 20) return
   const head = line.slice(0, 400)
@@ -84,6 +113,12 @@ function applyLine (st, line) {
     }
     return
   }
+  if (kind === 'message') {
+    if (!/"role":"user"/.test(head)) return
+    const text = userText(line)
+    if (text) st.lastPrompt = text
+    return
+  }
   if (kind === 'function_call' || kind === 'custom_tool_call') {
     const needsUser = line.includes('require_escalated') || /"name":"request_user_input/.test(line)
     if (!needsUser) return
@@ -112,8 +147,11 @@ async function readMeta (file) {
     let cwd = null
     const c = /"cwd":("(?:[^"\\]|\\.)*")/.exec(first)
     if (c) try { cwd = JSON.parse(c[1]) } catch {}
-    return { sub, cwd, ok: /"source":/.test(first) || s.includes('\n') }
-  } catch { return { sub: false, cwd: null, ok: false } } finally { await fh?.close().catch(() => {}) }
+    const idm = /"payload":\{[^{}]*?"id":"([0-9a-f-]{20,})"/.exec(first) || /"session_id":"([0-9a-f-]{20,})"/.exec(first)
+    const fromName = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/.exec(file)
+    const threadId = (idm && idm[1]) || (fromName && fromName[1]) || null
+    return { sub, cwd, threadId, ok: /"source":/.test(first) || s.includes('\n') }
+  } catch { return { sub: false, cwd: null, threadId: null, ok: false } } finally { await fh?.close().catch(() => {}) }
 }
 
 async function readAppended (file, st, size) {
@@ -186,27 +224,94 @@ export function createStatusTracker (opts = {}) {
         }
       }
     }
+    const titles = readTitles(homes)
     let best = { status: 'idle', at: 0, session: null, cwd: null }
     for (const [file, st] of files) {
       if (!seen.has(file) || now - st.mtimeMs > HOLD_MS) { files.delete(file); continue }
       if (st.meta?.sub) continue
       const s = fileStatus(st, now)
+      st.title = (st.meta?.threadId && titles.get(st.meta.threadId)) || compressTitle(st.lastPrompt) || null
+      // transitions -> events (none on the first poll: that's the state we found, not something that happened)
+      const prev = st.prevStatus ?? (polled ? 'idle' : s.status)
+      if (s.status !== prev && opts.onEvent) {
+        const type = s.status === 'working' ? (prev === 'waiting' ? null : 'started')
+          : s.status === 'waiting' ? 'waiting' : s.status === 'done' ? 'done' : s.status === 'failed' ? 'failed' : null
+        if (type) {
+          try { opts.onEvent({ type, title: st.title || 'Codex task', session: path.basename(file), threadId: st.meta?.threadId || null, cwd: st.meta?.cwd || null, at: s.at }) } catch {}
+        }
+      }
+      st.prevStatus = s.status
       const better = RANK[s.status] > RANK[best.status] ||
         (RANK[s.status] === RANK[best.status] && (s.at > best.at || (s.status === 'idle' && st.mtimeMs > (best.mtimeMs || 0))))
-      if (better) best = { ...s, session: path.basename(file), cwd: st.meta?.cwd || null, mtimeMs: st.mtimeMs }
+      if (better) best = { ...s, session: path.basename(file), cwd: st.meta?.cwd || null, title: st.title, threadId: st.meta?.threadId || null, mtimeMs: st.mtimeMs }
     }
+    polled = true
     delete best.mtimeMs
     if (!best.at) best.at = now
+    last = best
     return best
   }
-  // Per-session view of the last poll: [{ session, cwd, status, at }], newest first.
+  let polled = false
+  let last = null
+  // Per-session view of the last poll: [{ session, threadId, cwd, title, status, at }], newest first.
   function sessions () {
     const now = nowFn()
     return [...files].filter(([, st]) => !st.meta?.sub)
       .sort((a, b) => b[1].mtimeMs - a[1].mtimeMs)
-      .map(([file, st]) => ({ session: path.basename(file), cwd: st.meta?.cwd || null, ...fileStatus(st, now) }))
+      .map(([file, st]) => ({ session: path.basename(file), threadId: st.meta?.threadId || null, cwd: st.meta?.cwd || null, title: st.title || null, ...fileStatus(st, now) }))
   }
-  return { poll, sessions, files }
+  // What Codex is doing, from the last poll.
+  function task () {
+    const all = sessions()
+    const live = all.filter((s) => s.status === 'working' || s.status === 'waiting')
+    const b = last || { status: 'idle', at: nowFn() }
+    const top = all.find((s) => s.session === b.session) || null
+    return {
+      title: (top && top.title) || null,
+      status: b.status,
+      since: b.at,
+      sessions: live.length,
+      approvalPending: live.some((s) => s.status === 'waiting'),
+      session: b.session || null,
+      threadId: (top && top.threadId) || null,
+      cwd: b.cwd || null
+    }
+  }
+  return { poll, sessions, task, files }
+}
+
+// Thread titles the Codex app and CLI keep in <home>/session_index.jsonl ({ id, thread_name, updated_at } per line).
+const titleCache = new Map()
+function readTitles (homes) {
+  const out = new Map()
+  for (const home of homes) {
+    const file = path.join(home, 'session_index.jsonl')
+    let st
+    try { st = fs.statSync(file) } catch { continue }
+    let hit = titleCache.get(file)
+    if (!hit || hit.mtimeMs !== st.mtimeMs || hit.size !== st.size) {
+      const map = new Map()
+      try {
+        for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+          if (!line) continue
+          try { const e = JSON.parse(line); if (e && e.id && e.thread_name) map.set(e.id, String(e.thread_name)) } catch {}
+        }
+      } catch {}
+      hit = { mtimeMs: st.mtimeMs, size: st.size, map }
+      titleCache.set(file, hit)
+    }
+    for (const [k, v] of hit.map) out.set(k, compressTitle(v))
+  }
+  return out
+}
+
+// Read-only snapshot: { title, status, since, sessions, approvalPending, session, threadId, cwd }.
+export async function currentTask (opts = {}) {
+  try {
+    const t = createStatusTracker(opts)
+    await t.poll()
+    return t.task()
+  } catch { return { title: null, status: 'idle', since: Date.now(), sessions: 0, approvalPending: false, session: null, threadId: null, cwd: null } }
 }
 
 export async function readStatus (opts = {}) {
@@ -234,5 +339,6 @@ export function watchStatus (cb, opts = {}) {
   if (timer.unref && opts.unref !== false) timer.unref()
   const stop = () => { stopped = true; clearInterval(timer) }
   stop.current = () => last
+  stop.tracker = tracker
   return stop
 }

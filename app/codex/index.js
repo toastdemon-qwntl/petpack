@@ -22,10 +22,17 @@
 //   choosePet(idOrPath | null)   Promise<pet>; saves the pick in <userData>/pet-choice.json (beside cacheDir), which
 //                                beats Codex's selection from then on; null follows Codex again. Rejects if unusable.
 //   onPetChange(cb)              cb(pet) after choosePet; returns unsubscribe
+//   onCodexEvent(cb)             cb({ type: 'started'|'waiting'|'done'|'failed', title, session, threadId, cwd, at,
+//                                message: { title: 'Codex finished'|'Codex needs you'|..., body: <task title> } })
+//                                on each live session's transition (not for what was already true at start-up)
+//   currentTask()                Promise<{ title (<= 48 chars: thread name, else the latest prompt), status, since,
+//                                sessions (live count), approvalPending, session, threadId, cwd }>
+//   openCodex({ session|threadId }) Promise<{ ok, url, method }>: opens codex://threads/<id> (or the app)
 //   dispose()                    stops the poller
 // }
-// Module-level listPets(), choosePet(), onPetChange(), currentPet() act on the latest createCodex() instance (the tray
-// imports them). petChoiceFile(cacheDir) / readPetChoice(file) expose where the pick is kept.
+// Module-level listPets(), choosePet(), onPetChange(), currentPet(), onCodexEvent(), currentCodexTask() act on the
+// latest createCodex() instance (the tray imports them). codexEventMessage(e), openCodex(o), codexThreadUrl(s) are
+// plain functions. petChoiceFile(cacheDir) / readPetChoice(file) expose where the pick is kept.
 // opts: { pet?: '--pet <dir|name|file>', home?: pin one Codex home, env?, cacheDir?: where downloaded built-in pet
 //         sheets are cached, fetchPets?: false to never download, intervalMs?: status poll (1000) }
 //
@@ -37,14 +44,28 @@ import { codexHome, codexHomes, existingHomes, agentsSkillsDir } from './home.js
 import { getPet, listPets as listPetFolders, listPetCandidates, checkedPaths, imageInfo, atlasOf, loadBuiltin, selectedPetIds, BUILTIN_PETS, NO_PET } from './pets.js'
 import { listSkills, findSkill, packSkill, parseFrontmatter, skillRoots, PACK_MAX_BYTES } from './skills.js'
 import { installSkill, skillSlug } from './install.js'
-import { readStatus, watchStatus, createStatusTracker } from './status.js'
+import { readStatus, watchStatus, createStatusTracker, currentTask, compressTitle } from './status.js'
+import { openCodex, codexThreadUrl } from './open.js'
+
+// The words the Codex app's pet uses, for an OS notification: { title, body }.
+export function codexEventMessage (e = {}) {
+  const t = e.title || 'Codex task'
+  switch (e.type) {
+    case 'done': return { title: 'Codex finished', body: t }
+    case 'waiting': return { title: 'Codex needs you', body: t }
+    case 'failed': return { title: 'Codex hit an error', body: t }
+    case 'started': return { title: 'Codex is working', body: t }
+    default: return { title: 'Codex', body: t }
+  }
+}
 
 export {
   codexHome, codexHomes, existingHomes, agentsSkillsDir,
   getPet, listPetFolders, listPetCandidates, checkedPaths, imageInfo, atlasOf, loadBuiltin, selectedPetIds, BUILTIN_PETS, NO_PET,
   listSkills, findSkill, packSkill, parseFrontmatter, skillRoots, PACK_MAX_BYTES,
   installSkill, skillSlug,
-  readStatus, watchStatus, createStatusTracker
+  readStatus, watchStatus, createStatusTracker, currentTask, compressTitle,
+  openCodex, codexThreadUrl
 }
 
 export function petChoiceFile (cacheDir) {
@@ -69,6 +90,24 @@ export function createCodex (opts = {}) {
   const petSubs = new Set()
   let stop = null
   let last = null
+  const eventSubs = new Set()
+  function ensureWatcher () {
+    if (stop) return
+    stop = watchStatus((s) => {
+      last = s
+      for (const fn of subs) { try { fn(s) } catch {} }
+    }, {
+      ...ctx,
+      intervalMs: opts.intervalMs,
+      onEvent: (e) => {
+        const ev = { ...e, message: codexEventMessage(e) }
+        for (const fn of eventSubs) { try { fn(ev) } catch {} }
+      }
+    })
+  }
+  function maybeStop () {
+    if (!subs.size && !eventSubs.size && stop) { stop(); stop = null; last = null }
+  }
   const petOpts = (extra = {}) => ({ ...ctx, pet: flagPet, choice: chosen,
     cacheDir: opts.cacheDir, fetch: opts.fetchPets !== false, appAsars: opts.appAsars, ...extra })
 
@@ -134,18 +173,23 @@ export function createCodex (opts = {}) {
     onStatus (cb) {
       subs.add(cb)
       if (last) { try { cb(last) } catch {} }
-      if (!stop) {
-        stop = watchStatus((s) => {
-          last = s
-          for (const fn of subs) { try { fn(s) } catch {} }
-        }, { ...ctx, intervalMs: opts.intervalMs })
-      }
-      return () => {
-        subs.delete(cb)
-        if (!subs.size && stop) { stop(); stop = null; last = null }
-      }
+      ensureWatcher()
+      return () => { subs.delete(cb); maybeStop() }
     },
-    dispose () { subs.clear(); petSubs.clear(); if (stop) { stop(); stop = null } }
+    // cb({ type: 'started'|'waiting'|'done'|'failed', title, session, threadId, cwd, at, message }) on each Codex
+    // session's transition; message = { title, body } for an OS notification. Shares the status poller.
+    onCodexEvent (cb) {
+      eventSubs.add(cb)
+      ensureWatcher()
+      return () => { eventSubs.delete(cb); maybeStop() }
+    },
+    // { title (<= 48 chars), status, since, sessions, approvalPending, session, threadId, cwd }
+    async currentTask () {
+      if (stop && stop.tracker) { if (!last) await stop.tracker.poll(); return stop.tracker.task() }
+      return currentTask(ctx)
+    },
+    openCodex (o = {}) { return openCodex(o) },
+    dispose () { subs.clear(); petSubs.clear(); eventSubs.clear(); if (stop) { stop(); stop = null } }
   }
   current = api
   return api
@@ -155,6 +199,8 @@ export function createCodex (opts = {}) {
 export function listPets (o) { return current ? current.listPets(o) : Promise.resolve([]) }
 export function choosePet (idOrPath) { return current ? current.choosePet(idOrPath) : Promise.reject(new Error('petpack is starting')) }
 export function onPetChange (cb) { return current ? current.onPetChange(cb) : () => {} }
+export function onCodexEvent (cb) { return current ? current.onCodexEvent(cb) : () => {} }
+export function currentCodexTask () { return current ? current.currentTask() : currentTask({}) }
 export function currentPet () { return current ? current.getPet() : Promise.resolve(null) } // null: not started yet
 
 export default createCodex

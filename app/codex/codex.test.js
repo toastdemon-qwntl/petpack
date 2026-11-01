@@ -9,8 +9,9 @@ import { codexHomes, codexHome } from './home.js'
 import { getPet, imageInfo, atlasOf, tuiPetFromToml, appPetFromToml, loadBuiltin } from './pets.js'
 import { listSkills, packSkill, parseFrontmatter } from './skills.js'
 import { installSkill, skillSlug } from './install.js'
-import { readStatus, createStatusTracker, watchStatus } from './status.js'
-import { createCodex } from './index.js'
+import { readStatus, createStatusTracker, watchStatus, currentTask, compressTitle } from './status.js'
+import { createCodex, codexEventMessage } from './index.js'
+import { openCodex, codexThreadUrl } from './open.js'
 
 const made = []
 const tmp = (name) => { const d = fs.mkdtempSync(path.join(os.tmpdir(), `petpack-${name}-`)); made.push(d); return d }
@@ -418,6 +419,75 @@ test('pets: [desktop] selection, the app default pet, cloud ids, picker and save
   assert.equal((await again.getPet()).displayName, 'Other') // follows Codex again (pet_abc123 -> newest local pet)
   assert.equal(fs.existsSync(path.join(ud, 'pet-choice.json')), false)
   codex.dispose(); again.dispose()
+})
+
+const userMsg = (msAgo, text) => line(msAgo, 'response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text }] })
+
+test('task: title from the thread name, else the latest prompt; live counts and approvals', async () => {
+  const home = tmp('task')
+  const id = '01a19767-face-7e51-a985-28abe7a6db26'
+  const f = path.join(sessionsDir(home), `rollout-2026-01-01T00-00-00-${id}.jsonl`)
+  write(f, meta() + userMsg(9000, '# AGENTS.md instructions\n\n<INSTRUCTIONS>x</INSTRUCTIONS>') + userMsg(8900, '<environment_context>cwd</environment_context>') +
+    userMsg(8000, 'please fix the flaky login test in auth.spec.ts and then run the whole suite again to be sure') + started(7000))
+  let t = await currentTask({ homes: [home] })
+  assert.equal(t.status, 'working')
+  assert.equal(t.title, 'Fix the flaky login test in auth.spec.ts and…')
+  assert.ok(t.title.length <= 48)
+  assert.equal(t.sessions, 1)
+  assert.equal(t.approvalPending, false)
+  assert.equal(t.threadId, id)
+  write(path.join(home, 'session_index.jsonl'), JSON.stringify({ id, thread_name: 'Fix flaky login test', updated_at: 'x' }) + '\n')
+  fs.appendFileSync(f, call(5000, 'c1', { cmd: 'sudo rm -rf /tmp/x', sandbox_permissions: 'require_escalated' }))
+  t = await currentTask({ homes: [home] })
+  assert.equal(t.title, 'Fix flaky login test')
+  assert.equal(t.status, 'waiting')
+  assert.equal(t.approvalPending, true)
+  assert.equal(compressTitle('Run the tests. Then deploy.'), 'Run the tests')
+})
+
+test('events: started, waiting, done and failed on transitions only', async () => {
+  const home = tmp('events')
+  rollout(home, 'old', meta() + started(90_000) + complete(60_000)) // already done at start-up: no event
+  const events = []
+  const tracker = createStatusTracker({ homes: [home], onEvent: (e) => events.push(`${e.type}:${e.title}`) })
+  await tracker.poll()
+  assert.deepEqual(events, [])
+  const f = rollout(home, 'new', meta() + userMsg(1000, 'Ship the release notes') + started(900))
+  await tracker.poll()
+  fs.appendFileSync(f, complete(0))
+  await tracker.poll()
+  const g = rollout(home, 'gate', meta() + userMsg(10_000, 'Clean the build dir') + started(9000) + call(8000, 'c7', { cmd: 'rm', sandbox_permissions: 'require_escalated' }))
+  await tracker.poll()
+  fs.appendFileSync(g, output(10, 'c7') + complete(0, 't1', { codex_error_info: 'x', message: 'boom' }))
+  await tracker.poll()
+  assert.deepEqual(events, ['started:Ship the release notes', 'done:Ship the release notes', 'waiting:Clean the build dir', 'failed:Clean the build dir'])
+  assert.deepEqual(codexEventMessage({ type: 'done', title: 'Ship it' }), { title: 'Codex finished', body: 'Ship it' })
+  assert.equal(codexEventMessage({ type: 'waiting' }).title, 'Codex needs you')
+
+  // createCodex: onCodexEvent shares the poller and carries the notification text
+  const home2 = tmp('events2')
+  const codex = createCodex({ home: home2, fetchPets: false, intervalMs: 40 })
+  const got = []
+  const off = codex.onCodexEvent((e) => got.push(e))
+  await new Promise((resolve) => setTimeout(resolve, 120))
+  const h = rollout(home2, 'live', meta() + userMsg(100, 'Write the README') + started(50))
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  fs.appendFileSync(h, complete(0))
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  off(); codex.dispose()
+  assert.deepEqual(got.map((e) => e.type), ['started', 'done'])
+  assert.deepEqual(got[1].message, { title: 'Codex finished', body: 'Write the README' })
+})
+
+test('openCodex: codex:// deep link to the thread, then the app by name', async () => {
+  const id = '01a19767-face-7e51-a985-28abe7a6db26'
+  assert.equal(codexThreadUrl(`/x/rollout-2026-11-01T13-58-56-${id}.jsonl`), `codex://threads/${id}`)
+  assert.equal(codexThreadUrl(null), 'codex://launch')
+  const mac = await openCodex({ session: `rollout-2026-11-01T13-58-56-${id}.jsonl`, platform: 'darwin', dryRun: true })
+  assert.deepEqual(mac.tried[0], ['open', [`codex://threads/${id}`]])
+  assert.deepEqual(mac.tried[1], ['open', ['-a', 'Codex']])
+  const win = await openCodex({ threadId: id, platform: 'win32', dryRun: true })
+  assert.ok(win.tried.some(([c, a]) => c === 'explorer.exe' && a[0].startsWith('shell:AppsFolder\\OpenAI.Codex_')))
 })
 
 test('index: createCodex wires the pieces for main.js', async () => {
