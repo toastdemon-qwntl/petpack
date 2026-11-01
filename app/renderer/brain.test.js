@@ -441,6 +441,39 @@ test('owner-side askFirst and not-shared results; S5 tool shapes (errand_id, cod
   assert.deepEqual(await brain.call('codex_link', { type: 'connected', text: 'Codex is linked' }), { ok: true })
 })
 
+test('registry: resume our place, away agents nap in place, leave without away removes, across seating flips', async () => {
+  const { brain, net } = makeBrain()
+  const seen = []
+  for (const name of ['sleep', 'flip', 'replaced']) brain.on(name, (...a) => seen.push([name, ...a]))
+  brain.handle({ t: 'welcome', room: 'dde-ldn', you: { id: 'me', seat: 0, x: 3.25, z: 2.1, facing: -1, resumed: true, flipped: false, sit: 'side' },
+    peers: [{ ...REX }], away: [],
+    agents: [{ ...REX, online: true, away: false }, { id: 'old', name: 'Old', color: '#888888', sprite: null, seat: null, x: 30, z: 1.5, facing: 1, status: 'idle', lastSeen: 1, online: false, away: true }],
+    seats: { me: 0, rex: 3 }, links: [] })
+  assert.deepEqual([brain.me.x, brain.me.z, brain.me.facing], [3.25, 2.1, -1], 'resumed where it was')
+  const old = brain.pets().find(p => p.id === 'old')
+  assert.deepEqual([old.x, old.away], [30, true])
+  assert.deepEqual(seen.find(e => e[0] === 'sleep'), ['sleep', 'old', true])
+  assert.equal(brain._.member('old').online, false, 'nappers are never routed asks')
+  // Rex leaves for a while: napping at its last place; a probe that leaves without away is gone.
+  brain.handle({ t: 'leave', id: 'rex', away: true, x: 43, z: 1.5, facing: 1, lastSeen: 5 })
+  assert.deepEqual([brain.pets().find(p => p.id === 'rex')?.x, brain.pets().find(p => p.id === 'rex')?.away], [43, true])
+  brain.handle({ t: 'join', peer: { ...REX, x: 43 } })
+  assert.equal(brain.pets().find(p => p.id === 'rex').away, false)
+  assert.ok(seen.some(e => e[0] === 'sleep' && e[1] === 'rex' && e[2] === false), 'woken on return')
+  brain.handle({ t: 'leave', id: 'rex' })
+  assert.equal(brain.pets().find(p => p.id === 'rex'), undefined)
+  // Battleships: we sit across and are the flipped pane.
+  assert.equal(brain.hello().sit, 'side')
+  brain.setSit('across')
+  assert.deepEqual(net.last('sit'), { v: 2, t: 'sit', sit: 'across' })
+  brain.handle({ t: 'seat', seats: { me: 0, bea: 0 }, flipped: { me: true }, across: [['bea', 'me']], links: [], why: 'move' })
+  assert.deepEqual([brain.flipped, brain.acrossWith], [true, 'bea'])
+  assert.ok(seen.some(e => e[0] === 'flip' && e[1] === true))
+  brain.netStatus('replaced')
+  assert.deepEqual([brain.online, brain.replaced], [false, true])
+  assert.ok(seen.some(e => e[0] === 'replaced'))
+})
+
 test('search and meet helpers', () => {
   const owners = [{ id: 'rex', name: 'Rex', online: false, catalog: REX.catalog }]
   const [hit] = searchCatalogs('windows click through', owners, { now: 0 })

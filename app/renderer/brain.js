@@ -14,6 +14,12 @@
 //   'errand'    (snapshot)                                 a find errand moved on (same shape as errand(id))
 //   'sharing'   ({ mode, items })                          share settings changed
 //   'need'      ({ need, item })                           our stuck Codex session's need matched a team item
+//   'flip'      (on)                                       this pane sits 'across' and is the flipped one:
+//                                                          call world.setFlip?.(on)
+//   'sit'       ('side'|'across')                          seating changed (setSit)
+//   'replaced'  ()                                         another pane of ours took this agent over; stay quiet
+//   'sleep'     (id, on)                                   also fires for registry agents that are away: they nap
+//                                                          in place (pets() marks them away: true) and never move
 //
 // API for WIRE (besides tick/handle/call/pets/hello/on):
 //   recall() -> { busy, message }        free: walks home now; busy: "busy helping Bea, back soon", home after
@@ -27,6 +33,8 @@
 //   MCP (through call): petpack_recall, petpack_find {question, kind?}, petpack_errand {id?}; petpack_status {quiet?}
 //   bridge.currentNeed() is polled every ~45 s while our pet is free (no wiring needed beyond the bridge method).
 //   config.sharing / config.dnd seed the initial settings.
+//   setSit('side'|'across') -> sit; sit, flipped, acrossWith, replaced getters. config.sit / config.device go in hello.
+//   Resume: a welcome with you.resumed / you.takeover starts our pet at you.x/z/facing (not at home).
 import { createTerrain, createStripNavigation, ROAD_Z } from './world/map-paths.js'
 import { createLife } from './life.js'
 
@@ -685,7 +693,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     return { t: 'hello', v: 2, id: myId, room, seat: welcomed || Number.isInteger(config.seat) ? mySeat : null,
       dock: config.dock || 'right', name: mine.name, color: mine.color, status: mine.status,
       skills: mine.skills.map(s => ({ id: s.id, name: s.name, description: s.description || '' })),
-      catalog: mine.catalog, sprite: me.sprite || null, answers: config.answers !== false, dnd: dnd ? 1 : 0,
+      catalog: mine.catalog, sprite: me.sprite || null, answers: config.answers !== false, dnd: dnd ? 1 : 0, sit,
+      ...(config.device ? { device: String(config.device).slice(0, 128) } : {}),
       x: round(mine.x), z: round(mine.z), facing: mine.facing, anim: renderAnim(mine) }
   }
   function upsertPeer(p, isOnline = true) {
@@ -732,12 +741,26 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         seats.clear()
         for (const p of msg.peers || []) upsertPeer(p, true)
         for (const p of msg.away || []) upsertPeer(p, false)
+        // The device registry: everyone with a place in the world. Away agents nap where they stopped.
+        for (const a of msg.agents || []) {
+          if (!a?.id || a.id === myId) continue
+          if (a.online && !a.away) { if (!peers.get(a.id)?.online) upsertPeer(a, true) }
+          else if (a.away) napPeer(a)
+        }
         for (const [id, seat] of Object.entries(msg.seats || {})) {
           const peer = peers.get(id)
           if (peer && Number.isInteger(seat)) { peer.seat = seat; if (peer.online) seats.set(id, seat) }
         }
         if (Array.isArray(msg.links)) noteLinks(msg.links)
+        noteSitting(msg, msg.you)
         if (Number.isInteger(firstSeat)) moveSeat(firstSeat, 'welcome', !welcomed && firstSeat !== mySeat)
+        // Resume: this id already has a place (a reload, a restart, another pane of ours handing over).
+        if ((msg.you?.resumed || msg.you?.takeover) && Number.isFinite(msg.you.x) && Number.isFinite(msg.you.z)) {
+          cancelJob(mine)
+          mine.x = msg.you.x; mine.z = msg.you.z; mine.route = []; mine.hist = []
+          if (msg.you.facing === 1 || msg.you.facing === -1) mine.facing = msg.you.facing
+          lastResume = { x: mine.x, z: mine.z, takeover: !!msg.you.takeover }
+        }
         seats.set(myId, mySeat)
         seatedCache = null
         welcomed = true
@@ -757,17 +780,24 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
           rehomeBots()
           emit('roster')
           emit('arrive', peer.id)
+          if (peer.away) { peer.away = false; emit('sleep', peer.id, false) }
         }
         break
       }
       case 'leave': {
         const peer = peers.get(msg.id)
-        if (peer) { peer.online = false; peer.lastSeen = msg.lastSeen || wall(); seats.delete(msg.id); seatedCache = null; emit('roster') }
+        if (peer) {
+          peer.online = false; peer.lastSeen = msg.lastSeen || wall(); seats.delete(msg.id); seatedCache = null
+          if (msg.away) napPeer({ id: msg.id, x: msg.x, z: msg.z, facing: msg.facing, lastSeen: msg.lastSeen })
+          else if (peer.away) { peer.away = false; emit('sleep', peer.id, false) }
+          emit('roster')
+        }
         break
       }
       case 'state': {
         for (const s of msg.pets || []) {
           if (s.id === myId) continue
+          if (s.away) { napPeer(s); continue }
           const peer = peers.get(s.id) || upsertPeer({ id: s.id }, true)
           if (!peer) continue
           if (peer.posed) { if (s.status) setPeerStatus(peer, s.status) } // timestamped poses carry the position
@@ -787,6 +817,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
           if (msg.why === 'bump') setAnim(mine, 'wave', 1.2)
         }
         if (Array.isArray(msg.links)) noteLinks(msg.links)
+        noteSitting(msg, null)
         break
       }
       case 'catalog': {
@@ -818,6 +849,11 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     }
   }
   let welcomed = false
+  let sit = config.sit === 'across' ? 'across' : 'side'
+  let flipped = false
+  let acrossWith = null
+  let lastResume = null
+  let replaced = false
   function moveSeat(seat, why, snap) {
     mySeat = seat
     mine.home = seat
@@ -831,7 +867,51 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     rehomeBots()
     emit('seat', seat, why)
   }
+  /** An away agent: it stays in the world, napping at x/z, and never moves until its owner is back. */
+  function napPeer(a) {
+    let peer = peers.get(a.id)
+    if (!peer) peer = upsertPeer({ ...a, catalog: a.catalog }, false)
+    else if (a.name || a.sprite !== undefined) upsertPeer({ id: a.id, name: a.name, color: a.color, sprite: a.sprite, catalog: a.catalog }, false)
+    if (!peer) return
+    peer.online = false
+    seats.delete(peer.id)
+    seatedCache = null
+    if (Number.isFinite(a.x) && Number.isFinite(a.z)) {
+      peer.samples = [{ ts: wall() - 1000, x: a.x, z: a.z, facing: a.facing === -1 ? -1 : 1, anim: 'idle', moving: false }]
+    }
+    if (a.lastSeen) peer.lastSeen = a.lastSeen
+    const wasAway = peer.away
+    peer.away = true
+    if (!wasAway) emit('sleep', peer.id, true)
+  }
+  /** Seating: 'side' strip or 'across' (two panes share one seat; the later one is flipped). */
+  function noteSitting(msg, you) {
+    if (you?.sit) sit = you.sit
+    let next = flipped
+    if (you && 'flipped' in you) next = !!you.flipped
+    if (msg.flipped && typeof msg.flipped === 'object') next = !!msg.flipped[myId]
+    if (Array.isArray(msg.across)) acrossWith = (msg.across.find(pair => Array.isArray(pair) && pair.includes(myId)) || []).find(id => id !== myId) || null
+    if (next !== flipped) { flipped = next; emit('flip', flipped) }
+  }
+  function setSit(next) {
+    if (next !== 'side' && next !== 'across') return sit
+    sit = next
+    send({ t: 'sit', sit })
+    emit('sit', sit)
+    return sit
+  }
   function netStatus(state) {
+    if (state === 'replaced') {
+      // Another pane (or the MCP overlay) of ours took this agent over; this one stays quiet for good.
+      online = false
+      replaced = true
+      for (const peer of peers.values()) peer.online = false
+      for (const id of [...seats.keys()]) if (id !== myId) seats.delete(id)
+      seatedCache = null
+      emit('online', null)
+      emit('replaced')
+      return
+    }
     // 'solo' when no relay is reachable: our own pet and the world, quietly; the client keeps retrying.
     // Demo bots exist only with --demo / ?demo, never as stand-ins for an offline team.
     if (state === 'solo' || state === 'offline') {
@@ -1624,10 +1704,10 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         local: true, skillCount: a.skills.length, ...s, status: a.status, dnd: a.isMe ? dnd : false })
     }
     for (const p of peers.values()) {
-      if (!p.online || !p.samples.length) continue
+      if ((!p.online && !p.away) || !p.samples.length) continue
       const s = sampleAt(p.samples, at)
       out.push({ id: p.id, displayName: p.name, color: p.color, kind: 'cat', spriteUrl: p.sprite || null, isMe: false,
-        local: false, skillCount: p.skills.length, ...s, status: p.status, dnd: !!p.dnd })
+        local: false, skillCount: p.skills.length, ...s, status: p.status, dnd: !!p.dnd, away: !!p.away })
     }
     return out
   }
@@ -1677,6 +1757,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     setSharing, get sharing() { return { ...sharing, items: { ...sharing.items } } },
     decide, get permissions() { return [...permissions.values()].map(({ finish, ...p }) => p) },
     find, errand: errandStatus,
+    setSit, get sit() { return sit }, get flipped() { return flipped }, get acrossWith() { return acrossWith },
+    get replaced() { return replaced },
     throwPet,
     wake,
     get garden() { return [...garden.values()] },
@@ -1688,6 +1770,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     get me() { return mine },
     setClock(fn) { wall = fn },
     // test and debug hooks
-    _: { agents, peers, seats, inbox, giftLog, member, members, askPeer, errandTo, speedAt: x => speedAt(x), mine, startJob, goHome, walkTo },
+    _: { agents, peers, seats, inbox, giftLog, member, members, askPeer, errandTo, speedAt: x => speedAt(x), mine, startJob, goHome, walkTo,
+      get lastResume() { return lastResume } },
   }
 }
