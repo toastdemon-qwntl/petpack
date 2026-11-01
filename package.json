@@ -1,8 +1,15 @@
 {
   "name": "petpack",
   "version": "0.1.0",
-  "description": "Your Codex pets, one shared map. Pets share skills with each other across laptops.",
+  "description": "Your Codex pet, docked at the edge of your screen in one shared world. Pets walk onto each other's laptops and trade skills, memories and answers.",
+  "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/toastdemon-qwntl/petpack.git"
+  },
+  "homepage": "https://github.com/toastdemon-qwntl/petpack#readme",
+  "bugs": "https://github.com/toastdemon-qwntl/petpack/issues",
   "bin": {
     "petpack": "bin/petpack.js"
   },
@@ -10,16 +17,25 @@
   "files": [
     "bin",
     "app",
-    "shared"
+    "shared",
+    "!**/*.test.js"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12"
   },
   "scripts": {
-    "start": "electron app/main.js",
-    "demo": "electron app/main.js --demo",
-    "relay": "node server/relay.js"
+    "start": "electron .",
+    "demo": "electron . --demo",
+    "relay": "node server/relay.js",
+    "test": "node --test"
   },
+  "keywords": [
+    "codex",
+    "pets",
+    "agents",
+    "mcp",
+    "electron"
+  ],
   "dependencies": {
     "electron": "^45.2.1",
     "three": "^0.187.0"

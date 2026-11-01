@@ -1,0 +1,507 @@
+// Electron main: petpack:// protocol + CSP, the docked pane, tray, bridge IPC, Codex data and the MCP socket.
+import { app, BrowserWindow, clipboard, ipcMain, net, protocol, screen, session } from 'electron'
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { createRequire } from 'node:module'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { DEFAULT_RELAY, codexMcpState, parseArgs, profileName, readJson, registerMcp, userDataDir, writeJson } from './cli.js'
+import { createClickThrough, createPaneWindow, dockBounds, edgeGap, paneSize, placePane, raiseToTop } from './window.js'
+import { createTray } from './tray.js'
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const require = createRequire(import.meta.url)
+const VERSION = readJson(path.join(ROOT, 'package.json'), {}).version || '0.0.0'
+const ORIGIN = 'petpack://local'
+const ENTRY = `${ORIGIN}/app/renderer/index.html`
+const { flags } = parseArgs(process.argv.slice(process.defaultApp ? 2 : 1))
+const PROFILE = profileName(flags)
+const DEBUG = Boolean(flags.debug || process.env.PETPACK_DEBUG)
+const log = (...args) => { if (DEBUG) console.log('[petpack]', ...args) }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Before ready: identity, single instance, GPU, scheme.
+
+app.setName('petpack')
+app.setPath('userData', userDataDir(PROFILE)) // same folder app/mcp/ipc.js computes without Electron
+app.commandLine.appendSwitch('enable-unsafe-swiftshader') // software WebGL when the GPU is missing (build B7)
+if (!app.requestSingleInstanceLock({ profile: PROFILE })) {
+  console.log('petpack is already running (look for its icon in the menu bar / system tray).')
+  app.exit(0)
+}
+protocol.registerSchemesAsPrivileged([{ scheme: 'petpack',
+  privileges: { standard: true, secure: true, supportFetchAPI: true, codeCache: true, corsEnabled: true } }])
+if (process.platform === 'darwin') app.setActivationPolicy?.('accessory') // no Dock icon, no app menu takeover
+
+// ---------------------------------------------------------------------------------------------------------------
+// Settings (userData/settings.json): dock side, align offset, room, seat. Flags win and are remembered.
+
+const USER_DATA = app.getPath('userData')
+const SETTINGS_FILE = path.join(USER_DATA, 'settings.json')
+const settings = { dock: 'right', align: 0, room: null, seat: null, ...readJson(SETTINGS_FILE, {}) }
+if (flags.dock === 'left' || flags.dock === 'right') settings.dock = flags.dock
+if (typeof flags.room === 'string' && flags.room.trim()) settings.room = flags.room.trim()
+if (flags.seat !== undefined) settings.seat = /^\d+$/.test(String(flags.seat)) ? Number(flags.seat) : null
+saveSettings()
+function saveSettings() {
+  try { writeJson(SETTINGS_FILE, settings) } catch (error) { console.error(`petpack: settings not saved (${error.message})`) }
+}
+
+const relayUrl = (typeof flags.relay === 'string' && flags.relay) || process.env.PETPACK_RELAY || DEFAULT_RELAY
+const paneScale = Number(flags['pane-scale']) > 0 ? Number(flags['pane-scale']) : 1
+const topFraction = (() => {
+  const v = parseFloat(String(flags.top ?? ''))
+  if (!Number.isFinite(v) || v < 0) return 0.2
+  return v > 1 ? Math.min(v, 90) / 100 : v
+})()
+
+function config() {
+  return {
+    relayUrl, relay: relayUrl, room: settings.room ?? null, seat: settings.seat ?? null, dock: settings.dock,
+    demo: Boolean(flags.demo), install: !flags['no-install'], answer: !flags['no-answer'],
+    name: typeof flags.name === 'string' ? flags.name : null, pet: typeof flags.pet === 'string' ? flags.pet : null,
+    profile: PROFILE || null, version: VERSION, platform: process.platform,
+    pane: { ...paneSize(paneScale), scale: paneScale }, debug: DEBUG,
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// petpack:// (build B5): /app/, /shared/ and /node_modules/three/ from wherever npm put three. CSP with the
+// import-map hash. Modules then resolve the same way they do in a plain browser on the repo root.
+
+const THREE_ROOT = path.dirname(path.dirname(require.resolve('three')))
+const MOUNTS = [
+  ['/node_modules/three/', THREE_ROOT],
+  ['/app/', path.join(ROOT, 'app')],
+  ['/shared/', path.join(ROOT, 'shared')],
+]
+
+function relayOrigins() {
+  try {
+    const u = new URL(relayUrl)
+    const secure = u.protocol === 'wss:' || u.protocol === 'https:'
+    return [`${secure ? 'wss' : 'ws'}://${u.host}`, `${secure ? 'https' : 'http'}://${u.host}`]
+  } catch { return [] }
+}
+
+function csp(html) {
+  const hashes = []
+  for (const m of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+    if (/\bsrc\s*=/i.test(m[1]) || !m[2].trim()) continue
+    hashes.push(`'sha256-${crypto.createHash('sha256').update(m[2]).digest('base64')}'`)
+  }
+  const relay = relayOrigins().join(' ')
+  return [
+    "default-src 'self'",
+    `script-src 'self' ${hashes.join(' ')}`.trim(),
+    "style-src 'self' 'unsafe-inline'",
+    `img-src 'self' data: blob: ${relay}`.trim(),
+    `connect-src 'self' data: blob: ${relay}`.trim(),
+    "font-src 'self' data:",
+    "worker-src 'self' blob:",
+    "media-src 'self' data: blob:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+  ].join('; ')
+}
+
+function resolveFile(pathname) {
+  for (const [prefix, base] of MOUNTS) {
+    if (!pathname.startsWith(prefix)) continue
+    const file = path.join(base, pathname.slice(prefix.length))
+    const rel = path.relative(base, file)
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null
+    return file
+  }
+  return null
+}
+
+const notFound = () => new Response('not found', { status: 404, headers: { 'content-type': 'text/plain' } })
+
+function htmlResponse(html) {
+  return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8',
+    'content-security-policy': csp(html), 'cache-control': 'no-store' } })
+}
+
+async function serve(request) {
+  const url = new URL(request.url)
+  if (url.host !== 'local') return notFound()
+  let pathname
+  try { pathname = decodeURIComponent(url.pathname) } catch { return notFound() }
+  if (pathname === '/__petpack/fallback.js') {
+    return new Response(FALLBACK_JS, { headers: { 'content-type': 'text/javascript; charset=utf-8' } })
+  }
+  const file = resolveFile(pathname)
+  if (!file) return notFound()
+  if (file.endsWith('.html')) {
+    let html
+    try { html = fs.readFileSync(file, 'utf8') } catch {
+      if (pathname === '/app/renderer/index.html') return htmlResponse(FALLBACK_HTML)
+      return notFound()
+    }
+    return htmlResponse(html)
+  }
+  try {
+    return await net.fetch(pathToFileURL(file).href)
+  } catch { return notFound() }
+}
+
+// Until pack's index.html lands: a bare pane that runs the world's own story, so the shell is testable on its own.
+const FALLBACK_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>petpack</title>
+<link rel="stylesheet" href="/app/renderer/world/pane.css"><link rel="stylesheet" href="/app/renderer/world/fx.css">
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+<style>html,body{margin:0;height:100%;background:transparent;overflow:hidden}
+.petpack-pane,.petpack-pane[data-dock]{position:fixed;inset:0;width:100%;height:100%;max-width:none;aspect-ratio:auto}</style>
+</head><body><section class="petpack-pane"><div class="world-viewport"></div></section>
+<script type="module" src="/__petpack/fallback.js"></script></body></html>`
+const FALLBACK_JS = `import { createWorld } from '/app/renderer/world/index.js'
+import { createStory } from '/app/renderer/world/story.js'
+const cfg = window.petpack?.config || {}
+const pane = document.querySelector('.petpack-pane')
+pane.dataset.dock = cfg.dock || 'right'
+let time = 0
+const world = createWorld(pane.querySelector('.world-viewport'), { seat: 0, pixelScale: 2, dock: cfg.dock, clock: () => time, autoRender: false })
+const story = createStory(world.map)
+let previous = 0, start = performance.now() / 1000
+function frame(now) {
+  time = now / 1000 - start
+  for (const pet of story.sample(time)) {
+    world.upsertPet(pet.id, { displayName: pet.displayName, color: pet.color, kind: pet.kind, skillCount: pet.skillCount, isMe: pet.homeSeat === 0 })
+    world.updatePet(pet.id, { x: pet.x, z: pet.z, anim: pet.anim, status: pet.status, facing: pet.facing, speed: pet.speed, snap: true })
+  }
+  for (const e of story.events(previous, time)) {
+    if (e.type === 'ask') world.ask(e.from, e.to, { question: e.question, answer: e.answer, kind: e.kind, label: e.label })
+    else if (e.type === 'gift') world.gift(e.from, e.to, { color: e.color, label: e.label })
+    else if (e.type === 'say') world.say(e.id, e.text)
+  }
+  world.renderFrame(Math.max(0, time - previous), time)
+  previous = time
+  requestAnimationFrame(frame)
+}
+requestAnimationFrame(frame)
+addEventListener('mousemove', e => window.petpack?.setInteractive(Boolean(world.pick(e.clientX, e.clientY))))
+`
+
+// ---------------------------------------------------------------------------------------------------------------
+// Codex data (L3a app/codex/index.js, L3b app/codex/{catalog,answer}.js), looked up by name with shims.
+
+async function importOptional(rel) {
+  const file = path.join(ROOT, rel)
+  if (!fs.existsSync(file)) return null
+  try { return await import(pathToFileURL(file).href) } catch (error) {
+    console.error(`petpack: ${rel} failed to load: ${error.stack || error.message}`)
+    return null
+  }
+}
+function pick(mods, ...names) {
+  for (const mod of mods) {
+    if (!mod) continue
+    for (const name of names) {
+      if (typeof mod[name] === 'function') return mod[name].bind(mod)
+      if (typeof mod.default?.[name] === 'function') return mod.default[name].bind(mod.default)
+    }
+  }
+  return null
+}
+
+const ctx = () => ({ userData: USER_DATA, profile: PROFILE, pet: config().pet, name: config().name, demo: config().demo,
+  answersDir: path.join(USER_DATA, 'answers'), noExec: Boolean(flags['no-answer']) })
+let codex = null
+async function loadCodex() {
+  const [core, catalog, answer, pets, skills, install] = await Promise.all(['index', 'catalog', 'answer', 'pets',
+    'skills', 'install'].map(name => importOptional(`app/codex/${name}.js`)))
+  const all = [core, catalog, answer, skills, install]
+  const fallbackId = () => {
+    if (!settings.id) { settings.id = crypto.randomUUID(); saveSettings() }
+    return settings.id
+  }
+  const getMe = pick([core], 'getMe')
+  const packSkill = pick(all, 'packSkill')
+  const installSkill = pick(all, 'installSkill')
+  const installItem = pick(all, 'installItem')
+  const getCatalog = pick(all, 'getCatalog', 'buildCatalog')
+  const readItem = pick(all, 'readItem')
+  const answerAsk = pick(all, 'answerAsk')
+  const getPet = pick([pets], 'getPet')
+  const listSkills = pick([skills], 'listSkills')
+  // Until L3a's index.js lands: compose getMe from its pets/skills modules.
+  const composedMe = async () => {
+    const pet = getPet ? await getPet(ctx()).catch(() => null) : null
+    let list = []
+    try { list = listSkills ? listSkills(ctx()) : [] } catch {}
+    return { id: fallbackId(), petName: pet?.petName ?? null, displayName: config().name || pet?.displayName || 'You',
+      spriteUrl: pet?.spriteUrl ?? null,
+      skills: list.map(s => ({ id: s.id ?? s.name, name: s.name, description: s.description ?? '' })) }
+  }
+  codex = {
+    loaded: { core: Boolean(core), catalog: Boolean(catalog), answer: Boolean(answer) },
+    getMe: getMe ? () => getMe(ctx()) : composedMe,
+    packSkill: packSkill || (async () => { throw new Error('skills are unavailable in this build') }),
+    installSkill: installSkill || (async () => ({ installed: false, reason: 'unavailable' })),
+    installItem: installItem || (installSkill ? (item, from) => installSkill(item, from)
+      : async () => ({ installed: false, reason: 'unavailable' })),
+    getCatalog: getCatalog ? () => getCatalog(ctx()) : async () => [],
+    readItem: readItem || (async () => { throw new Error('unavailable') }),
+    answerAsk: answerAsk || (async () => ({ ok: false, text: "I can't answer that here." })),
+    status: pick(all, 'watchStatus', 'onStatus', 'subscribeStatus', 'startStatus'),
+    readStatus: pick(all, 'getStatus', 'readStatus', 'currentStatus'),
+  }
+  log('codex modules', codex.loaded)
+}
+
+let lastStatus = { status: 'idle', at: Date.now() }
+function startStatus() {
+  const push = s => {
+    if (!s) return
+    const given = typeof s === 'string' ? { status: s } : s
+    if (given.status === lastStatus.status && (given.at === undefined || given.at === lastStatus.at)) return
+    const next = { at: Date.now(), ...given }
+    lastStatus = next
+    if (win && !win.isDestroyed()) win.webContents.send('petpack:status', lastStatus)
+  }
+  try {
+    if (codex.status) return codex.status(push, ctx())
+    if (codex.readStatus) {
+      let busy = false
+      const timer = setInterval(async () => {
+        if (busy) return
+        busy = true
+        try { push(await codex.readStatus(ctx())) } catch {} finally { busy = false }
+      }, 1000)
+      return () => clearInterval(timer)
+    }
+  } catch (error) { console.error(`petpack: status watcher failed: ${error.message}`) }
+  return () => {}
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// MCP agent calls: S5's socket/pipe server -> page's onAgentCall handler -> result.
+
+const pendingCalls = new Map()
+let agentReady = false
+const agentWaiters = []
+function whenAgentReady(ms) {
+  if (agentReady) return Promise.resolve(true)
+  return new Promise(resolve => {
+    const done = ok => { clearTimeout(timer); resolve(ok) }
+    const timer = setTimeout(() => {
+      const i = agentWaiters.indexOf(done)
+      if (i >= 0) agentWaiters.splice(i, 1)
+      resolve(false)
+    }, ms)
+    agentWaiters.push(done)
+  })
+}
+async function agentCall(tool, args = {}, { timeoutMs = 58000 } = {}) {
+  if (!(await whenAgentReady(20000)) || !win || win.isDestroyed()) throw new Error('petpack is still starting; try again in a moment')
+  const id = crypto.randomUUID()
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { pendingCalls.delete(id); reject(new Error(`${tool} timed out`)) }, timeoutMs)
+    pendingCalls.set(id, { resolve, reject, timer })
+    win.webContents.send('petpack:agent-call', { id, tool, args })
+  })
+}
+let ipcServer = null
+async function startMcpIpc() {
+  const mod = await importOptional('app/mcp/ipc.js')
+  const start = pick([mod], 'startIpcServer')
+  if (!start) { log('no app/mcp/ipc.js; MCP calls disabled'); return }
+  try {
+    ipcServer = await start({
+      onCall: ({ tool, args }) => agentCall(tool, args), log,
+      userData: USER_DATA, profile: PROFILE, version: VERSION,
+    })
+  } catch (error) { console.error(`petpack: MCP socket failed: ${error.message}`) }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// IPC (build B6): only from our own page.
+
+function trusted(event) {
+  const url = event.senderFrame?.url || ''
+  return url.startsWith(`${ORIGIN}/`)
+}
+function handle(channel, fn) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (!trusted(event)) throw new Error('not allowed')
+    return fn(...args)
+  })
+}
+ipcMain.on('petpack:config', event => { event.returnValue = trusted(event) ? config() : null })
+handle('petpack:getMe', () => codex.getMe())
+handle('petpack:status', () => lastStatus)
+handle('petpack:packSkill', id => codex.packSkill(id, ctx()))
+handle('petpack:installSkill', (pkg, fromName) => codex.installSkill(pkg, fromName, ctx()))
+handle('petpack:installItem', (item, fromName) => codex.installItem(item, fromName, ctx()))
+handle('petpack:getCatalog', () => codex.getCatalog())
+handle('petpack:readItem', (ref, as) => codex.readItem(ref, as, ctx()))
+handle('petpack:answerAsk', request => codex.answerAsk(request, ctx()))
+ipcMain.on('petpack:interactive', (event, on) => { if (trusted(event)) clickThrough?.set(on) })
+ipcMain.on('petpack:agent-ready', (event, ready) => {
+  if (!trusted(event)) return
+  agentReady = Boolean(ready)
+  if (agentReady) for (const done of agentWaiters.splice(0)) done(true)
+})
+ipcMain.on('petpack:agent-result', (event, { id, ok, result, error } = {}) => {
+  if (!trusted(event)) return
+  const pending = pendingCalls.get(id)
+  if (!pending) return
+  pendingCalls.delete(id)
+  clearTimeout(pending.timer)
+  if (ok) pending.resolve(result)
+  else pending.reject(new Error(error || 'failed'))
+})
+
+// ---------------------------------------------------------------------------------------------------------------
+// The pane.
+
+let win = null
+let clickThrough = null
+let tray = null
+let codexState = null
+const consoleLog = []
+
+function dock() {
+  if (!win || win.isDestroyed()) return null
+  return placePane(win, { display: screen.getPrimaryDisplay(), dock: settings.dock, align: settings.align,
+    top: topFraction, scale: paneScale })
+}
+
+function createWindow() {
+  win = createPaneWindow({ preload: path.join(ROOT, 'app', 'preload.cjs'), scale: paneScale,
+    vibrancy: Boolean(flags.vibrancy), debug: DEBUG })
+  dock()
+  const wc = win.webContents
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }))
+  wc.on('will-navigate', event => event.preventDefault())
+  wc.on('will-redirect', event => event.preventDefault())
+  wc.on('console-message', event => {
+    const level = typeof event.level === 'string' ? event.level : 'info'
+    const entry = { level, message: event.message, source: event.sourceId, line: event.lineNumber, at: Date.now() }
+    consoleLog.push(entry)
+    if (consoleLog.length > 500) consoleLog.shift()
+    if (DEBUG || level === 'error') console.error(`[renderer ${level}] ${entry.message} (${entry.source}:${entry.line})`)
+  })
+  wc.on('preload-error', (_e, file, error) => consoleLog.push({ level: 'error', message: `preload: ${error.message}`, source: file }))
+  wc.on('did-fail-load', (_e, code, desc, url) => consoleLog.push({ level: 'error', message: `load failed ${code} ${desc} ${url}` }))
+  wc.on('render-process-gone', (_e, details) => {
+    consoleLog.push({ level: 'error', message: `renderer gone: ${details.reason}` })
+    if (!SMOKE && details.reason !== 'clean-exit') setTimeout(() => win && !win.isDestroyed() && wc.reload(), 1000)
+  })
+  wc.on('did-start-loading', () => { agentReady = false; clickThrough?.reset() })
+  clickThrough = createClickThrough(win, { send: c => { if (!wc.isDestroyed()) wc.send('petpack:cursor', c) } })
+  let shown = false
+  const show = () => { if (shown || win.isDestroyed()) return; shown = true; win.showInactive(); dock() }
+  win.once('ready-to-show', show)
+  setTimeout(show, 4000)
+  win.on('closed', () => { win = null; clickThrough?.dispose() })
+  if (DEBUG) wc.openDevTools({ mode: 'detach' })
+  wc.loadURL(ENTRY).catch(error => consoleLog.push({ level: 'error', message: `loadURL: ${error.message}` }))
+}
+
+function refreshTray() { tray?.refresh() }
+function trayActions() {
+  return {
+    copyRoom: () => settings.room && clipboard.writeText(settings.room),
+    setSeat: seat => { settings.seat = seat; saveSettings(); refreshTray(); win?.webContents.reload() },
+    setDock: side => {
+      if (side === settings.dock) return
+      settings.dock = side; saveSettings(); dock(); refreshTray(); win?.webContents.reload()
+    },
+    nudge: dy => {
+      settings.align = dy === 'reset' ? 0 : Math.max(-2000, Math.min(2000, (settings.align || 0) + dy))
+      saveSettings(); dock(); refreshTray()
+    },
+    registerCodex: async () => {
+      const result = await registerMcp({ root: ROOT, profile: PROFILE, force: true })
+      codexState = result.state; refreshTray()
+    },
+    quit: () => app.quit(),
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// --smoke <dir>: capture.png + smoke.json, exit 0 only with no console errors and a pane that drew (build B12).
+
+const SMOKE = typeof flags.smoke === 'string' ? path.resolve(flags.smoke) : null
+async function runSmoke() {
+  const waitMs = Number(flags['smoke-wait']) > 0 ? Number(flags['smoke-wait']) * 1000 : 9000
+  await new Promise(resolve => {
+    if (!win.webContents.isLoading()) resolve()
+    else win.webContents.once('did-finish-load', resolve)
+  })
+  await new Promise(resolve => setTimeout(resolve, waitMs))
+  fs.mkdirSync(SMOKE, { recursive: true })
+  const image = await win.webContents.capturePage()
+  fs.writeFileSync(path.join(SMOKE, 'capture.png'), image.toPNG())
+  const bitmap = image.toBitmap()
+  let opaque = 0
+  const colours = new Set()
+  for (let i = 0; i < bitmap.length; i += 4) {
+    if (bitmap[i + 3] > 8) { opaque++; if (i % 64 === 0) colours.add(bitmap.readUInt32LE(i)) }
+  }
+  const pixels = bitmap.length / 4
+  let webgl = null
+  try {
+    webgl = await win.webContents.executeJavaScript(`(() => { const c = document.createElement('canvas');
+      const gl = c.getContext('webgl2'); if (!gl) return null; const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      return { version: gl.getParameter(gl.VERSION), renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER) } })()`)
+  } catch {}
+  let bridge = null
+  try {
+    bridge = await win.webContents.executeJavaScript(`(() => { const p = window.petpack; return p ? { keys: Object.keys(p).sort(), config: p.config } : null })()`)
+  } catch {}
+  const display = screen.getDisplayMatching(win.getBounds())
+  const bounds = win.getBounds()
+  const errors = consoleLog.filter(e => e.level === 'error')
+  const drew = opaque > pixels * 0.2 && colours.size > 8
+  const result = {
+    ok: errors.length === 0 && drew,
+    version: VERSION, electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node,
+    platform: process.platform, arch: process.arch,
+    gpu: { featureStatus: app.getGPUFeatureStatus(), webgl },
+    scaleFactor: display.scaleFactor, display: { bounds: display.bounds, workArea: display.workArea },
+    dock: settings.dock, align: settings.align, bounds, contentSize: win.getContentSize(),
+    edgeGap: edgeGap(bounds, display.workArea, settings.dock),
+    topFraction: (bounds.y - display.bounds.y) / display.bounds.height,
+    expected: dockBounds({ display, dock: settings.dock, align: settings.align, top: topFraction, scale: paneScale }),
+    isAlwaysOnTop: win.isAlwaysOnTop(), isVisible: win.isVisible(),
+    ipc: ipcServer ? { endpoint: ipcServer.endpoint || ipcServer.path || null } : null,
+    codex: codex.loaded, bridge,
+    drew: { opaqueFraction: +(opaque / pixels).toFixed(3), sampledColours: colours.size },
+    errors, warnings: consoleLog.filter(e => e.level === 'warning').slice(0, 50),
+  }
+  fs.writeFileSync(path.join(SMOKE, 'smoke.json'), JSON.stringify(result, null, 2))
+  console.log(`petpack smoke: ${result.ok ? 'ok' : 'FAILED'} (${errors.length} console errors, drew ${result.drew.opaqueFraction}) -> ${SMOKE}`)
+  app.exit(result.ok ? 0 : 1)
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+
+app.on('second-instance', () => { if (win && !win.isDestroyed()) { dock(); win.showInactive() } })
+app.on('window-all-closed', () => app.quit())
+app.on('web-contents-created', (_e, contents) => {
+  contents.on('will-attach-webview', event => event.preventDefault())
+})
+app.on('before-quit', () => { try { ipcServer?.close?.() } catch {} })
+
+app.whenReady().then(async () => {
+  session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
+  session.defaultSession.setPermissionCheckHandler(() => false)
+  protocol.handle('petpack', serve)
+  await loadCodex()
+  createWindow()
+  const stopStatus = startStatus()
+  app.on('before-quit', () => { try { stopStatus?.() } catch {} })
+  startMcpIpc()
+  for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(event, () => dock())
+  if (process.platform === 'win32') setInterval(() => win && raiseToTop(win), 10000)
+  if (SMOKE) { runSmoke().catch(error => { console.error(error); app.exit(1) }); return }
+  tray = createTray({ state: () => ({ room: settings.room, seat: settings.seat, dock: settings.dock,
+    align: settings.align, codex: codexState }), actions: trayActions() })
+  codexMcpState(ROOT).then(state => { codexState = state; refreshTray() }).catch(() => {})
+  log('ready', { userData: USER_DATA, profile: PROFILE, relayUrl, os: os.release() })
+})
