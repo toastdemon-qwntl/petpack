@@ -25,7 +25,8 @@
 // Client -> server
 //   hello   { t, v, id, room|null, seat|null, dock, name, color, status, skills, catalog,
 //             sprite: { sha, b64 } | { sha } | null, answers, x?, z?, facing?, anim? }
-//           room null = auto room for this network ('net-<8 hex>'); a code from --room sticks.
+//           room null (or a legacy auto room 'net-<8 hex>') = DEFAULT_ROOM 'dde-ldn', the one room everyone shares;
+//           an explicit --room code wins and sticks. dock 'none' = headless/probe client: never dock-linked.
 //           seat = the last seat (reconnect) or --seat; welcome is authoritative.
 //           sprite: send b64 once; afterwards { sha } alone is enough if the relay still has it.
 //   state   { t, x, z, facing, anim, status }      <= 10 Hz while moving, 1 Hz heartbeat otherwise
@@ -77,6 +78,9 @@ export const RELAYS = Object.freeze([
 ])
 export const DEFAULT_RELAY = RELAYS[0]
 export const WS_PATH = '/ws'
+// One unified room for the hackathon (operator, 14:4xZ): every client without an explicit --room lands here.
+export const DEFAULT_ROOM = 'dde-ldn'
+export const LEGACY_AUTO_ROOM = /^net-[a-f0-9]{8}$/
 export const OPEN_TIMEOUT_MS = 4000
 export const PRIMARY_PROBE_MS = 15000
 
@@ -112,7 +116,8 @@ export const ITEM_KINDS = Object.freeze(['skill', 'memory', 'technique', 'resour
 export const LANDMARK_OF = Object.freeze({ skill: 'workshop', memory: 'library', technique: 'dojo', resource: 'campfire' })
 export const STATUSES = Object.freeze(['idle', 'working', 'waiting', 'done', 'failed'])
 export const ANIMS = Object.freeze(['idle', 'run', 'wave', 'jump', 'failed', 'waiting', 'review'])
-export const DOCKS = Object.freeze(['left', 'right'])
+export const DOCKS = Object.freeze(['left', 'right', 'none'])
+export const DOCK_PAIR_WINDOW_MS = 60 * 1000 // dock auto-link pairs right+left docked laptops that joined this close
 
 export const CLOSE = Object.freeze({
   normal: 1000,
@@ -199,11 +204,17 @@ export function spriteUrl (base, sha) {
   return `${String(base).replace(/\/$/, '')}/s/${sha}.webp`
 }
 
-/** Normalise a room code: lower-case, [a-z0-9_-], <= 48 chars; '' -> null (auto room). */
+/** Normalise a room code: lower-case, [a-z0-9_-], <= 48 chars; '' -> null (= DEFAULT_ROOM). */
 export function normalizeRoom (room) {
   if (room == null) return null
   const r = String(room).trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48)
   return r || null
+}
+
+/** The room a hello lands in: an explicit code wins; none, or a legacy per-network 'net-<8 hex>' room, is DEFAULT_ROOM. */
+export function roomFor (room) {
+  const r = normalizeRoom(room)
+  return !r || LEGACY_AUTO_ROOM.test(r) ? DEFAULT_ROOM : r
 }
 
 // ---- message builders (client -> server) ----------------------------------------------------------------------

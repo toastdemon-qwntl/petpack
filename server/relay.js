@@ -6,7 +6,7 @@
 //   GET /s/<sha>.webp               sprite bytes by sha256 (immutable, CORS open)
 //   WS  /ws                         the protocol
 //
-// Env: PORT, PETPACK_SALT (auto-room HMAC salt; random per process when unset), PETPACK_PUBLIC_URL (sprite URL base),
+// Env: PORT, PETPACK_PUBLIC_URL (sprite URL base),
 //      PETPACK_DATA (snapshot dir; defaults to /home/data/petpack on App Service, none elsewhere),
 //      PETPACK_RELAY_NAME (shown in /healthz). Rooms are per relay: clients fail over in the order of P.RELAYS.
 
@@ -62,25 +62,6 @@ const str = (v, max = 200, dflt = '') => (typeof v === 'string' ? v.slice(0, max
 const num = (v, dflt) => (Number.isFinite(v) ? v : dflt)
 const arr = (v) => (Array.isArray(v) ? v : [])
 
-function clientIp (req) {
-  const xff = req.headers['x-forwarded-for']
-  let ip = String(Array.isArray(xff) ? xff[0] : xff || '').split(',')[0].trim() || req.socket.remoteAddress || ''
-  let m
-  if ((m = ip.match(/^\[([^\]]+)\](?::\d+)?$/))) ip = m[1]
-  else if (/^\d+\.\d+\.\d+\.\d+:\d+$/.test(ip)) ip = ip.replace(/:\d+$/, '')
-  if (ip.startsWith('::ffff:')) ip = ip.slice(7)
-  if (ip.includes(':')) ip = v6prefix(ip) // phones and laptops on one Wi-Fi share a /64, not an address
-  return ip
-}
-
-function v6prefix (ip) {
-  const [head, tail = ''] = ip.split('%')[0].split('::')
-  const h = head ? head.split(':') : []
-  const t = tail ? tail.split(':') : []
-  const full = [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t]
-  return full.slice(0, 4).map((x) => x.toLowerCase().replace(/^0+(?=.)/, '')).join(':') + '::/64'
-}
-
 function sniffMime (buf) {
   if (buf.length > 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'image/webp'
   if (buf.length > 8 && buf[0] === 0x89 && buf.toString('ascii', 1, 4) === 'PNG') return 'image/png'
@@ -93,7 +74,7 @@ export function createRelay (opts = {}) {
   const cfg = {
     port: opts.port ?? Number(process.env.PORT || 8787),
     host: opts.host,
-    salt: opts.salt ?? process.env.PETPACK_SALT ?? crypto.randomBytes(16).toString('hex'),
+    dockPairWindowMs: opts.dockPairWindowMs ?? P.DOCK_PAIR_WINDOW_MS,
     publicUrl: opts.publicUrl ?? process.env.PETPACK_PUBLIC_URL ?? null,
     now: opts.now ?? Date.now,
     batchMs: opts.batchMs ?? P.STATE_BATCH_MS,
@@ -167,22 +148,26 @@ export function createRelay (opts = {}) {
       const file = path.join(dirs.root, 'rooms.json')
       if (fs.existsSync(file)) {
         const data = JSON.parse(fs.readFileSync(file, 'utf8'))
-        for (const r of arr(data.rooms)) {
-          const room = getRoom(r.name)
+        // legacy per-network rooms fold into DEFAULT_ROOM as away members (no seats/links), after the real rooms
+        const legacy = (r) => P.LEGACY_AUTO_ROOM.test(String(r?.name))
+        for (const r of [...arr(data.rooms).filter((x) => !legacy(x)), ...arr(data.rooms).filter(legacy)]) {
+          const fold = legacy(r)
+          const name = fold ? P.DEFAULT_ROOM : r.name
+          const room = getRoom(name)
           for (const s of arr(r.members)) {
-            if (!s || typeof s.id !== 'string' || t - (s.lastSeen || 0) > cfg.awayTtlMs) continue
+            if (!s || typeof s.id !== 'string' || t - (s.lastSeen || 0) > cfg.awayTtlMs || (fold && room.members.has(s.id))) continue
             room.members.set(s.id, {
-              id: s.id, name: str(s.name, 64, 'pet'), color: str(s.color, 32, '#7c5cff'), dock: s.dock === 'left' ? 'left' : 'right',
+              id: s.id, name: str(s.name, 64, 'pet'), color: str(s.color, 32, '#7c5cff'), dock: P.DOCKS.includes(s.dock) ? s.dock : 'right',
               skills: arr(s.skills), catalog: arr(s.catalog), sprite: typeof s.sprite === 'string' ? s.sprite : null,
-              seat: Number.isInteger(s.seat) ? s.seat : null, lastSeen: s.lastSeen || t,
+              seat: !fold && Number.isInteger(s.seat) ? s.seat : null, lastSeen: s.lastSeen || t,
               heldUntil: t + cfg.seatHoldMs, // a restart is not their fault: everyone gets a fresh hold
               online: false, ws: null, dirty: false, answers: true, status: 'idle', anim: 'idle', facing: 1,
               x: P.seatCenterX(Number.isInteger(s.seat) ? s.seat : 0), z: 0
             })
-            byId.set(s.id, r.name)
+            byId.set(s.id, name)
           }
-          room.links = arr(r.links).filter((l) => Array.isArray(l) && room.members.has(l[0]) && room.members.has(l[1]))
-          if (!room.members.size) rooms.delete(r.name); else nRooms++
+          if (!fold) room.links = arr(r.links).filter((l) => Array.isArray(l) && room.members.has(l[0]) && room.members.has(l[1]))
+          if (!room.members.size) rooms.delete(name); else if (!fold) nRooms++
         }
       }
     } catch (e) { cfg.log('rooms load failed', e.message) }
@@ -304,12 +289,18 @@ export function createRelay (opts = {}) {
 
   function snapshot (room) { return JSON.stringify([seated(room).map((m) => [m.id, m.seat]), room.links]) }
 
-  function dockAutoLink (room) {
-    const loose = online(room).filter((m) => m.seat != null && !room.links.some(([a, b]) => a === m.id || b === m.id))
-    const rights = loose.filter((m) => m.dock === 'right')
-    const lefts = loose.filter((m) => m.dock === 'left')
-    if (rights.length === 1 && lefts.length === 1) return link(room, rights[0].id, lefts[0].id)
-    return false
+  // One busy room: a laptop that just joined (or re-docked) pairs with the most recent unlinked laptop docked to the
+  // opposite edge that joined within dockPairWindowMs of it; the right-docked one sits on the left. Anyone else keeps
+  // a free seat at the end of the strip and can move with arrows or bump.
+  function dockAutoLink (room, m) {
+    const loose = (x) => x.online && x.seat != null && !room.links.some(([a, b]) => a === x.id || b === x.id)
+    if (!m || !loose(m) || (m.dock !== 'left' && m.dock !== 'right')) return false
+    const want = m.dock === 'right' ? 'left' : 'right'
+    const partner = online(room)
+      .filter((x) => x.id !== m.id && x.dock === want && loose(x) && Math.abs((m.dockAt ?? 0) - (x.dockAt ?? 0)) <= cfg.dockPairWindowMs)
+      .sort((a, b) => (b.dockAt ?? 0) - (a.dockAt ?? 0))[0]
+    if (!partner) return false
+    return m.dock === 'right' ? link(room, m.id, partner.id) : link(room, partner.id, m.id)
   }
 
   function bump (room, m, side) {
@@ -366,8 +357,7 @@ export function createRelay (opts = {}) {
 
   function onHello (ws, req, h) {
     const id = /^[\w.-]{1,64}$/.test(h.id || '') ? h.id : P.rid('p')
-    const roomName = P.normalizeRoom(h.room) ||
-      'net-' + crypto.createHmac('sha256', cfg.salt).update(clientIp(req)).digest('hex').slice(0, 8)
+    const roomName = P.roomFor(h.room) // no room or a legacy 'net-…' auto room: the one shared DEFAULT_ROOM
 
     // one live record per id: a reconnect replaces the old socket; another room drops the old record
     const prevRoomName = byId.get(id)
@@ -385,6 +375,7 @@ export function createRelay (opts = {}) {
     let m = room.members.get(id)
     if (m && m.ws && m.ws !== ws) { m.ws._petpackReplaced = true; m.ws.close(P.CLOSE.replaced, 'replaced') }
     const wasOnline = !!m?.online
+    const prevDock = m?.dock
     const before = snapshot(room)
     if (!m) {
       m = { id, seat: null, skills: [], catalog: [] }
@@ -394,7 +385,7 @@ export function createRelay (opts = {}) {
     Object.assign(m, {
       ws, online: true, lastSeen: now(), heldUntil: 0, dirty: false,
       name: str(h.name, 64, 'pet'), color: str(h.color, 32, '#7c5cff'),
-      dock: h.dock === 'left' ? 'left' : 'right',
+      dock: P.DOCKS.includes(h.dock) ? h.dock : 'right',
       skills: arr(h.skills), catalog: arr(h.catalog),
       status: P.STATUSES.includes(h.status) ? h.status : 'idle',
       answers: h.answers !== false,
@@ -412,7 +403,8 @@ export function createRelay (opts = {}) {
       }
     }
     ws._petpack = { room, m }
-    const docked = dockAutoLink(room)
+    if (!wasOnline || m.dockAt == null || prevDock !== m.dock) m.dockAt = now() // joined or re-docked
+    const docked = dockAutoLink(room, m)
     const fresh = m.x == null
     m.x = num(h.x, fresh ? P.seatCenterX(m.seat) : m.x)
     m.z = num(h.z, fresh ? 0 : m.z)
@@ -446,6 +438,11 @@ export function createRelay (opts = {}) {
     }
     for (const [k, a] of room.asks) {
       if (a.target === m.id) { room.asks.delete(k); send(room.members.get(a.asker), { t: 'answer', from: m.id, qid: a.qid, ok: false, text: '', reason: 'away' }) }
+    }
+    if (m.dock === 'none' && !m.catalog.length) {
+      // a headless probe (smoke, status): it leaves nothing behind in the shared room
+      room.members.delete(m.id); unlinkAll(room, m.id)
+      if (byId.get(m.id) === room.name) byId.delete(m.id)
     }
     broadcast(room, { t: 'leave', id: m.id, lastSeen: m.lastSeen })
     broadcast(room, seatMsg(room, 'leave'))

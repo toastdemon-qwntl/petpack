@@ -4,10 +4,11 @@ import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
 import WebSocket from 'ws'
 import { createRelay } from './relay.js'
+import { DEFAULT_ROOM } from '../shared/protocol.js'
 
 let relay, url
 before(async () => {
-  relay = createRelay({ port: 0, host: '127.0.0.1', salt: 'test', log: () => {} })
+  relay = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: null })
   ;({ url } = await relay.listen())
 })
 after(() => relay.close())
@@ -266,7 +267,7 @@ test('catalogs, seats, fetched content and sprites survive a restart', async () 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'petpack-relay-'))
   const item = { ref: 'skill:deploy', kind: 'skill', title: 'deploy', summary: 'ship it', bytes: 5, sha: 'd1', mtime: 1 }
   const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex')
-  const r1 = createRelay({ port: 0, host: '127.0.0.1', salt: 'test', log: () => {}, dataDir, saveMs: 20 })
+  const r1 = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir, saveMs: 20 })
   const u1 = (await r1.listen()).url
   const a = await client({ id: 'ps-a', room: 'persist', catalog: [item], sprite: { b64: png.toString('base64') } }, u1)
   const b = await client({ id: 'ps-b', room: 'persist', dock: 'left' }, u1)
@@ -279,7 +280,7 @@ test('catalogs, seats, fetched content and sprites survive a restart', async () 
   await r1.close()
   assert.ok(fs.existsSync(path.join(dataDir, 'rooms.json')))
 
-  const r2 = createRelay({ port: 0, host: '127.0.0.1', salt: 'test', log: () => {}, dataDir, saveMs: 20 })
+  const r2 = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir, saveMs: 20 })
   const u2 = (await r2.listen()).url
   const c = await client({ id: 'ps-c', room: 'persist' }, u2)
   const away = c.welcome.away.find((x) => x.id === 'ps-a')
@@ -300,7 +301,7 @@ test('catalogs, seats, fetched content and sprites survive a restart', async () 
 
 test('clients fail over to the next relay together and move back when the primary returns', async () => {
   const { createNet } = await import('./net-failover.js')
-  const quiet = { host: '127.0.0.1', salt: 'test', log: () => {}, dataDir: null }
+  const quiet = { host: '127.0.0.1', log: () => {}, dataDir: null }
   let r1 = createRelay({ port: 0, ...quiet })
   const { port: p1, url: u1 } = await r1.listen()
   const r2 = createRelay({ port: 0, ...quiet })
@@ -332,10 +333,62 @@ test('clients fail over to the next relay together and move back when the primar
   await r1.close(); await r2.close()
 })
 
-test('auto room groups clients by network', async () => {
-  const a = await client({ id: 'ar-a', room: null })
-  const b = await client({ id: 'ar-b', room: null })
-  assert.match(a.welcome.room, /^net-[a-f0-9]{8}$/)
-  assert.equal(a.welcome.room, b.welcome.room)
-  await a.close(); await b.close()
+test('no room, a legacy auto room and an explicit dde-ldn all land in the one room; an explicit code wins', async () => {
+  const a = await client({ id: 'ur-a', room: null, dock: 'none' })
+  const b = await client({ id: 'ur-b', room: 'net-3ba5f34a', dock: 'none' })
+  const c = await client({ id: 'ur-c', room: 'DDE-LDN', dock: 'none' })
+  const d = await client({ id: 'ur-d', room: 'team-rex', dock: 'none' })
+  assert.equal(DEFAULT_ROOM, 'dde-ldn')
+  for (const x of [a, b, c]) assert.equal(x.welcome.room, DEFAULT_ROOM)
+  assert.ok(c.welcome.peers.some((p) => p.id === 'ur-a') && c.welcome.peers.some((p) => p.id === 'ur-b'))
+  assert.equal(d.welcome.room, 'team-rex')
+  assert.equal(d.welcome.peers.length, 0)
+  await a.close()
+  await b.next((m) => m.t === 'leave' && m.id === 'ur-a')
+  const e = await client({ id: 'ur-e', room: null, dock: 'none' })
+  assert.ok(!e.welcome.away.some((x) => x.id === 'ur-a'), 'a headless probe leaves nothing behind')
+  await Promise.all([b.close(), c.close(), d.close(), e.close()])
+})
+
+test('busy room: dock auto-link pairs the most recent opposite dock within the window', async () => {
+  const r = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: null, dockPairWindowMs: 300 })
+  const u = (await r.listen()).url
+  const r1 = await client({ id: 'bz-r1', room: null, dock: 'right' }, u)
+  await sleep(30)
+  const r2 = await client({ id: 'bz-r2', room: null, dock: 'right' }, u)
+  await sleep(30)
+  const l1 = await client({ id: 'bz-l1', room: null, dock: 'left' }, u)
+  const s = await r1.next((m) => m.t === 'seat' && m.why === 'dock')
+  assert.deepEqual(s.links, [['bz-r2', 'bz-l1']], 'most recent right-docked laptop wins')
+  assert.equal(s.seats['bz-l1'], s.seats['bz-r2'] + 1)
+  await sleep(400) // r1 is now outside the window
+  const l2 = await client({ id: 'bz-l2', room: null, dock: 'left' }, u)
+  assert.deepEqual(l2.welcome.links, [['bz-r2', 'bz-l1']], 'nobody fresh to pair with: a free seat at the end')
+  const maxSeat = Math.max(...Object.values(l2.welcome.seats))
+  assert.equal(l2.welcome.you.seat, maxSeat)
+  const r3 = await client({ id: 'bz-r3', room: null, dock: 'right' }, u)
+  const s3 = await r1.next((m) => m.t === 'seat' && m.why === 'dock' && m.links.length === 2)
+  assert.deepEqual(s3.links, [['bz-r2', 'bz-l1'], ['bz-r3', 'bz-l2']])
+  assert.equal(s3.seats['bz-l2'], s3.seats['bz-r3'] + 1)
+  assert.equal(r3.welcome.room, DEFAULT_ROOM)
+  await Promise.all([r1.close(), r2.close(), l1.close(), l2.close(), r3.close()])
+  await r.close()
+})
+
+test('a legacy per-network room on disk folds into the one room as away members', async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'petpack-legacy-'))
+  const item = { ref: 'skill:pdf', kind: 'skill', title: 'pdf', summary: 'read pdfs', bytes: 1, sha: 'p1', mtime: 1 }
+  fs.writeFileSync(path.join(dataDir, 'rooms.json'), JSON.stringify({
+    v: 1, rooms: [{ name: 'net-0123abcd', links: [], members: [{ id: 'lg-a', name: 'Rex', color: '#fff', dock: 'right', skills: [], catalog: [item], seat: 0, lastSeen: Date.now() }] }]
+  }))
+  const r = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir })
+  const u = (await r.listen()).url
+  const c = await client({ id: 'lg-c', room: null, dock: 'none' }, u)
+  assert.deepEqual(c.welcome.away.find((x) => x.id === 'lg-a')?.catalog, [item])
+  assert.ok(!r.rooms.has('net-0123abcd'))
+  await c.close(); await r.close()
+  fs.rmSync(dataDir, { recursive: true, force: true })
 })
