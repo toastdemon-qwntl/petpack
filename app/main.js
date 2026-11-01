@@ -1,5 +1,5 @@
 // Electron main: petpack:// protocol + CSP, the docked pane, tray, bridge IPC, Codex data and the MCP socket.
-import { app, BrowserWindow, clipboard, ipcMain, net, protocol, screen, session } from 'electron'
+import { app, BrowserWindow, clipboard, desktopCapturer, ipcMain, net, protocol, screen, session } from 'electron'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -424,6 +424,13 @@ async function runSmoke() {
   fs.mkdirSync(SMOKE, { recursive: true })
   const image = await win.webContents.capturePage()
   fs.writeFileSync(path.join(SMOKE, 'capture.png'), image.toPNG())
+  if (process.platform === 'linux') { // the whole screen, to show where the pane docked (no permission prompt on X11)
+    try {
+      const { size } = screen.getPrimaryDisplay()
+      const [source] = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: size })
+      if (source) fs.writeFileSync(path.join(SMOKE, 'desktop.png'), source.thumbnail.toPNG())
+    } catch (error) { log(`desktop capture failed: ${error.message}`) }
+  }
   const bitmap = image.toBitmap()
   let opaque = 0
   const colours = new Set()
