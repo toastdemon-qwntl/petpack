@@ -169,7 +169,9 @@ export function attachZoom({ world, root, seat } = {}) {
     if (world.pick?.(event.clientX, event.clientY)) return // pets keep their own clicks and throws
     drag = { x: event.clientX, pan, id: event.pointerId }
     root.classList.add('pp-zoom-dragging')
-    // Window-level listeners: decorators (play.js) set the viewport itself to pointer-events: none.
+    // Capture-phase window listeners: play.js sets the viewport to pointer-events: none, so empty glass targets the
+    // pane, whose frame-drag (collapse.js) would move the window. Zoomed out, a drag on the glass pans instead.
+    event.stopPropagation()
   }
   function onMove(event) {
     if (!drag || event.pointerId !== drag.id) return
@@ -212,11 +214,11 @@ export function attachZoom({ world, root, seat } = {}) {
   }
 
   window.addEventListener('wheel', onWheel, { passive: false })
-  window.addEventListener('pointerdown', onDown)
-  window.addEventListener('pointermove', onMove)
-  window.addEventListener('pointerup', onUp)
-  window.addEventListener('pointercancel', onUp)
-  window.addEventListener('dblclick', onDouble)
+  window.addEventListener('pointerdown', onDown, true)
+  window.addEventListener('pointermove', onMove, true)
+  window.addEventListener('pointerup', onUp, true)
+  window.addEventListener('pointercancel', onUp, true)
+  window.addEventListener('dblclick', onDouble, true)
   document.addEventListener('mousemove', onHover)
   pip.addEventListener('click', onPip)
   pip.addEventListener('dblclick', e => e.stopPropagation())
@@ -243,11 +245,11 @@ export function attachZoom({ world, root, seat } = {}) {
       cancelAnimationFrame(raf)
       stream.dispose()
       window.removeEventListener('wheel', onWheel)
-      window.removeEventListener('pointerdown', onDown)
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      window.removeEventListener('pointercancel', onUp)
-      window.removeEventListener('dblclick', onDouble)
+      window.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+      window.removeEventListener('pointercancel', onUp, true)
+      window.removeEventListener('dblclick', onDouble, true)
       document.removeEventListener('mousemove', onHover)
       window.removeEventListener('keydown', onKey)
       pip.remove()
