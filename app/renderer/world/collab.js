@@ -113,10 +113,8 @@ export function createCollabs(field, bubbles, pets) {
           if (age > 2.45) sparkle(b.x, b.y + petB.height * .65, b.z + .15, tint, age - 2.45, 10)
         }
         middle.y = Math.max(y + 1.15, a.y + petA.height + .2, b.y + petB.height + .2)
-        // Keep the shared label above participants' own speech/status bubbles.
-        const bubbleHeight = pet => pet.ui.sayTime > 0 || pet.ui.status !== 'idle' ? pet.ui.bubble.height : 0
-        const lift = Math.max(bubbleHeight(petA), bubbleHeight(petB))
-        bubbles.projectGift(effect.label, middle, Math.max(0, fade), lift)
+        // The common layout places shared labels around speech, statuses and pane edges.
+        bubbles.projectGift(effect.label, middle, Math.max(0, fade))
       }
     },
     dispose() { for (const effect of active) finish(effect, false) },

@@ -338,3 +338,40 @@ export function createLandmarks(root) {
   update(0, 0)
   return { update, dispose() { disposed = true } }
 }
+
+// Keep the hand-built round-2 architecture, but place just one landmark in a
+// chunk. Coordinates inside each model stay private to that model.
+export function createChunkLandmark(parent, kind, { scale = .85 } = {}) {
+  const root = new THREE.Group()
+  root.name = `chunk-landmark-${kind}`
+  root.scale.setScalar(scale)
+  parent.add(root)
+  let flame = null
+  let chimney = null
+  if (kind === 'memory') {
+    root.position.set(20 * scale, 0, -3.5 + 12 * scale)
+    library(root)
+  } else if (kind === 'technique') {
+    root.position.set(-18 * scale, 0, -3.3 - 6.25 * scale)
+    dojo(root)
+  } else if (kind === 'resource') {
+    root.position.set(16 * scale, 0, -2.4 - 7 * scale)
+    flame = campfire(root)
+  } else {
+    root.position.set(-18 * scale, 0, -3.5 + 12 * scale)
+    workshop(root)
+    chimney = { x: 2.1 * scale, y: 5.45 * scale, z: -3.5 - .17 * scale }
+  }
+  let disposed = false
+  return {
+    chimney,
+    update(_dt, t = 0) {
+      if (disposed || !flame) return
+      flame.children.forEach((cube, i) => {
+        cube.scale.y = .62 + i * .08 + Math.round(Math.sin(t * 8 + i * 2) * 3) * .035
+        cube.position.x = (i - 1) * .1 + Math.round(Math.sin(t * 4 + i) * 2) * .04
+      })
+    },
+    dispose() { disposed = true },
+  }
+}

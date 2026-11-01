@@ -1,5 +1,7 @@
 /* The shell stays at CSS resolution; only the village uses art pixels. */
 .petpack-pane {
+  --pane-radius: 22px;
+  --pane-inset: 7px;
   position: absolute;
   z-index: 5;
   top: 7.5%;
@@ -7,15 +9,16 @@
   width: 520px;
   max-width: calc(100% - 28px);
   aspect-ratio: 26 / 17;
-  padding: 7px;
+  padding: var(--pane-inset);
   border: 1px solid #ffffff78;
-  border-radius: 22px;
+  border-radius: var(--pane-radius);
   background: linear-gradient(150deg, #ffffff7a, #ecf2f02e 50%, #ffffff30);
   backdrop-filter: blur(24px) saturate(1.4);
   -webkit-backdrop-filter: blur(24px) saturate(1.4);
   box-shadow: inset 0 1px 0 #ffffffe0, inset 1px 0 0 #ffffff45, inset 0 -1px 0 #ffffff25,
     0 20px 55px -12px #0d1c3542, 0 4px 10px #12223a1f;
   isolation: isolate;
+  box-sizing: border-box;
 }
 .petpack-pane::after {
   content: '';
@@ -24,16 +27,35 @@
   pointer-events: none;
   border-radius: inherit;
   background: linear-gradient(135deg, #ffffff18, transparent 32%, transparent 80%, #ffffff0c);
-  box-shadow: inset 0 0 0 1px #ffffff3d;
 }
-.world-viewport { position: relative; width: 100%; height: 100%; overflow: hidden; border-radius: 15px; background: #b8d8c4; box-shadow: 0 0 0 1px #1d3d4520; }
+.world-viewport { position: relative; width: 100%; height: 100%; overflow: hidden; border-radius: calc(var(--pane-radius, 22px) - var(--pane-inset, 7px)); background: #b8d8c4; }
 .petpack-world-canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
 .petpack-fx-overlay { inset: 0; pointer-events: none; }
-body.solo .petpack-pane { position: relative; inset: auto; width: min(1040px, calc(100vw - 48px), calc((100svh - 64px) * 26 / 17)); max-width: none; padding: 9px; border-radius: 26px; }
-body.solo .world-viewport { border-radius: 17px; }
+/* data-dock can be set by a native overlay host as well as the desk preview. */
+.petpack-pane[data-dock='right'] { right: 0; left: auto; border-right: 0; padding-right: 0; border-radius: var(--pane-radius) 0 0 var(--pane-radius); box-shadow: inset 0 1px #ffffffe0, inset 1px 0 #ffffff45, inset 0 -1px #ffffff25, -8px 15px 35px -12px #0d1c3542; }
+.petpack-pane[data-dock='left'] { left: 0; right: auto; border-left: 0; padding-left: 0; border-radius: 0 var(--pane-radius) var(--pane-radius) 0; box-shadow: inset 0 1px #ffffffe0, inset -1px 0 #ffffff45, inset 0 -1px #ffffff25, 8px 15px 35px -12px #0d1c3542; }
+/* Keep the world pixels untouched at the seam; the glass highlight stays on the frame. */
+.petpack-pane[data-dock]::after { display: none; }
+.petpack-pane[data-dock='right'] > .world-viewport { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.petpack-pane[data-dock='left'] > .world-viewport { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+body.solo .petpack-pane:not([data-dock]) { position: relative; inset: auto; width: min(1040px, calc(100vw - 48px), calc((100svh - 64px) * 26 / 17)); max-width: none; --pane-inset: 9px; --pane-radius: 26px; }
 @media (max-width: 650px) {
-  .petpack-pane { top: 48px; right: 12px; width: calc(100% - 24px); max-width: none; padding: 5px; border-radius: 19px; }
-  .world-viewport { border-radius: 13px; }
-  body.solo .petpack-pane { width: calc(100vw - 24px); padding: 6px; border-radius: 21px; }
-  body.solo .world-viewport { border-radius: 14px; }
+  .petpack-pane { top: 48px; right: 12px; width: calc(100% - 24px); max-width: none; --pane-inset: 5px; --pane-radius: 19px; }
+  body.solo .petpack-pane:not([data-dock]) { width: calc(100vw - 24px); --pane-inset: 6px; --pane-radius: 21px; }
+}
+/* One rule gives every seat an identical, pixel-aligned viewport. No transforms. */
+.petpack-desk .petpack-pane {
+  --pane-radius: clamp(10px, 2.1cqw, 22px);
+  --pane-inset: 4px;
+  position: absolute;
+  top: 23%;
+  width: calc(28cqw + 5px);
+  width: calc(round(down, 28cqw, 8px) + 5px);
+  height: calc(21cqw + 10px);
+  height: calc(round(down, 28cqw, 8px) * .75 + 10px);
+  max-width: none;
+  aspect-ratio: auto;
+}
+@media (max-width: 700px) {
+  .petpack-desk .petpack-pane { width: calc(48cqw + 5px); width: calc(round(down, 48cqw, 8px) + 5px); height: calc(36cqw + 10px); height: calc(round(down, 48cqw, 8px) * .75 + 10px); --pane-radius: 14px; }
 }

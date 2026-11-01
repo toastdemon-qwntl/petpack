@@ -22,17 +22,26 @@ export function createGifts(_parent, field, bubbles, pets) {
   }
   function finish(flight, arrived) {
     flights.delete(flight)
+    flight.cancelled = !arrived
+    if (arrived) flight.arrived = true
     flight.label?.remove()
     flight.resolve(arrived)
   }
+  function start(fromId, toId, { color, label, duration = FLIGHT } = {}) {
+    const giver = pets.get(fromId), receiver = pets.get(toId)
+    if (!giver || !receiver || fromId === toId) return null
+    let resolve
+    const promise = new Promise(done => { resolve = done })
+    const flight = { fromId, toId, color: new THREE.Color(color || giver.color),
+      age: 0, resolve, promise, duration: Math.max(.1, Number(duration) || FLIGHT),
+      start: new THREE.Vector3(), end: new THREE.Vector3(), label: bubbles.createGiftLabel(label) }
+    flights.add(flight)
+    return flight
+  }
   return {
-    gift(fromId, toId, { color, label } = {}) {
-      const giver = pets.get(fromId), receiver = pets.get(toId)
-      if (!giver || !receiver || fromId === toId) return Promise.resolve(false)
-      return new Promise(resolve => flights.add({ fromId, toId, color: new THREE.Color(color || giver.color),
-        age: 0, resolve, start: new THREE.Vector3(), end: new THREE.Vector3(),
-        label: bubbles.createGiftLabel(label) }))
-    },
+    start,
+    cancel(flight) { if (flights.has(flight)) finish(flight, false) },
+    gift(fromId, toId, options) { return start(fromId, toId, options)?.promise || Promise.resolve(false) },
     detach(id) {
       for (const flight of flights) if (flight.fromId === id || flight.toId === id) finish(flight, false)
     },
@@ -41,8 +50,8 @@ export function createGifts(_parent, field, bubbles, pets) {
         const giver = pets.get(flight.fromId), receiver = pets.get(flight.toId)
         if (!giver || !receiver) { finish(flight, false); continue }
         flight.age += dt
-        const progress = Math.min(1, flight.age / FLIGHT)
-        const after = flight.age - FLIGHT
+        const progress = Math.min(1, flight.age / flight.duration)
+        const after = flight.age - flight.duration
         if (after >= BURST) { finish(flight, true); continue }
         endpoint(giver, flight.start); endpoint(receiver, flight.end)
         if (after < 0) {

@@ -3,6 +3,7 @@ import { createGlowField, seedFor } from './fx-sprites.js'
 import { createBubbles } from './bubbles.js'
 import { createGifts } from './gift.js'
 import { createCollabs } from './collab.js'
+import { createAsks } from './fx-asks.js'
 
 const TAU = Math.PI * 2
 function isVisible(anchor) {
@@ -20,12 +21,13 @@ export function createFx({ scene, camera, overlay, stage }) {
   const bubbles = createBubbles(overlay, camera, stage)
   const gifts = createGifts(root, field, bubbles, pets)
   const collabs = createCollabs(field, bubbles, pets)
+  const asks = createAsks(bubbles, gifts, pets)
   const feet = new THREE.Vector3(), head = new THREE.Vector3()
   let disposed = false, clock = 0
   function detach(id) {
     const pet = pets.get(id)
     if (!pet) return
-    gifts.detach(id); collabs.detach(id)
+    asks.detach(id); gifts.detach(id); collabs.detach(id)
     bubbles.detach(pet.ui)
     pets.delete(id)
   }
@@ -33,16 +35,15 @@ export function createFx({ scene, camera, overlay, stage }) {
     attach(id, { anchor, height = 2, color = '#8db6d1', name = '', isMe = false }) {
       if (disposed || !anchor?.getWorldPosition) return
       const previous = pets.get(id)
-      const skills = previous?.skills || 0, status = previous?.ui.status || 'idle'
-      const saying = previous?.ui.sayTime > 0 ? previous.ui.text : ''
-      const sayTime = previous?.ui.sayTime || 0
-      if (previous) bubbles.detach(previous.ui)
       const tint = new THREE.Color(color)
+      if (previous) {
+        Object.assign(previous, { anchor, height, color: tint })
+        bubbles.rename(previous.ui, { name, isMe, color: tint })
+        return
+      }
       const ui = bubbles.attach({ name, isMe, color: tint })
-      pets.set(id, { anchor, height, color: tint, skills,
-        orbitCount: previous?.orbitCount || 0, phase: seedFor(id) * TAU, ui })
-      bubbles.status(ui, status)
-      if (saying) { bubbles.say(ui, saying); ui.sayTime = sayTime }
+      pets.set(id, { anchor, height, color: tint, skills: 0,
+        orbitCount: 0, phase: seedFor(id) * TAU, ui })
     },
     detach,
     setSkills(id, count) {
@@ -52,6 +53,7 @@ export function createFx({ scene, camera, overlay, stage }) {
     setStatus(id, status) { const pet = pets.get(id); if (pet) bubbles.status(pet.ui, status) },
     say(id, text) { const pet = pets.get(id); if (pet) bubbles.say(pet.ui, text) },
     gift(fromId, toId, options) { return disposed ? Promise.resolve(false) : gifts.gift(fromId, toId, options) },
+    ask(fromId, toId, options) { return disposed ? Promise.resolve(false) : asks.ask(fromId, toId, options) },
     collab(idA, idB, options) { return disposed ? Promise.resolve(false) : collabs.collab(idA, idB, options) },
     update(dt, t) {
       if (disposed) return
@@ -59,6 +61,8 @@ export function createFx({ scene, camera, overlay, stage }) {
       clock = Number.isFinite(t) ? t : clock + dt
       camera.updateMatrixWorld()
       field.begin()
+      bubbles.begin(dt, clock)
+      asks.update(dt)
       for (const pet of pets.values()) {
         pet.anchor.getWorldPosition(feet)
         head.copy(feet); head.y += pet.height + .13
@@ -79,6 +83,7 @@ export function createFx({ scene, camera, overlay, stage }) {
         }
       }
       gifts.update(dt, clock); collabs.update(dt, clock)
+      bubbles.layout()
       field.end()
     },
     resize(width, height) {
@@ -89,7 +94,7 @@ export function createFx({ scene, camera, overlay, stage }) {
     dispose() {
       if (disposed) return
       disposed = true
-      gifts.dispose(); collabs.dispose()
+      asks.dispose(); gifts.dispose(); collabs.dispose()
       for (const id of pets.keys()) detach(id)
       bubbles.dispose(); field.dispose(); scene.remove(root)
     },

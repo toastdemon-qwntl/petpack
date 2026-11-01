@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { createStage } from './stage.js'
-import { createMap } from './map.js'
+import * as village from './map.js'
 import { createPixelPet } from './pixel-pet.js'
 import { createSpritePet } from './sprite-pet.js'
 import { createFx } from './fx.js'
@@ -12,7 +12,7 @@ const finite = Number.isFinite
 const distance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z)
 
 /** One window into the shared village. The optional clock is in seconds. */
-export function createWorld(container, { pixelScale = 2, clock } = {}) {
+export function createWorld(container, { seat = 0, pixelScale = 2, dock = null, clock, autoRender = true } = {}) {
   const ownsCanvas = container.tagName !== 'CANVAS'
   const canvas = ownsCanvas ? document.createElement('canvas') : container
   const parent = ownsCanvas ? container : canvas.parentElement
@@ -24,6 +24,9 @@ export function createWorld(container, { pixelScale = 2, clock } = {}) {
     if (parentState.changed) parent.style.position = 'relative'
   }
   parentState.count++
+  const pane = parent.closest('.petpack-pane') || parent
+  const oldDock = pane.getAttribute('data-dock')
+  if (dock === 'left' || dock === 'right') pane.dataset.dock = dock
   canvas.classList.add('petpack-world-canvas')
   canvas.setAttribute('aria-label', 'A living pixel-art village where pets share and learn together')
   Object.assign(canvas.style, { display: 'block', width: '100%', height: '100%', imageRendering: 'pixelated' })
@@ -33,8 +36,9 @@ export function createWorld(container, { pixelScale = 2, clock } = {}) {
   Object.assign(overlay.style, { position: 'absolute', pointerEvents: 'none', overflow: 'hidden' })
   parent.append(overlay)
   const stage = createStage(canvas, { pixelScale })
-  const map = createMap(stage.scene, { seed: 77 })
-  const fx = createFx({ scene: stage.scene, camera: stage.camera, overlay, stage })
+  const map = village.createMap(stage.scene, { seed: 77 })
+  const chunkWidth = map.chunkWidth || village.CHUNK_W || 14
+  let fx = createFx({ scene: stage.scene, camera: stage.camera, overlay, stage })
   const pets = new Map()
   const raycaster = new THREE.Raycaster()
   const pointer = new THREE.Vector2()
@@ -43,7 +47,21 @@ export function createWorld(container, { pixelScale = 2, clock } = {}) {
   let frameId = 0
   let previousFrame
   let previousTime
-  let followed = []
+  let currentSeat = 0
+  let loadedSeat = null
+  const pendingAsks = new Set()
+
+  function setSeat(nextSeat) {
+    if (disposed || !finite(Number(nextSeat))) return
+    currentSeat = Math.trunc(Number(nextSeat))
+    map.ensure?.(currentSeat - 1, currentSeat + 1)
+    loadedSeat = currentSeat
+    const center = map.chunkCenter?.(currentSeat) || { x: currentSeat * chunkWidth, z: 0 }
+    stage.focus(center.x, center.z, { span: chunkWidth })
+  }
+  setSeat(seat)
+  // The first frame is already at its seat; only subsequent seat changes glide.
+  for (let i = 0; i < 24; i++) stage.update(.25, 0)
 
   function syncFx(pet) {
     fx.attach(pet.id, { anchor: pet.anchor, height: pet.character.height, color: pet.info.color,
@@ -117,6 +135,7 @@ export function createWorld(container, { pixelScale = 2, clock } = {}) {
       }
     }
     if (animations.has(state.anim)) pet.state.anim = state.anim
+    pet.sampledSpeed = state.snap && finite(state.speed) ? Math.max(0, state.speed) : null
     // A resting pose may look at a companion; walking always derives its turn below.
     if (state.facing === 1 || state.facing === -1) pet.state.facing = state.facing
     if (statuses.has(state.status) && state.status !== pet.state.status) {
@@ -152,23 +171,12 @@ export function createWorld(container, { pixelScale = 2, clock } = {}) {
     fx.detach(id)
     pet.anchor.removeFromParent()
     pet.character.dispose()
+    for (const task of pendingAsks) if (task.from === id || task.to === id) {
+      pendingAsks.delete(task); task.resolve(false)
+    }
   }
-  function follow(idOrIds) {
-    if (!disposed) followed = (Array.isArray(idOrIds) ? idOrIds : [idOrIds]).filter(id => id != null)
-  }
-  function direct() {
-    const group = followed.map(id => pets.get(id)).filter(pet => pet?.positioned)
-    if (!group.length) return
-    const xs = group.map(pet => pet.x)
-    const zs = group.map(pet => pet.z)
-    const x = (Math.min(...xs) + Math.max(...xs)) / 2
-    const z = (Math.min(...zs) + Math.max(...zs)) / 2
-    // Keep room above their heads for the building, signs and tiny conversations.
-    const spreadX = Math.max(...xs) - Math.min(...xs)
-    const spreadZ = Math.max(...zs) - Math.min(...zs)
-    const span = Math.min(21, Math.max(11.5, spreadX + 6.8, spreadZ * .85 + 7.5))
-    stage.focus(x, z - 1.5, { span })
-  }
+  // Retained for round-2 callers. A pane belongs to its seat, even during a visit.
+  function follow() {}
   function resize() {
     if (disposed) return
     const width = Math.max(1, canvas.clientWidth)
@@ -186,35 +194,54 @@ export function createWorld(container, { pixelScale = 2, clock } = {}) {
     const elapsed = Math.max(0, previousFrame === undefined ? 1 / 60 : (now - previousFrame) / 1000)
     const realDt = Math.min(.25, elapsed)
     const clockDelta = clock ? Math.max(0, previousTime === undefined ? 0 : time - previousTime) : elapsed
-    const dt = Math.min(.1, clockDelta)
     previousFrame = now; previousTime = time
+    renderFrame(clockDelta, time, { cameraDt: realDt })
+    frameId = requestAnimationFrame(frame)
+  }
+  function renderFrame(clockDelta = 0, time = 0, { render = true, cameraDt = clockDelta } = {}) {
+    if (disposed) return
+    clockDelta = finite(clockDelta) ? Math.max(0, clockDelta) : 0
+    const dt = Math.min(.1, clockDelta)
     for (const pet of pets.values()) {
       if (!pet.positioned) continue
       walk(pet, dt)
       const dx = pet.x - pet.lastX
       const dz = pet.z - pet.lastZ
-      pet.speed = clockDelta ? Math.min(8, Math.hypot(dx, dz) / clockDelta) : 0
+      pet.speed = pet.sampledSpeed ?? (clockDelta ? Math.min(8, Math.hypot(dx, dz) / clockDelta) : 0)
       placePet(pet)
       beforePoint.set(pet.lastX, pet.anchor.position.y, pet.lastZ)
       const screenDelta = stage.toScreen(pet.anchor.position).x - stage.toScreen(beforePoint).x
       if (Math.abs(screenDelta) > .03) pet.state.facing = screenDelta < 0 ? -1 : 1
-      const anim = pet.speed > .07 ? 'run' : pet.state.anim === 'run' && !clock ? 'idle' : pet.state.anim
+      const anim = pet.speed > .07 ? 'run' : pet.state.anim === 'run' ? 'idle' : pet.state.anim
       pet.character.set({ anim, facing: pet.state.facing, moving: pet.speed })
       pet.character.update(dt, time)
       pet.lastX = pet.x; pet.lastZ = pet.z
     }
+    stage.update(Math.min(.25, cameraDt), time)
+    // Stream the visible neighbourhood during long seat changes, too. Retain
+    // bounded chunks instead of loading every intervening seat at once.
+    const visibleSeat = Math.round(stage.camera.position.x / chunkWidth)
+    if (visibleSeat !== loadedSeat) {
+      map.ensure?.(visibleSeat - 1, visibleSeat + 1)
+      loadedSeat = visibleSeat
+    }
     map.update(dt, time)
-    direct()
-    stage.update(realDt, time)
     stage.scene.updateMatrixWorld(true)
     stage.camera.updateMatrixWorld(true)
-    // Effects follow the story clock even after a slow frame. Paused captures
-    // still let their UI springs settle; hidden tabs never replay a backlog.
-    fx.update(Math.min(3, clockDelta || realDt), time)
-    stage.render()
-    frameId = requestAnimationFrame(frame)
+    for (const task of pendingAsks) {
+      task.age += dt
+      if (task.age >= 2.3 && task.phase === 0) { fx.setStatus(task.to, 'working'); task.phase++ }
+      if (task.age >= 3.6 && task.phase === 1) { fx.say(task.to, task.options.answer || 'Let me help.'); task.phase++ }
+      if (task.age >= 6.3) {
+        pendingAsks.delete(task)
+        if (task.options.kind) gift(task.to, task.from, task.options).then(task.resolve)
+        else task.resolve(true)
+      }
+    }
+    fx.update(Math.min(3, clockDelta), time)
+    if (render) stage.render()
   }
-  frameId = requestAnimationFrame(frame)
+  if (autoRender) frameId = requestAnimationFrame(frame)
   function gift(fromId, toId, options = {}) {
     if (disposed || !pets.has(fromId) || !pets.has(toId)) return Promise.resolve(false)
     const receiver = pets.get(toId)
@@ -224,7 +251,29 @@ export function createWorld(container, { pixelScale = 2, clock } = {}) {
     })
   }
   return {
-    upsertPet, updatePet, removePet, follow, gift, giftFx: gift,
+    upsertPet, updatePet, removePet, follow, gift, giftFx: gift, setSeat, renderFrame,
+    get seat() { return currentSeat },
+    resetEffects() {
+      if (disposed) return
+      for (const task of pendingAsks) task.resolve(false)
+      pendingAsks.clear()
+      fx.dispose()
+      fx = createFx({ scene: stage.scene, camera: stage.camera, overlay, stage })
+      for (const pet of pets.values()) syncFx(pet)
+      resize()
+    },
+    ask(fromId, toId, options = {}) {
+      if (disposed || fromId === toId || !pets.has(fromId) || !pets.has(toId)) return Promise.resolve(false)
+      if (typeof fx.ask === 'function') {
+        const asker = pets.get(fromId)
+        return Promise.resolve(fx.ask(fromId, toId, options)).then(result => {
+          if (!disposed && result === true && options.kind && pets.get(fromId) === asker) asker.character.pop()
+          return result
+        })
+      }
+      fx.say(fromId, options.question || 'Can you help?')
+      return new Promise(resolve => pendingAsks.add({ from: fromId, to: toId, options, age: 0, phase: 0, resolve }))
+    },
     // Read-only references let a deterministic director use the real map's routes.
     map, stage,
     collab(idA, idB, options = {}) {
@@ -255,6 +304,10 @@ export function createWorld(container, { pixelScale = 2, clock } = {}) {
       fx.dispose(); map.dispose(); stage.dispose()
       overlay.remove()
       if (ownsCanvas) canvas.remove()
+      if (dock === 'left' || dock === 'right') {
+        if (oldDock === null) pane.removeAttribute('data-dock')
+        else pane.setAttribute('data-dock', oldDock)
+      }
       if (--parentState.count === 0) {
         if (parentState.changed && parent.style.position === 'relative') parent.style.position = parentState.position
         parents.delete(parent)

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f1f1ec">
+  <title>petpack — a world between us</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./desk.css">
+  <link rel="stylesheet" href="./pane.css">
+  <link rel="stylesheet" href="./fx.css">
+  <script type="importmap">{"imports":{"three":"../../../node_modules/three/build/three.module.js","three/addons/":"../../../node_modules/three/examples/jsm/"}}</script>
+</head>
+<body>
+  <main id="desk" aria-label="Two laptops, one shared world"></main>
+  <script type="module">
+    import { createDesk } from './desk.js'
+    import { createWorld } from './index.js'
+    import { createStory } from './story.js'
+    const params = new URLSearchParams(location.search)
+    const layout = params.get('layout') || (params.has('solo') ? 'solo' : params.has('trio') ? 'trio' : 'pair')
+    const seats = createDesk(document.getElementById('desk'), { layout })
+    const pixelScale = Math.max(1, Math.min(4, Number(params.get('px')) || 2))
+    let time = Math.max(0, Number(params.get('t')) || 0), previous = time, frameId = 0, disposed = false
+    const paused = params.has('paused') || matchMedia('(prefers-reduced-motion: reduce)').matches
+    const origin = performance.now() / 1000 - time
+    const worlds = seats.map(({ paneHost, dock }, seat) => createWorld(paneHost, {
+      seat, dock, pixelScale, clock: () => time, autoRender: false,
+    }))
+    const story = createStory(worlds[0].map)
+    function frame(now) {
+      if (disposed) return
+      if (!paused) time = now / 1000 - origin
+      const state = story.sample(time)
+      const events = story.events(previous, time)
+      for (const world of worlds) {
+        for (const pet of state) {
+          world.upsertPet(pet.id, { ...pet, isMe: pet.homeSeat === world.seat })
+          world.updatePet(pet.id, { ...pet, snap: true })
+        }
+        for (const event of events) {
+          if (event.type === 'ask') world.ask(event.from, event.to, event)
+          else if (event.type === 'collab') world.collab(event.from, event.to, event)
+          else if (event.type === 'gift') world.gift(event.from, event.to, event)
+          else if (event.type === 'say') world.say(event.id, event.text)
+        }
+        world.renderFrame(time - previous, time)
+      }
+      previous = time
+      frameId = requestAnimationFrame(frame)
+    }
+    frameId = requestAnimationFrame(frame)
+    window.petpackDesk = { seats, worlds, get time() { return time }, dispose() {
+      if (disposed) return
+      disposed = true
+      cancelAnimationFrame(frameId)
+      worlds.forEach(world => world.dispose())
+    } }
+    window.addEventListener('pagehide', event => { if (!event.persisted) window.petpackDesk.dispose() })
+  </script>
+</body>
+</html>

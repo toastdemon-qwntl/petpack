@@ -1,211 +1,110 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
-  <link rel="icon" href="data:,">
-  <title>petpack · pixel effects</title>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" href="data:,"><title>petpack · a neighbour who knows</title>
   <script type="importmap">{ "imports": {
     "three": "../../../node_modules/three/build/three.module.js",
     "three/addons/": "../../../node_modules/three/examples/jsm/" } }</script>
   <style>
-    * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; overflow-x: hidden; color: #46574f;
-      background: radial-gradient(ellipse at 77% 5%, #d9e6d3, transparent 48%),
-        radial-gradient(ellipse at 10% 96%, #e2c9a2, transparent 52%), #eae9e0;
-      font: 13px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-    .desktop { margin: 8vh 0 0 6vw; width: min(690px, 46vw); }
-    .desktop header { font-size: 11px; letter-spacing: .19em; text-transform: uppercase; opacity: .62; }
-    .desktop h1 { margin: 48px 0 10px; font: 400 38px/1.2 Georgia, serif; color: #3b5148; }
-    .desktop p { margin: 0 0 32px; color: #728076; max-width: 32em; }
-    .editor { padding: 24px 28px 36px; border-radius: 14px; border: 1px solid #ffffffe0;
-      background: #ffffff70; box-shadow: 0 20px 50px #4357430a; }
-    .editor label { font: 10px/1.5 monospace; letter-spacing: .09em; color: #8a9589; }
-    pre { margin: 30px 0 0; font: 12px/2.1 ui-monospace, SFMono-Regular, monospace; color: #7d8981; white-space: pre-wrap; }
-    pre em { font-style: normal; color: #789c76; }
-    .glass { position: fixed; top: 24px; right: 24px; width: 540px; height: 360px;
-      padding: 9px; border: 1px solid #ffffffbf; border-radius: 24px; background: #ffffff48;
-      backdrop-filter: blur(24px) saturate(1.3); -webkit-backdrop-filter: blur(24px) saturate(1.3);
-      box-shadow: inset 0 1px 0 #fff, inset 0 -1px 0 #ffffff66, 0 22px 50px #31433029, 0 3px 8px #35443412; }
-    #view { position: relative; width: 520px; height: 340px; border-radius: 15px; overflow: hidden; }
-    #scene, #overlay { display: block; position: absolute; inset: 0; width: 100%; height: 100%; }
-    #scene { image-rendering: pixelated; }
-    #overlay { pointer-events: none; }
-    nav { position: fixed; top: 406px; right: 24px; width: 540px; display: flex; flex-wrap: wrap;
-      justify-content: center; gap: 6px; padding: 0 4px; }
-    button { border: 1px solid #ffffffbf; background: #ffffff89; color: #526459; border-radius: 8px;
-      padding: 7px 11px; font: inherit; font-size: 11px; cursor: pointer; }
-    button:hover { background: #fff; }
-    button:focus-visible { outline: 2px solid #5b897d; outline-offset: 3px; }
-    button[aria-pressed='true'] { background: #546c57; color: #fffbea; }
-    .hint { position: fixed; top: 549px; right: 24px; width: 540px; text-align: center;
-      color: #899384; font-size: 10px; letter-spacing: .025em; }
-    body.solo .desktop { display: none; }
-    body.solo .glass { width: 800px; height: 530px; left: 50%; right: auto; top: 14vh; transform: translateX(-50%); }
-    body.solo #view { width: 780px; height: 510px; }
-    body.solo nav { top: calc(14vh + 558px); right: auto; left: 50%; transform: translateX(-50%); width: 780px; }
-    body.solo .hint { top: calc(14vh + 667px); right: auto; left: 50%; transform: translateX(-50%); }
-    @media (max-width: 800px) { .desktop { display: none; } .glass { right: 8px; } nav, .hint { right: 8px; } }
+    * { box-sizing:border-box } body { margin:0;background:#e7e8e3;color:#43564f;font:14px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif }
+    .screens { display:flex;min-height:100vh } .screen { position:relative;width:50%;min-height:100vh;overflow:hidden;
+      background:radial-gradient(ellipse at 18% 95%,#a4b8bc,transparent 70%),#e3e7e5 }
+    .screen + .screen { background:radial-gradient(ellipse at 70% 95%,#c2cfaa,transparent 70%),#e9e6db }
+    .desktop { margin:5vh 7%;opacity:.8 } .desktop small { font-size:10px;text-transform:uppercase;letter-spacing:.16em }
+    h1 { font:400 29px/1.25 Georgia,serif;margin:28px 0 10px } .desktop p { margin:0;color:#76847b;font-size:12px }
+    .editor { margin-top:48vh;padding:26px;border:1px solid #ffffffb0;border-radius:14px;background:#ffffff58;
+      font:12px/2 ui-monospace,monospace;color:#84928a } .editor strong { color:#547c73;font-weight:400 }
+    .glass { position:absolute;top:25vh;width:530px;height:360px;padding:9px 0 9px 9px;right:0;
+      border:1px solid #ffffffb8;border-right:0;border-radius:23px 0 0 23px;background:#ffffff55;
+      backdrop-filter:blur(24px) saturate(1.3);box-shadow:inset 0 1px #fff,0 20px 44px #3a54432b }
+    .screen + .screen .glass { left:0;right:auto;padding:9px 9px 9px 0;border-right:1px solid #ffffffb8;border-left:0;border-radius:0 23px 23px 0 }
+    .view { position:relative;width:520px;height:340px;overflow:hidden;border-radius:14px 0 0 14px }
+    .screen + .screen .view { border-radius:0 14px 14px 0 }
+    .view canvas.world,.overlay { position:absolute;inset:0;width:100%;height:100%;display:block }.world{image-rendering:pixelated}.overlay{pointer-events:none}
+    nav { display:none;position:fixed;bottom:18px;left:50%;transform:translateX(-50%);gap:5px;z-index:5;background:#ffffffb0;padding:8px;border-radius:10px }
+    body.controls nav{display:flex} button{font:inherit;font-size:11px;color:#435c50;background:#fffdf1;border:1px solid #cad4c5;border-radius:6px;padding:6px 10px;cursor:pointer}
+    body.solo .screen + .screen { display:none } body.solo .screen{width:100%} body.solo .glass{width:790px;height:530px;top:22vh} body.solo .view{width:780px;height:510px}
+    @media(max-width:1080px){.desktop{opacity:.35}.glass{width:100%;height:auto;aspect-ratio:530/360}.view{width:100%;height:100%}}
   </style>
 </head>
 <body>
-  <div class="desktop">
-    <header>petpack / DevDay Exchange · London</header>
-    <h1>A little company<br>while you make things.</h1>
-    <p>The village carries on in the corner. A new skill, a shared memory, a neighbour lending a hand.</p>
-    <div class="editor"><label>VILLAGE / TODAY</label><pre>09:41   Mochi found a useful technique.
-09:42   Pip is opening the library.
-09:44   <em>Sunny brought something to share.</em>
-
-        Three neighbours. One little world.
-
-<em>        Working together, on their own.</em></pre></div>
-  </div>
-  <div class="glass"><div id="view"><canvas id="scene" aria-label="Pixel pets collaborating in a village yard"></canvas><div id="overlay"></div></div></div>
-  <nav aria-label="Effect preview controls">
-    <button data-action="gift">Gift</button>
-    <button data-kind="skill">Workshop</button><button data-kind="memory">Library</button>
-    <button data-kind="technique">Dojo</button><button data-kind="resource">Campfire</button>
-    <button data-action="say">Speech</button><button data-action="skills">12 skills</button>
-    <button data-status="working">Working</button><button data-status="waiting">Waiting</button>
-    <button data-status="done">Done</button><button data-status="failed">Failed</button><button data-status="idle">Idle</button>
-    <button data-action="pan">Follow</button><button data-action="auto" aria-pressed="true">Autoplay</button>
-  </nav>
-  <p class="hint">FX development controls · 520 × 340 world · 2 CSS pixels per art pixel</p>
+<div class="screens">
+  <section class="screen"><div class="desktop"><small>Mac · Mochi's desk</small><h1>A neighbour who knows.</h1><p>One shared world, across our screens.</p><div class="editor">Deploy the app to Azure.<br><strong>Mochi is asking a neighbour for a skill…</strong><br><br>Every useful thing we learn can travel.</div></div><div class="glass"><div class="view"><canvas class="world"></canvas><div class="overlay"></div></div></div></section>
+  <section class="screen"><div class="desktop"><small>Windows · Pip's desk</small><h1>A little help, passed along.</h1><p>Ask. Think. Share. Carry on.</p><div class="editor">azure-deploy / available to neighbours<br><strong>Pip can help Mochi ship.</strong><br><br>Working together, on their own.</div></div><div class="glass"><div class="view"><canvas class="world"></canvas><div class="overlay"></div></div></div></section>
+</div>
+<nav aria-label="FX development controls"><button data-action="ask">Ask</button><button data-action="queue">Queue speech</button><button data-action="crowd">Crowd</button><button data-action="gift">Gift</button><button data-action="collab">Collaborate</button><button data-action="auto">Autoplay</button></nav>
 <script type="module">
-  import * as THREE from 'three'
-  import { createStage } from './stage.js'
-  import { toonMaterial } from './toon.js'
-  import { createFx } from './fx.js'
-
-  const params = new URLSearchParams(location.search)
-  const pixelScale = Math.max(1, Math.min(4, Number(params.get('px')) || 2))
-  if (params.has('solo') || pixelScale === 3) document.body.classList.add('solo')
-  const view = document.querySelector('#view'), overlay = document.querySelector('#overlay')
-  const stage = createStage(document.querySelector('#scene'), { pixelScale })
-  const { scene, camera, renderer } = stage
-  const fx = createFx({ scene, camera, overlay, stage })
-  const geometries = new Set(), materials = new Set(), textures = new Set()
-  const cube = new THREE.BoxGeometry(1, 1, 1); geometries.add(cube)
-  const palette = {}
-  function material(color) {
-    if (!palette[color]) { palette[color] = toonMaterial({ color }); materials.add(palette[color]) }
-    return palette[color]
-  }
+import * as THREE from 'three'
+import { createStage } from './stage.js'
+import { toonMaterial } from './toon.js'
+import { createPixelPet } from './pixel-pet.js'
+import { createFx } from './fx.js'
+const params = new URLSearchParams(location.search)
+const pixelScale = Math.max(1, Math.min(4, Number(params.get('px')) || 2))
+if (params.has('controls')) document.body.classList.add('controls')
+if (params.has('solo') || pixelScale === 3) document.body.classList.add('solo')
+const ids = ['pet-0','pet-1','pet-2'], names = ['Mochi','Pip','Sunny'], colors = ['#72abc7','#d58876','#c2ad69']
+let time=0,last=performance.now(),paused=params.has('paused'),auto=!paused,nextAction=.6,frame,disposed=false
+function pane(view,seat) {
+  const stage=createStage(view.querySelector('canvas'),{pixelScale})
+  const fx=createFx({scene:stage.scene,camera:stage.camera,overlay:view.querySelector('.overlay'),stage})
+  const cube=new THREE.BoxGeometry(1,1,1),materials=new Map()
   function box(x,y,z,w,h,d,color) {
-    const object = new THREE.Mesh(cube, material(color))
-    object.position.set(x,y,z); object.scale.set(w,h,d)
-    object.castShadow = object.receiveShadow = true; scene.add(object)
-    return object
+    if(!materials.has(color))materials.set(color,toonMaterial({color}))
+    const mesh=new THREE.Mesh(cube,materials.get(color));mesh.position.set(x,y,z);mesh.scale.set(w,h,d)
+    mesh.castShadow=mesh.receiveShadow=true;stage.scene.add(mesh)
   }
-  box(0,-.22,0,36,.4,28,'#9eaf69')
-  box(0,.01,0,30,.05,3.7,'#d5bf8c')
-  box(.6,.02,-3.2,3.1,.04,10,'#d5bf8c')
-  for (let i=0;i<40;i++) {
-    const x = Math.sin(i * 18.43) * 14, z = Math.cos(i * 7.21) * 10
-    if (Math.abs(z)<2 || (Math.abs(x-.6)<1.8 && z<0)) continue
-    box(x,.09,z,.1,.19,.1,i%3 ? '#81935b' : '#e2d890')
-    if (i%4===0) box(x,.21,z,.14,.1,.14,'#f7d38e')
+  box(7,-.22,0,70,.4,35,'#a3b57a');box(7,.015,1.5,70,.08,3.3,'#d3bc8b')
+  for(let i=-20;i<40;i++) {
+    const x=i*1.6
+    box(x,.15,-1.2,.13,.3,.13,i%3===0?'#f5d28d':'#84975f')
+    box(x+.3,.15,4.4,.12,.3,.12,'#879d62')
+    if(i%2===0){box(x,.55,-3.4,.17,1.1,.17,'#a08c69');box(x+.8,.72,-3.4,1.6,.12,.1,'#b7a582');box(x+.8,.35,-3.4,1.6,.12,.1,'#b7a582')}
   }
-  for (let i=0;i<12;i++) {
-    const x = -7 + i*1.35
-    box(x,.42,-3.5,.18,.88,.18,'#a38a61')
-    box(x,.7,-3.5,1.45,.14,.12,'#baa074')
-    box(x,.32,-3.5,1.45,.12,.12,'#baa074')
+  for(const x of [-6,1,14,22]){
+    box(x,1.1,-6,.35,2.2,.35,'#8f7c61');box(x,3,-6,2.5,1.8,2,'#81966b');box(x-.2,3.7,-6.1,1.8,.7,1.5,'#a2b47d')
   }
-  for (const [x,z] of [[-5,-6],[4.7,-6.1],[8,-3.8],[-8,2.7]]) {
-    box(x,1,z,.4,2,.4,'#8f7956')
-    box(x,2.8,z,2.3,1.7,1.8,'#657f51')
-    box(x-.3,3.4,z-.1,1.7,.7,1.4,'#85995d')
-    box(x+.65,2.7,z+.15,.8,1.2,1.2,'#779053')
-  }
-  const lantern = box(-4.65,1.4,-2.7,.12,2.8,.12,'#716f54')
-  box(-4.65,2.8,-2.7,.45,.5,.35,'#ffdda2')
-  box(-4.65,3.08,-2.7,.55,.13,.45,'#71806a')
-  for (let i=0;i<7;i++) box(-1.1+i*.38,.08,1.1+Math.sin(i)*.13,.25,.09,.16,'#baa374')
-
-  // Flat, crisply painted stand-ins keep this page independent of the cast lane.
-  const pixels = [
-    '....................','...dd..........dd...','...dbd........dbd...',
-    '...dbbddddddddbbd...','...dbbbbbbbbbbbbd...','...dbbbbbbbbbbbbd...',
-    '..dbbbbccccccbbbbd..','..dbbccceccceccbbd..','..dbbccceccceccbbd..',
-    '..dbbccccnnccccbbd..','...dbbccccccccbbd...','....dddddddddddd....',
-    '....dbbbbbbbbbbd....','...dbbcbbbbbbcbbd...','...dbbccbbbbccbbd...',
-    '...dbbccccccccbbd...','....dbbccccccbbd....','....dbbbbbbbbbbd....',
-    '....dddd..dddd......','....dffd..dffd......',
-  ]
-  const pets = []
-  for (const [i,color] of ['#79a8ad','#d6a05f','#b4a1bd'].entries()) {
-    const texCanvas=document.createElement('canvas'); texCanvas.width=20;texCanvas.height=20
-    const ctx=texCanvas.getContext('2d')
-    const colors={d:'#455b50',b:color,c:'#fff2d6',e:'#354849',n:'#cc8774',f:'#66796b'}
-    pixels.forEach((row,y)=>[...row].forEach((char,x)=>{if(colors[char]){ctx.fillStyle=colors[char];ctx.fillRect(x,y,1,1)}}))
-    const texture=new THREE.CanvasTexture(texCanvas)
-    texture.minFilter=texture.magFilter=THREE.NearestFilter;texture.colorSpace=THREE.SRGBColorSpace
-    textures.add(texture)
-    const spriteMaterial=new THREE.SpriteMaterial({map:texture,transparent:true,alphaTest:.5,depthWrite:true,toneMapped:false})
-    materials.add(spriteMaterial)
-    const sprite=new THREE.Sprite(spriteMaterial);sprite.scale.set(2,2,1);sprite.position.y=1.05
-    const anchor=new THREE.Group();anchor.position.set(-2.65+i*2.65,.045,.3+(i===1?.15:0));anchor.add(sprite)
-    const shadow=new THREE.Mesh(cube,new THREE.MeshBasicMaterial({color:'#647a50',transparent:true,opacity:.3,depthWrite:false}))
-    materials.add(shadow.material);shadow.scale.set(1.3,.025,.65);shadow.position.y=.015;anchor.add(shadow)
-    scene.add(anchor)
-    const id=`pet-${i}`
-    fx.attach(id,{anchor,height:2.05,color,name:['Mochi','Pip','Sunny'][i],isMe:i===0})
-    fx.setSkills(id,[5,3,7][i]);fx.setStatus(id,['working','waiting','done'][i])
-    pets.push({id,anchor,sprite,baseX:anchor.position.x,pop:0})
-  }
-  let time=0,last=performance.now(),paused=params.has('paused'),auto=!params.has('paused'),nextAction=2.3,sequence=0,pan=false
-  document.querySelector('[data-action="auto"]').setAttribute('aria-pressed',String(auto))
-  const labels={skill:'A NEW SKILL',memory:'PROJECT MEMORY',technique:'LEARN BY DOING',resource:'A LITTLE HELP'}
-  function collaborate(kind) { for(const p of pets) fx.setStatus(p.id,'idle'); return fx.collab('pet-0','pet-1',{kind,label:labels[kind]}) }
-  async function send() { const arrived=await fx.gift('pet-0','pet-2',{color:'#edc175',label:'IMAGEGEN'});if(arrived)pets[2].pop=1;return arrived }
-  function tick(dt) {
-    time+=dt
-    for(let i=0;i<pets.length;i++) {
-      const pet=pets[i];pet.pop=Math.max(0,pet.pop-dt*2)
-      pet.sprite.position.y=1.05+Math.sin(time*2.3+i)*.022+Math.sin(pet.pop*Math.PI)*.2
-    }
-    stage.update(dt,time);fx.update(dt,time);stage.render()
-    if(auto && time>=nextAction) {
-      const kind=['gift','skill','memory','technique','resource'][sequence++%5]
-      if(kind==='gift')send();else collaborate(kind)
-      nextAction=time+6
-    }
-  }
-  function resize() {
-    const {width,height}=view.getBoundingClientRect()
-    stage.resize(width,height);fx.resize(width,height);stage.focus(0,-.25,{span:12});stage.render()
-    document.querySelector('.hint').textContent=`FX development controls · ${width} × ${height} world · ${pixelScale} CSS pixels per art pixel`
-  }
-  const observer=new ResizeObserver(resize);observer.observe(view);resize()
-  for(let i=0;i<90;i++)stage.update(1/60,i/60)
-  tick(0)
-  let frame
-  function loop(now) { const dt=Math.min(.05,(now-last)/1000);last=now;if(!paused)tick(dt);frame=requestAnimationFrame(loop) }
-  frame=requestAnimationFrame(loop)
-  document.querySelector('nav').addEventListener('click',event=>{
-    const button=event.target.closest('button');if(!button)return
-    if(button.dataset.status)for(const pet of pets)fx.setStatus(pet.id,button.dataset.status)
-    if(button.dataset.kind)collaborate(button.dataset.kind)
-    switch(button.dataset.action) {
-      case 'gift':send();break
-      case 'say':fx.say('pet-1','I saved you a page.');break
-      case 'skills':for(const pet of pets)fx.setSkills(pet.id,12);break
-      case 'pan':pan=!pan;stage.focus(pan?1.9:0,pan?.5:-.25,{span:pan?10:12});break
-      case 'auto':auto=!auto;nextAction=time+1;button.setAttribute('aria-pressed',String(auto));break
-    }
+  for(const x of [3,11]){box(x,1.25,-2.1,.12,2.5,.12,'#7c8166');box(x,2.5,-2.1,.4,.5,.35,'#ffe3a3');box(x,2.8,-2.1,.5,.12,.45,'#7a8b70')}
+  const pets=ids.map((id,i)=>{
+    const character=createPixelPet({color:colors[i],kind:['cat','fox','bunny'][i]})
+    const anchor=new THREE.Group();anchor.add(character.object3d);anchor.position.set([5.7,8.3,11.9][i],.07,1.5)
+    stage.scene.add(anchor);fx.attach(id,{anchor,height:character.height,color:colors[i],name:names[i],isMe:i===seat});fx.setSkills(id,[2,6,3][i])
+    return{id,anchor,character}
   })
-  window.fxDemo={fx,pets,scene,camera,renderer,stage,send,collaborate,resize,
-    pause(value=true){paused=value;auto=false},
-    advance(seconds){const steps=Math.max(1,Math.ceil(seconds*60));for(let i=0;i<steps;i++)tick(seconds/steps)},
-    get time(){return time},
-    dispose(){cancelAnimationFrame(frame);observer.disconnect();fx.dispose();
-      for(const geometry of geometries)geometry.dispose();for(const material of materials)material.dispose();
-      for(const texture of textures)texture.dispose();stage.dispose()},
+  function resize(){const r=view.getBoundingClientRect();stage.resize(r.width,r.height);fx.resize(r.width,r.height);stage.focus(seat*14,0,{span:14})}
+  const observer=new ResizeObserver(resize);observer.observe(view);resize()
+  for(let i=0;i<180;i++)stage.update(1/60)
+  return{stage,fx,pets,scene:stage.scene,camera:stage.camera,renderer:stage.renderer,resize,
+    dispose(){observer.disconnect();fx.dispose();for(const p of pets)p.character.dispose();cube.dispose();for(const m of materials.values())m.dispose();stage.dispose()}}
+}
+const views=[...document.querySelectorAll('.view')]
+const panes=(document.body.classList.contains('solo')?views.slice(0,1):views).map((v,i)=>pane(v,i))
+function ask(){return Promise.all(panes.map(p=>p.fx.ask('pet-0','pet-1',{question:'How do we ship to Azure?',answer:'Use my azure-deploy skill.',kind:'skill',label:'azure-deploy'})))}
+function send(){return Promise.all(panes.map(p=>p.fx.gift('pet-1','pet-0',{color:'#ffd28c',label:'AZURE-DEPLOY'})))}
+function collaborate(kind='skill'){return Promise.all(panes.map(p=>p.fx.collab('pet-0','pet-1',{kind,label:'A SHARED SKILL'})))}
+function tick(dt){
+  time+=dt
+  for(const p of panes){
+    for(const pet of p.pets){pet.character.set({anim:'idle',moving:0,facing:pet.id==='pet-0'?1:-1});pet.character.update(dt,time)}
+    p.stage.update(dt,time);p.stage.scene.updateMatrixWorld(true);p.fx.update(dt,time);p.stage.render()
   }
-  window.addEventListener('pagehide',()=>window.fxDemo.dispose(),{once:true})
+  if(auto&&time>=nextAction){ask();nextAction=time+6}
+}
+function loop(now){const dt=Math.min(.1,(now-last)/1000);last=now;if(!paused)tick(dt);frame=requestAnimationFrame(loop)}
+tick(0);frame=requestAnimationFrame(loop)
+document.querySelector('nav').addEventListener('click',event=>{
+  switch(event.target.dataset.action){
+    case'ask':ask();break;case'gift':send();break;case'collab':collaborate();break
+    case'queue':for(const p of panes){p.fx.say('pet-0','One quick question.');p.fx.say('pet-0','Does it work on Windows?');p.fx.say('pet-0','Lovely. Thank you!')}break
+    case'crowd':for(const p of panes)for(const [i,pet]of p.pets.entries()){pet.anchor.position.x=4.7+i*.45;p.fx.say(pet.id,['A skill for you.','I remember this.','Let us try it.'][i])}break
+    case'auto':auto=!auto;nextAction=time+.2;break
+  }
+})
+window.fxDemo={...panes[0],panes,ask,send,collaborate,pause(value=true){paused=value;auto=false},
+  advance(seconds){const steps=Math.max(1,Math.ceil(seconds*60));for(let i=0;i<steps;i++)tick(seconds/steps)},
+  get time(){return time},dispose(){if(disposed)return;disposed=true;cancelAnimationFrame(frame);for(const p of panes)p.dispose()}}
+window.addEventListener('pagehide',()=>window.fxDemo.dispose(),{once:true})
 </script>
 </body>
 </html>

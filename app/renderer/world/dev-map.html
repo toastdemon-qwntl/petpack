@@ -3,107 +3,94 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>petpack · village study</title>
+  <title>petpack · one shared road</title>
   <link rel="icon" href="data:,">
   <script type="importmap">{ "imports": {
     "three": "../../../node_modules/three/build/three.module.js",
     "three/addons/": "../../../node_modules/three/examples/jsm/" } }</script>
   <style>
-    *{box-sizing:border-box}body{margin:0;background:#ecebe2;color:#536257;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh}
-    body::before{content:"";position:fixed;inset:0;z-index:-1;background:radial-gradient(ellipse at 80% 3%,#d8e4dc,transparent 50%),radial-gradient(ellipse at 12% 85%,#dcc9aa90,transparent 50%)}
-    header{margin:52px 48px 0;width:calc(100% - 670px);max-width:540px}.eyebrow{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#81907b}h1{font:400 48px/1.04 Georgia,serif;letter-spacing:-2px;color:#445548;margin:22px 0 16px}p{line-height:1.65;font-size:14px;max-width:350px;color:#7e877a}
-    .glass{padding:7px;border:1px solid #ffffffb0;border-radius:22px;background:linear-gradient(145deg,#ffffff8a,#ffffff30);backdrop-filter:blur(24px) saturate(1.35);box-shadow:inset 0 1px 0 #fffffff0,inset 0 -1px 0 #ffffff40,0 17px 55px #35493425,0 3px 10px #36472b10}
-    .pane{position:absolute;right:32px;top:28px;width:520px;height:340px}.glass canvas{display:block;width:100%;height:100%;border-radius:15px;image-rendering:pixelated;background:#9fb982}
-    main{margin:125px 48px 32px;max-width:1280px}.toolbar{display:flex;align-items:center;gap:8px;margin:0 2px 16px;flex-wrap:wrap}button,label{font:inherit;font-size:12px;color:#637260;border:1px solid #9eab9435;background:#ffffff69;border-radius:100px;padding:9px 14px;cursor:pointer}button:hover{background:#fff}label{margin-left:auto;display:flex;align-items:center;gap:7px}input{accent-color:#8d9e71}.study{height:440px;width:100%;border-radius:24px}.study canvas{border-radius:17px}footer{display:flex;justify-content:space-between;font-size:11px;letter-spacing:.025em;margin:15px 4px;color:#8a937f}
-    @media(min-width:1800px){header{margin-top:90px;margin-left:90px}h1{font-size:64px;max-width:500px}.pane{right:60px;top:50px}main{margin:150px 90px 40px;max-width:1600px}.study{height:800px}.toolbar{margin-bottom:20px}}
-    @media(max-width:900px){header{margin:30px 24px;width:auto;max-width:none}h1{font-size:36px}.pane{position:relative;top:auto;right:auto;width:min(520px,calc(100vw - 32px));margin:30px 16px}main{margin:35px 16px}.study{height:420px}label{margin-left:0}}
+    *{box-sizing:border-box}body{margin:0;background:#eeede5;color:#465b4d;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;padding:32px 36px}
+    body::before{content:"";position:fixed;inset:0;z-index:-1;background:radial-gradient(ellipse at 80% 0%,#dbe8df,transparent 55%),radial-gradient(ellipse at 0% 100%,#e6d8bc,transparent 55%)}
+    header{display:flex;align-items:end;justify-content:space-between;margin-bottom:24px}.eyebrow{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:#879281}h1{font:400 38px/1.05 Georgia,serif;letter-spacing:-1.1px;margin:10px 0 0}header p{font-size:12px;color:#85907f;max-width:285px;line-height:1.6;margin:0}
+    .strip{display:flex;width:max-content;overflow:hidden;border-radius:14px;box-shadow:0 15px 45px #425c3920;outline:1px solid #ffffffaf}.strip canvas{display:block;border-radius:0!important;image-rendering:pixelated}
+    .labels{display:flex;margin:11px 0 0;font-size:10px;letter-spacing:.08em;color:#84917d;text-transform:uppercase}.labels span{display:block;text-align:center}
+    main{display:flex;align-items:center;gap:70px;margin-top:42px}.glass{padding:7px;border:1px solid #ffffffb0;border-radius:22px;background:linear-gradient(145deg,#ffffff99,#ffffff35);backdrop-filter:blur(24px) saturate(1.35);box-shadow:inset 0 1px 0 #fff,0 17px 55px #35493425}.glass canvas{display:block;width:100%;height:100%;border-radius:15px;image-rendering:pixelated;background:#9fb982}.study{width:576px;height:432px;flex:none}.copy{max-width:315px}.copy h2{font:400 31px/1.13 Georgia,serif;letter-spacing:-.6px;margin:12px 0 18px}.copy p{font-size:13px;color:#819078;line-height:1.7}.legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:25px}a{font-size:11px;color:#6f7e62;text-decoration:none;border-bottom:1px solid #a6b39a;padding-bottom:4px}a[aria-current=true]{color:#3b543e;border-color:#3b543e}footer{font-size:10px;color:#939d8a;letter-spacing:.035em;margin-top:22px}
+    @media(min-width:1800px){body{padding:52px 56px}header{margin-bottom:36px}h1{font-size:50px}.study{width:800px;height:600px}main{gap:100px;margin-top:65px}.copy h2{font-size:38px}.copy{max-width:380px}.copy p{font-size:15px}}
+    @media(max-width:800px){body{padding:22px 16px}header p{display:none}h1{font-size:30px}main{flex-direction:column;align-items:start;gap:25px;margin-top:30px}.study{width:min(100%,576px);height:auto;aspect-ratio:4/3}.labels{font-size:8px}.copy h2{font-size:26px}}
   </style>
 </head>
 <body>
-  <header><div class="eyebrow">Petpack · village study / 02</div><h1>A little window.<br>A world of company.</h1><p>A library of memories. A workshop of skills.<br>And the paths that bring everyone together.</p></header>
-  <div class="glass pane"><canvas id="pane" aria-label="Village in a small glass pane"></canvas></div>
+  <header><div><div class="eyebrow">Petpack · map study / 03</div><h1>One road. Every screen.</h1></div><p>Six neighbouring seats, edge to edge.<br>The world continues through every seam.</p></header>
+  <section class="strip" aria-label="Six adjoining panes showing chunks minus two through three"></section>
+  <div class="labels"><span>−2 · Dojo</span><span>−1 · Campfire</span><span>0 · Workshop</span><span>1 · Library</span><span>2 · Dojo</span><span>3 · Campfire</span></div>
   <main>
-    <div class="toolbar" aria-label="Development inspection controls">
-      <button data-place="library">Library</button><button data-place="bridge">Bridge</button><button data-place="workshop">Workshop</button><button data-place="dojo">Dojo</button><button data-place="campfire">Campfire</button><button data-place="pond">Pond</button><button data-place="overview">Whole village</button><button id="fly">Pause fly-over</button>
-      <label><input id="paths" type="checkbox">Path graph</label>
-    </div>
-    <div class="glass study"><canvas id="study" aria-label="Large village inspection view"></canvas></div>
-    <footer><span>Procedural pixel village · warm afternoon</span><span>64 × 40 tiles / one shared place</span></footer>
+    <div class="glass study"><canvas id="study" aria-label="Large fixed camera view of one world chunk"></canvas></div>
+    <div class="copy"><div class="eyebrow">A window onto a shared place</div><h2 id="landmark-title">The Workshop</h2><p>A little village that carries on beyond the bezel. Pets take the same road to borrow a skill, recall a memory, or learn something together.</p><p>The camera stays home.<br>The company comes to you.</p><nav class="legend" aria-label="Development landmark inspection"><a href="?seat=0" data-seat="0">Workshop</a><a href="?seat=1" data-seat="1">Library</a><a href="?seat=2" data-seat="2">Dojo</a><a href="?seat=3" data-seat="3">Campfire</a></nav><footer>Procedural 3D pixel art · 14 tiles per pane<br>One shared clock · continuous boundary crossings</footer></div>
   </main>
   <script type="module">
-    import * as THREE from 'three'
     import { createStage } from './stage.js'
-    import { createMap } from './map.js'
-    import { ROAD_NODES, ROAD_EDGES, groundHeight } from './map-paths.js'
+    import { createMap, CHUNK_W } from './map.js'
+    import { createPixelPet } from './pixel-pet.js'
     const params = new URLSearchParams(location.search)
-    const places = {
-      library: {x:-20,z:-13.5,span:13}, bridge:{x:0,z:0,span:13}, workshop:{x:18,z:-13,span:13},
-      dojo:{x:18,z:5.5,span:13},campfire:{x:-16,z:6,span:14},pond:{x:6.5,z:12.5,span:13},overview:{x:0,z:0,span:70},
+    let elapsed = Number(params.get('t') || 0), paused = params.has('paused'), dirty = true, disposed = false
+    let seat = Math.trunc(Number(params.get('seat')) || 0)
+    const seed = Number(params.get('seed')) || 14, views = []
+    const strip = document.querySelector('.strip')
+    function makeView(canvas, index, pixelScale) {
+      const stage = createStage(canvas, { pixelScale }), map = createMap(stage.scene, { seed })
+      map.ensure(index,index)
+      const pets = [createPixelPet({color:'#648adb',kind:'cat'}),createPixelPet({color:'#d77e68',kind:'robot'})]
+      pets.forEach(p=>stage.scene.add(p.object3d))
+      views.push({stage,map,pets,index,canvas})
     }
-    let current = params.get('place') || 'library', elapsed = Number(params.get('t') || 0), paused = params.has('paused')
-    let settling = .01
-    if (!places[current]) current = 'library'
-    const stages = [], maps = [], graphs = []
-    for(const [i,canvas] of [...document.querySelectorAll('canvas')].entries()) {
-      const stage=createStage(canvas,{pixelScale:Number(params.get('px')) || (i ? 3 : 2)})
-      stage.resize(canvas.clientWidth,canvas.clientHeight)
-      const map=createMap(stage.scene,{seed:14})
-      const positions=[]
-      for(const [a,b] of ROAD_EDGES) {
-        const p=ROAD_NODES[a],q=ROAD_NODES[b],n=Math.ceil(Math.hypot(q.x-p.x,q.z-p.z)*4)
-        for(let j=0;j<n;j++) for(const f of [j/n,(j+1)/n]) {
-          const x=p.x+(q.x-p.x)*f,z=p.z+(q.z-p.z)*f
-          positions.push(x,groundHeight(x,z)+.13,z)
-        }
+    for(let i=-2;i<=3;i++) {const canvas=document.createElement('canvas');canvas.setAttribute('aria-label',`Chunk ${i}`);strip.append(canvas);makeView(canvas,i,2)}
+    makeView(document.querySelector('#study'),seat,Number(params.get('px')) || 3)
+    function focus(view,settle=true) {
+      const c=view.map.chunkCenter(view.index)
+      view.stage.focus(c.x,c.z,{span:CHUNK_W})
+      if(settle) for(let j=0;j<180;j++)view.stage.update(1/30,elapsed)
+    }
+    function resize() {
+      const width=Math.max(32,Math.floor((innerWidth-(innerWidth>=1800?112:innerWidth<=800?32:72))/6/4)*4)
+      Array.from(strip.children).forEach(c=>{c.style.width=width+'px';c.style.height=width*.75+'px'})
+      document.querySelectorAll('.labels span').forEach(c=>c.style.width=width+'px')
+      views.forEach(v=>{v.stage.resize(v.canvas.clientWidth,v.canvas.clientHeight);focus(v)})
+      dirty=true
+    }
+    function setSeat(value) {
+      seat=Math.trunc(value); const v=views[6];v.index=seat;v.map.ensure(seat,seat);focus(v)
+      document.querySelector('#landmark-title').textContent='The '+v.map.landmark(seat).label
+      document.querySelectorAll('[data-seat]').forEach(a=>a.setAttribute('aria-current',String(Number(a.dataset.seat)===seat)))
+      dirty=true
+    }
+    function render(dt=0) {
+      const phase=((elapsed%48)+48)%48
+      const x=phase<18 ? -2+phase*.88 : phase<26 ? 13.84 : phase<44 ? 13.84-(phase-26)*.88 : -2
+      const moving=phase<18 || (phase>=26 && phase<44)
+      for(const v of views) {
+        v.pets.forEach((pet,i)=>{
+          pet.object3d.position.set(i?15.8:x,v.map.ground(i?15.8:x,1.5),1.5)
+          pet.set({anim:i?'idle':moving?'run':'idle',moving:i?false:moving,facing:i?-1:phase>=26?-1:1})
+          pet.update(dt,elapsed)
+        })
+        v.map.update(dt,elapsed);v.stage.update(dt,elapsed);v.stage.render()
       }
-      const geometry=new THREE.BufferGeometry()
-      geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3))
-      const graph=new THREE.LineSegments(geometry,new THREE.LineBasicMaterial({color:'#fff1af',depthTest:false,transparent:true,opacity:.85}))
-      graph.renderOrder=1000
-      graph.visible=params.has('graph')
-      stage.scene.add(graph)
-      stages.push(stage);maps.push(map);graphs.push(graph)
+      dirty=false
     }
-    function focus(name,settle=false) {
-      current=name
-      settling=settle ? .01 : 2
-      const p=places[name]
-      stages.forEach((stage,i)=>{
-        // The pane stays pet-sized; the study shows more context around each landmark.
-        const span = name==='overview' ? p.span : p.span*(i ? 2 : 1)
-        stage.focus(p.x,p.z,{span})
-        if(settle) for(let j=0;j<240;j++) stage.update(1/60,elapsed)
-      })
-    }
-    focus(current,true)
-    const stopButton=document.querySelector('#fly')
-    const updateButton=()=>stopButton.textContent=paused?'Resume fly-over':'Pause fly-over'
-    updateButton()
-    document.querySelectorAll('[data-place]').forEach(button=>button.addEventListener('click',()=>{paused=true;updateButton();focus(button.dataset.place)}))
-    stopButton.addEventListener('click',()=>{paused=!paused;settling=.01;updateButton()})
-    const pathToggle=document.querySelector('#paths')
-    pathToggle.checked=params.has('graph')
-    pathToggle.addEventListener('change',()=>{graphs.forEach(g=>g.visible=pathToggle.checked);settling=.01})
-    const observer=new ResizeObserver(()=>{stages.forEach(stage=>stage.resize(stage.renderer.domElement.clientWidth,stage.renderer.domElement.clientHeight));settling=.01})
-    document.querySelectorAll('canvas').forEach(c=>observer.observe(c))
-    const tour=['library','bridge','workshop','dojo','pond','campfire']
-    let previous=performance.now(),frame,disposed=false
-    function tick(now){
-      const dt=Math.min(.06,(now-previous)/1000);previous=now
-      if(!paused){elapsed+=dt;const name=tour[Math.floor(elapsed/10)%tour.length];if(name!==current)focus(name)}
-      if(!paused||settling>0){
-        stages.forEach((stage,i)=>{maps[i].update(dt,elapsed);stage.update(dt,elapsed);stage.render()})
-        settling=Math.max(0,settling-dt)
-      }
+    resize();setSeat(seat);render()
+    document.querySelectorAll('[data-seat]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();setSeat(Number(a.dataset.seat))}))
+    let previous=performance.now(),frame
+    function tick(now) {
+      if(disposed)return
+      const dt=Math.min(.1,(now-previous)/1000);previous=now
+      if(!paused)elapsed+=dt
+      if(!paused||dirty)render(paused?0:dt)
       frame=requestAnimationFrame(tick)
     }
     frame=requestAnimationFrame(tick)
-    function dispose(){
-      if(disposed)return;disposed=true
-      cancelAnimationFrame(frame);observer.disconnect()
-      stages.forEach((stage,i)=>{maps[i].dispose();graphs[i].geometry.dispose();graphs[i].material.dispose();stage.dispose()})
-    }
-    window.mapPreview={stages,maps,graphs,focus:(name)=>{paused=true;updateButton();focus(name,true)},setTime:t=>{elapsed=t;settling=.01},dispose}
+    addEventListener('resize',resize)
+    function dispose(){if(disposed)return;disposed=true;cancelAnimationFrame(frame);removeEventListener('resize',resize);views.forEach(v=>{v.pets.forEach(p=>p.dispose());v.map.dispose();v.stage.dispose()})}
+    window.mapPreview={views,stages:views.map(v=>v.stage),maps:views.map(v=>v.map),setSeat,setTime(t){elapsed=t;render()},pause(){paused=true},play(){paused=false},render,dispose}
     addEventListener('pagehide',dispose,{once:true})
   </script>
 </body>

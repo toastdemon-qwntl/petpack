@@ -1,12 +1,10 @@
 export const DURATION = 60
 export const PETS = [
-  { id: 'pip', displayName: 'Pip', color: '#6d99e5', kind: 'cat', skillCount: 5, isMe: true },
-  { id: 'cleo', displayName: 'Cleo', color: '#e99a82', kind: 'blob', skillCount: 2, isMe: false },
-  { id: 'mochi', displayName: 'Mochi', color: '#e4b960', kind: 'robot', skillCount: 3, isMe: false },
-  { id: 'fern', displayName: 'Fern', color: '#80b291', kind: 'sprout', skillCount: 4, isMe: false },
-  { id: 'nova', displayName: 'Nova', color: '#ac91d0', kind: 'cat', skillCount: 1, isMe: false },
+  { id: 'pip', displayName: 'Pip', color: '#6d99e5', kind: 'cat', skillCount: 3, homeSeat: 0 },
+  { id: 'cleo', displayName: 'Cleo', color: '#df706d', kind: 'cat', skillCount: 5, homeSeat: 1 },
+  { id: 'fern', displayName: 'Fern', color: '#80b291', kind: 'sprout', skillCount: 2, homeSeat: -1 },
 ]
-const TEST_PET = { id: 'test', displayName: 'Pixel', color: '#85bac8', kind: 'cat', skillCount: 2, isMe: false }
+const TEST_PET = { id: 'test', displayName: 'Pixel', color: '#85bac8', kind: 'cat', skillCount: 2, homeSeat: 0 }
 const between = (t, start, end) => t >= start && t < end
 const clamp = t => Math.max(0, Math.min(1, t))
 export const loopTime = time => ((Number(time) || 0) % DURATION + DURATION) % DURATION
@@ -82,25 +80,22 @@ function itinerary(map, keys) {
   }
 }
 
+// One useful request, then the favour returned. Events have absolute timestamps
+// within the loop, so all panes receive exactly the same choreography.
 export const EVENTS = [
-  { at: 4.4, type: 'say', id: 'pip', text: 'Found a useful skill.' },
-  { at: 5.2, type: 'collab', from: 'pip', to: 'cleo', kind: 'skill', label: 'pixel craft' },
-  { at: 8.3, type: 'gift', from: 'pip', to: 'cleo', color: '#6d99e5', label: 'pixel craft' },
-  { at: 10.1, type: 'say', id: 'cleo', text: 'Got it!' },
-  { at: 17.2, type: 'say', id: 'fern', text: 'I remember this…' },
-  { at: 18.2, type: 'collab', from: 'fern', to: 'mochi', kind: 'memory', label: 'project memories' },
-  { at: 22.4, type: 'say', id: 'mochi', text: 'That makes sense.' },
-  { at: 30.2, type: 'collab', from: 'pip', to: 'cleo', kind: 'technique', label: 'a better approach' },
-  { at: 35.6, type: 'say', id: 'cleo', text: 'Your turn!' },
-  { at: 36.3, type: 'collab', from: 'cleo', to: 'pip', kind: 'technique', label: 'practise together' },
-  { at: 46.5, type: 'say', id: 'nova', text: 'Hello, world.' },
-  { at: 47.5, type: 'say', id: 'fern', text: 'Welcome to the pack.' },
-  { at: 48.4, type: 'collab', from: 'fern', to: 'nova', kind: 'resource', label: 'a little head start' },
-  { at: 49.4, type: 'gift', from: 'mochi', to: 'nova', color: '#e4b960', label: 'welcome' },
-  { at: 52, type: 'say', id: 'nova', text: 'For me? ♡' },
+  { at: 4.2, type: 'say', id: 'pip', text: 'Azure deploy is missing…' },
+  { at: 14.2, type: 'ask', from: 'pip', to: 'cleo', question: 'how do we ship to Azure?',
+    answer: 'my azure-deploy skill', kind: 'skill', label: 'azure-deploy' },
+  { at: 18, type: 'say', id: 'pip', text: 'learned azure-deploy' },
+  { at: 23.2, type: 'collab', from: 'pip', to: 'cleo', kind: 'memory', label: 'deployment checklist' },
+  { at: 27.2, type: 'say', id: 'pip', text: 'Got it. Thank you!' },
+  { at: 38.5, type: 'say', id: 'pip', text: 'Shipped to Azure!' },
+  { at: 48.4, type: 'say', id: 'cleo', text: 'Let’s improve it together.' },
+  { at: 49.3, type: 'collab', from: 'pip', to: 'cleo', kind: 'skill', label: 'a reusable deploy skill' },
+  { at: 53.1, type: 'say', id: 'cleo', text: 'Next time, one step.' },
 ]
 
-/** Events crossed since the last tick. Hidden tabs do not replay old meetings. */
+/** Hidden tabs resume life now instead of replaying stale conversations. */
 export function storyEvents(previous, current) {
   if (!Number.isFinite(previous) || !Number.isFinite(current) || current < previous || current - previous > 3) return []
   const events = []
@@ -113,93 +108,74 @@ export function storyEvents(previous, current) {
   return events
 }
 
-/** Pure map-aware story. Each pair makes a real journey on its side of town. */
-export function createStory(map, { testPet = false } = {}) {
-  const { workshop, library, dojo, campfire } = map.landmarks
-  const key = (at, location) => ({ at, ...location })
-  const positions = {}
-  for (const [id, side, delay] of [['pip', -1, 0], ['cleo', 1, .6]]) {
-    const home = offset(workshop, side * 2.4, 2.2)
-    const work = offset(workshop, side * 1.15, .7)
-    const practice = offset(dojo, side * 1.25, .7)
-    positions[id] = itinerary(map, [
-      key(0, home), key(delay || .05, home), key(4 + delay, work),
-      key(11 + delay, work), key(28 + delay, practice), key(40 + delay, practice),
-      key(58 + delay, home), key(DURATION, home),
-    ])
-  }
-  for (const [id, side, delay] of [['fern', -1, 0], ['mochi', 1, .7]]) {
-    const home = offset(campfire, side * 1.65, .1)
-    const reading = offset(library, side * 1.15, .8)
-    positions[id] = itinerary(map, [
-      key(0, home), key(.5 + delay, home), key(16 + delay, reading),
-      key(25 + delay, reading), key(42 + delay, home), key(DURATION, home),
-    ])
-  }
-  const arrival = offset(campfire, 4.8, .7)
-  const welcome = offset(campfire, .1, 1.4)
-  positions.nova = itinerary(map, [key(0, arrival), key(44, arrival), key(47, welcome), key(55, welcome), key(59, arrival), key(DURATION, arrival)])
-  const testHome = offset(workshop, -.2, 3.2)
-  positions.test = itinerary(map, [key(0, testHome), key(12, testHome), key(29, offset(dojo, -.2, 3.2)), key(40, offset(dojo, -.2, 3.2)), key(58, testHome), key(DURATION, testHome)])
+const kinds = ['skill', 'memory', 'technique', 'resource']
+const labels = ['Workshop', 'Library', 'Dojo', 'Campfire']
+function landmark(map, seat) {
+  if (map.landmark) return map.landmark(seat)
+  const type = ((seat % 4) + 4) % 4
+  return { x: seat * (map.chunkWidth || 14), z: 1.5, kind: kinds[type], label: labels[type] }
+}
 
+/** Positions are a pure function of time; two computers see one shared journey. */
+export function createStory(map, { testPet = false } = {}) {
+  const workshop = landmark(map, 0), library = landmark(map, 1)
+  const key = (at, location) => ({ at, ...location })
+  const pipHome = offset(workshop, -1.35, 0)
+  const cleoHome = offset(library, 1.35, 0)
+  const pipVisit = offset(library, -1.35, 0)
+  const cleoVisit = offset(workshop, 1.35, 0)
+  // Until the map lane lands its strip, keep this file loadable with the old map.
+  const routes = map.landmark ? map : { path: (a, b) => [a, b] }
+  const positions = {
+    pip: itinerary(routes, [key(0, pipHome), key(6, pipHome), key(14, pipVisit),
+      key(28, pipVisit), key(36, pipHome), key(60, pipHome)]),
+    cleo: itinerary(routes, [key(0, cleoHome), key(41, cleoHome), key(48, cleoVisit),
+      key(54, cleoVisit), key(60, cleoHome)]),
+    fern: itinerary(routes, [key(0, { x: -20, z: 2.2 }), key(9, { x: -20, z: 2.2 }),
+      key(20, { x: -4.6, z: 2.2 }), key(22, { x: -4.6, z: 2.2 }),
+      key(40, { x: 19.5, z: 2.2 }), key(42, { x: 19.5, z: 2.2 }),
+      key(59, { x: 39, z: 2.2 }), key(60, { x: 39, z: 2.2 })]),
+    test: itinerary(routes, [key(0, offset(workshop, -3.2, .65)),
+      key(30, offset(workshop, -3.2, .65)), key(38, offset(library, -3.2, .65)),
+      key(50, offset(library, -3.2, .65)), key(60, offset(workshop, -3.2, .65))]),
+  }
   function sample(time) {
     const t = loopTime(time)
-    const definitions = testPet ? [...PETS, TEST_PET] : PETS
-    return definitions.filter(pet => pet.id !== 'nova' || between(t, 44, 59)).map(pet => {
+    return [...PETS, ...(testPet ? [TEST_PET] : [])].map(pet => {
       const pose = positions[pet.id](t)
-      let anim = pose.speed > .08 ? 'run' : 'idle'
-      let status = 'idle'
-      let skillCount = pet.skillCount
-      if (pet.id === 'pip' || pet.id === 'cleo') {
-        if (between(t, 5, 9.8)) { status = 'working'; anim = 'review' }
-        if (between(t, 9.8, 11)) { status = 'done'; anim = 'jump' }
-        if (between(t, 30, 39.2)) { status = 'working'; anim = Math.floor((t - 30) / 1.5) % 2 === (pet.id === 'pip' ? 0 : 1) ? 'jump' : 'review' }
-        if (between(t, 39.2, 40)) { status = 'done'; anim = 'wave' }
-        if (pet.id === 'cleo' && t >= 9.8) skillCount++
-        if (pet.id === 'pip' && t >= 39.2) skillCount++
-        if (pose.speed < .08) pose.facing = pet.id === 'pip' ? 1 : -1
+      let anim = pose.speed > .07 ? 'run' : 'idle', status = 'idle', skillCount = pet.skillCount
+      if (pet.id === 'pip') {
+        status = t < 4 ? 'working' : t < 17.6 ? 'waiting' : t < 23.2 ? 'idle' : t < 28 ? 'working'
+          : t < 36 ? 'idle' : t < 38 ? 'working' : t < 41 ? 'done'
+            : between(t, 49.3, 53) ? 'working' : 'idle'
+        if (between(t, 4, 6)) anim = 'waiting'
+        if (between(t, 14, 23.2)) anim = 'waiting'
+        if (between(t, 23.2, 27.2)) anim = 'review'
+        if (between(t, 38, 39.2)) anim = 'jump'
+        if (between(t, 39.2, 41)) anim = 'wave'
+        if (between(t, 49.3, 53)) anim = 'review'
+        if (t >= 17.6) skillCount++
+        if (pose.speed < .07) pose.facing = 1
+      } else if (pet.id === 'cleo') {
+        if (between(t, 14.75, 17.6) || between(t, 23.2, 27.2) || between(t, 49.3, 53)) { status = 'working'; anim = 'review' }
+        if (between(t, 27.2, 28) || between(t, 53, 54)) anim = 'wave'
+        if (t >= 53) skillCount++
+        if (pose.speed < .07) pose.facing = -1
+      } else if (pet.id === 'fern') {
+        if (between(t, 20, 22) || between(t, 40, 42)) anim = 'wave'
       }
-      if (pet.id === 'fern' || pet.id === 'mochi') {
-        if (between(t, 17.2, 23.5)) { status = 'working'; anim = 'review' }
-        if (between(t, 23.5, 25)) { status = 'done'; anim = 'wave' }
-        if (between(t, 46.8, 48.5)) anim = 'wave'
-        if (pose.speed < .08) pose.facing = pet.id === 'fern' ? 1 : -1
-      }
-      if (pet.id === 'nova') {
-        if (between(t, 47, 49.5)) anim = 'wave'
-        if (between(t, 50.8, 53)) { anim = 'jump'; status = 'done' }
-        if (t >= 50.8) skillCount++
-        if (pose.speed < .08) pose.facing = -1
-      }
-      return { ...pet, ...pose, skillCount, anim, status }
+      return { ...pet, ...pose, anim, status, skillCount }
     })
   }
-
-  return {
-    duration: DURATION,
-    sample,
-    focus(time) {
-      const t = loopTime(time)
-      if (t < 12) return ['pip', 'cleo']
-      if (t < 26) return ['fern', 'mochi']
-      if (t < 41) return ['pip', 'cleo']
-      if (t < 44) return ['fern', 'mochi']
-      if (t < 56) return ['fern', 'mochi', 'nova']
-      return ['pip', 'cleo']
-    },
-    events: storyEvents,
-  }
+  return { duration: DURATION, sample, events: storyEvents, focus: () => [] }
 }
 
-// Legacy capture imports remain valid while the integration page is replaced.
-const fallbackMap = {
-  landmarks: { library: { x: -20, z: -8 }, workshop: { x: 18, z: -8 }, dojo: { x: 18, z: 10 }, campfire: { x: -16, z: 10 } },
-  path: (from, to) => [from, to],
-}
+// Capture imports retained for old callers.
+const defaultMap = { chunkWidth: 14, path: (a, b) => [a, b] }
 const defaults = new Map()
 export function sampleStory(time, { testPet = false, map } = {}) {
   if (map) return createStory(map, { testPet }).sample(time)
-  if (!defaults.has(testPet)) defaults.set(testPet, createStory(fallbackMap, { testPet }))
+  if (!defaults.has(testPet)) defaults.set(testPet, createStory(defaultMap, { testPet }))
   return defaults.get(testPet).sample(time)
 }
 export function arrivalElevation() { return 0 }
