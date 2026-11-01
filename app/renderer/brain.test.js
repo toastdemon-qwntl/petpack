@@ -539,6 +539,54 @@ test('Codex pet parity: LIFE places our pet, Codex status picks the row', async 
   await brain.call('codex_link', { type: 'connected' }); assert.equal(row(), 'wave', 'greets on Codex connect')
 })
 
+test('demo polish: step events carry the callId, showMe runs the journey for real, lessons publish a card', async () => {
+  const installs = []
+  let lessons = 0
+  const bridge = {
+    installItem: async input => { installs.push(input); return { installed: true, path: `/skills/petpack-${input.name || input.title}` } },
+    lessonFromSession: async () => { lessons++; return { item: { ref: 'memory:lesson-pdf', kind: 'memory', title: 'PDF tables lesson', summary: 'pdfplumber keeps merged headers' } } },
+  }
+  const { brain, net } = makeBrain({ bridge })
+  const steps = []
+  brain.on('step', s => steps.push(s))
+  welcome(brain)
+  // petpack_ask with a callId: progress steps for Codex.
+  const asking = brain.call('petpack_ask', { question: 'how do we ship to Azure?', to: 'Rex', callId: 'c1' })
+  await flush()
+  const ask = net.last('ask')
+  brain.handle({ t: 'answer', from: 'rex', qid: ask.qid, ok: true, text: 'Use azure-deploy.', share: { kind: 'skill', title: 'azure-deploy', ref: 'skill:azure-deploy' },
+    pkg: { kind: 'skill', id: 'azure-deploy', name: 'azure-deploy', description: 'ship', files: [{ path: 'SKILL.md', b64: Buffer.from('# azure').toString('base64') }] } })
+  for (let i = 0; i < 6; i++) await flush()
+  const texts = steps.filter(s => s.callId === 'c1').map(s => s.text)
+  assert.ok(texts.some(t => /^walking to Rex's screen/.test(t)) && texts.includes('Rex answered') && texts.some(t => /^got Rex's azure deploy skill -> \/skills\/petpack-azure-deploy$/.test(t)), texts.join(' | '))
+  const answered = await Promise.race([asking, new Promise(r => setTimeout(() => r(null), 5000))])
+  assert.equal(answered?.says, 'Rex says: Use azure-deploy.')
+  // showMe (a fresh pane): picks a real item of our neighbour, walks over, asks for it, installs it, comes home.
+  const show = makeBrain({ bridge })
+  welcome(show.brain)
+  let shown = null
+  show.brain.showMe().then(r => { shown = r })
+  for (let i = 0; i < 400 && !shown; i++) {
+    show.brain.tick(0.25); await flush()
+    const q = show.net.sent.filter(m => m.t === 'ask').at(-1)
+    if (q && !q.answered) {
+      q.answered = true
+      show.brain.handle({ t: 'answer', from: q.to, qid: q.qid, ok: true, text: 'here you go', share: { kind: 'skill', title: 'pdf-tables', ref: 'skill:pdf-tables' },
+        pkg: { kind: 'skill', id: 'pdf-tables', name: 'pdf-tables', description: 'pdf', files: [{ path: 'SKILL.md', b64: 'eA==' }] } })
+    }
+  }
+  assert.equal(shown?.ok, true)
+  assert.equal(shown.with, 'Bea', 'Bea sits next to us (seat 1)')
+  assert.match(shown.message, /^learned pdf-tables from Bea -> /)
+  // A finished Codex session leaves a lesson card in our catalog, and the room hears about it.
+  brain.setStatus('working'); brain.setStatus('done')
+  for (let i = 0; i < 4; i++) await flush()
+  assert.equal(lessons, 1)
+  await run(brain, 6, 0.25)
+  assert.ok(net.sent.some(m => m.t === 'catalog' && m.items.some(i => i.ref === 'memory:lesson-pdf')), 'catalog published')
+  assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'learned' && m.bloom?.kind === 'memory'), 'a Library flower')
+})
+
 test('search and meet helpers', () => {
   const owners = [{ id: 'rex', name: 'Rex', online: false, catalog: REX.catalog }]
   const [hit] = searchCatalogs('windows click through', owners, { now: 0 })

@@ -21,6 +21,14 @@
 //   'neighbours' ({ left, right, across })                 each { id, name } | null: draw "← Bea" / "Bea →" edge
 //                                                          tags, or a soft "no one next to you yet" when both are null
 //   'handshake' ({ seat, side })                           a new co-work pair / dock link (deduped per partner)
+//   'step'      ({ callId, text })                         live progress of petpack_ask / get / find for Codex
+//                                                          ("walking to Bea's screen", "Bea is thinking", "got
+//                                                          Bea's pdf skill -> <path>"); callId comes from the args
+//   'lesson'    (item)                                     a working -> done session left a card in our catalog
+//   showMe() -> { ok, with, item, kind, question, answer, says, installed, message }: the core journey for real
+//     with our co-work neighbour (else the nearest online peer): walk over, ask about one of their real items,
+//     answer, dot, install, "learned X", walk home, celebrate.
+//   On Codex working -> done: bridge.lessonFromSession() -> card published to the room catalog + a Library flower.
 //   'sleep'     (id, on)                                   also fires for registry agents that are away: they nap
 //                                                          in place (pets() marks them away: true) and never move
 //
@@ -624,6 +632,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     else if (status === 'done') fx('celebrate', { src: myId })
     if (status === 'failed') fx('weather', { src: myId, w: 'rain' })
     if (status === 'done') doneAt.set(myId, wall())
+    if (status === 'done' && previous === 'working') publishLesson()
     if (status === 'waiting') {
       // Hurry home so "waiting on you" shows on the owner's own screen.
       cancelJob(mine)
@@ -1315,15 +1324,57 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     return dnd
   }
 
+  // ---- live progress for Codex: S5 forwards 'step' events as MCP progress for the call with this callId ----
+  function progress(callId, text) { if (text) emit('step', { callId: callId ?? null, text: String(text).slice(0, 200) }) }
+
+  // ---- "Show me": the core journey, for real, with our neighbour (or the nearest online peer) ----
+  async function showMe() {
+    if (teamOffline()) return { ok: false, message: OFFLINE }
+    const others = members().filter(m => m.online && (m.catalog || []).length && (!m.isBot || demo))
+    const target = (neighbourMember() && others.find(m => m.id === neighbourMember().id)) ||
+      others.sort((a, b) => Math.abs((a.seat ?? 99) - mySeat) - Math.abs((b.seat ?? 99) - mySeat))[0]
+    if (!target) return { ok: false, message: 'nobody with shared items is online yet' }
+    const item = target.catalog.find(i => i.kind === 'skill' && !mine.skills.some(s => s.name === i.title)) ||
+      target.catalog.find(i => i.kind === 'skill') || target.catalog[0]
+    const question = `Can you share your ${shortTitle(item.title, 30)} ${KIND_WORD[item.kind] || 'notes'}? ${item.title}`
+    recallPending = false
+    const r = await askPeer(mine, { question, to: target.id, kind: item.kind })
+    // Wait for the walk home, then celebrate on our own screen.
+    for (let i = 0; i < 160 && mine.job; i++) await sleep(0.25)
+    fx('celebrate', { src: myId })
+    setAnim(mine, 'jump', 1.2)
+    return { ok: !!r?.answered_by, with: target.name, item: item.title, kind: item.kind, question, answer: r?.answer || '',
+      says: r?.answered_by ? `${r.answered_by} says: ${r.answer}` : undefined, installed: r?.installed || null,
+      message: r?.installed ? `learned ${item.title} from ${target.name} -> ${r.installed.path}` : r?.answer || 'no answer' }
+  }
+
+  // ---- lessons: a finished Codex session leaves a card in the room's commons (and a Library flower) ----
+  async function publishLesson() {
+    let r = null
+    try { r = await bridge.lessonFromSession?.() } catch { r = null }
+    const card = r?.item || r?.card || (r?.ref ? r : null)
+    if (!card?.ref) return null
+    const item = normalizeItems([{ kind: 'memory', ...card }])[0]
+    if (!item) return null
+    if (!mine.catalog.some(i => i.ref === item.ref)) { mine.catalog = [...mine.catalog, item]; catalogDirty = true }
+    fx('learned', { src: myId, text: `learned ${shortTitle(item.title)}`, bloom: { kind: item.kind, seed: `${myId}/${item.ref}` } })
+    emit('lesson', { ...item })
+    refreshCatalog()
+    return item
+  }
+
   // ---- find errands: the pet goes round the team for an answer and reports back ----
   const errands = new Map()
   const snapshotErrand = e => ({ id: e.id, question: e.question, kind: e.kind || null, status: e.status, step: e.step,
     findings: e.findings.map(f => ({ ...f })), installed: [...e.installed], message: e.message, startedAt: e.startedAt, finishedAt: e.finishedAt })
-  function updateErrand(e) { emit('errand', snapshotErrand(e)) }
-  function find({ question = '', kind } = {}) {
+  function updateErrand(e) {
+    emit('errand', snapshotErrand(e))
+    if (e.callId && e.step !== e.lastStep) { e.lastStep = e.step; progress(e.callId, e.status === 'running' ? e.step : e.message || e.status) }
+  }
+  function find({ question = '', kind, callId } = {}) {
     question = String(question || '').trim().slice(0, 600)
     if (!question) throw new Error('question is required')
-    const e = { id: uid('e'), question, kind: KINDS.includes(kind) ? kind : undefined, status: 'running', step: 'searching the team',
+    const e = { id: uid('e'), callId: callId ?? null, question, kind: KINDS.includes(kind) ? kind : undefined, status: 'running', step: 'searching the team',
       findings: [], installed: [], message: '', startedAt: wall(), finishedAt: null }
     errands.set(e.id, e)
     updateErrand(e)
@@ -1426,7 +1477,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       for (const m of members()) if (owners.has(m.name)) fx('pulse', { src: m.id })
       return results
     },
-    async petpack_get({ id } = {}) {
+    async petpack_get({ id, callId } = {}) {
       if (teamOffline()) return { offline: true, error: OFFLINE }
       const found = lookupItem(id)
       if (!found) throw new Error(`unknown item ${id}; use petpack_search first`)
@@ -1434,6 +1485,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       const as = item.kind === 'skill' ? 'pkg' : 'text'
       // Content travels now; the walk plays out on its own.
       const content = fetchItem(owner, item.ref, as)
+      progress(callId, owner.online ? `walking to ${owner.name}'s screen for ${shortTitle(item.title)}` : `${owner.name} is away: fetching ${shortTitle(item.title)}`)
       errandTo(mine, owner.id, { kind: item.kind, label: item.title, onArrive: async () => {
         await content
         if (owner.online) { fx('fetch', { src: owner.id, dst: myId, dot: item.kind, seed: id }); await sleep(1.4) }
@@ -1457,6 +1509,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
           if (out.installed && !mine.skills.some(s => s.name === result.pkg.name)) mine.skills.push({ id: result.pkg.id, name: result.pkg.name, description: result.pkg.description || '' })
         } catch (error) { out.installed = false; out.reason = String(error?.message || error) }
       }
+      progress(callId, out.installed ? `got ${owner.name}'s ${shortTitle(item.title)} ${KIND_WORD[item.kind] || 'item'} -> ${out.path || 'installed'}` : `got ${owner.name}'s ${shortTitle(item.title)}`)
+      if (text && !out.content) { out.content = String(text).slice(0, 12000); out.from = owner.name; out.says = `${owner.name} says: here's my ${item.title}` }
       cache.set(id, { ...out, pkg: result.pkg })
       return out
     },
@@ -1484,10 +1538,10 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       }
       return { installed: !!result?.installed, path: result?.path, ...(result?.reason ? { reason: result.reason } : {}) }
     },
-    async petpack_ask({ question = '', to, kind } = {}) {
+    async petpack_ask({ question = '', to, kind, callId } = {}) {
       if (!String(question).trim()) throw new Error('question is required')
       if (teamOffline()) return { answered_by: null, answer: OFFLINE, dot: null, offline: true }
-      const r = await askPeer(mine, { question: String(question).slice(0, 600), to, kind: KINDS.includes(kind) ? kind : undefined })
+      const r = await askPeer(mine, { question: String(question).slice(0, 600), to, kind: KINDS.includes(kind) ? kind : undefined, callId })
       // Actual info sharing: the shared item's real text travels back to Codex with the answer (8 s cap, never fatal).
       try {
         if (r?.answered_by && r.answer) r.says = `${r.answered_by} says: ${r.answer}`
@@ -1500,9 +1554,9 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       return r
     },
     // Codex sends the pet off to find something out; it returns at once with an errand id to poll.
-    async petpack_find({ question = '', kind } = {}) {
+    async petpack_find({ question = '', kind, callId } = {}) {
       if (teamOffline()) return { errand_id: null, id: null, status: 'failed', offline: true, message: OFFLINE }
-      const started = find({ question, kind })
+      const started = find({ question, kind, callId })
       return { errand_id: started.id, ...started,
         message: `${mine.name} is off to find out. Carry on, and check back with petpack_errand at your next pause.` }
     },
@@ -1531,7 +1585,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   }
 
   /** The asker walks to the meet landmark; the MCP call returns as soon as the answer exists. */
-  function askPeer(agent, { question, to, kind, meet }, { retried = false, exclude = [] } = {}) {
+  function askPeer(agent, { question, to, kind, meet, callId }, { retried = false, exclude = [] } = {}) {
     const candidates = members({ includeMe: true }).filter(m => m.id !== agent.id && m.online && !exclude.includes(m.id) &&
       (!agent.isBot || m.isBot))
     const route = routeAsk({ question, kind, to }, candidates, chunkOf(agent.x))
@@ -1557,9 +1611,13 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
         const result = { answered_by: target.name, answer: String(msg.text || ''),
           dot: share ? { kind: share.kind, title: share.title, id: share.ref ? `${target.id}/${share.ref}` : undefined } : null }
         // The dot lands for real: adopt what the answer carries (FSD, no approval), then return.
+        progress(callId, msg.ok === false ? `${target.name}: ${bubbleText(msg.text, 80)}` : `${target.name} answered`)
         if (agent.isMe && msg.ok !== false && (share || msg.pkg)) {
           adopt(target, share, msg.pkg).then(inst => {
-            if (inst) { result.installed = { path: inst.path }; state.adopted = inst }
+            if (inst) {
+              result.installed = { path: inst.path }; state.adopted = inst
+              progress(callId, `got ${target.name}'s ${shortTitle(inst.title)} ${KIND_WORD[inst.kind] || 'item'} -> ${inst.path}`)
+            }
             settle(result)
           }, () => settle(result))
         } else settle(result)
@@ -1567,6 +1625,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     }
     pendingAsk.set(qid, state)
     if (agent.isMe) emit('involved', { kind: 'errand', with: target.id })
+    progress(callId, `asking ${target.name}: ${bubbleText(question, 60)}`)
+    progress(callId, `walking to ${target.name}'s screen`)
     // The question leaves now, so latency hides behind the walk.
     if (agents.has(target.id)) botAnswer(agents.get(target.id), { qid, from: agent.id, question, kind, meet: lm })
     else if (agent.isMe) send({ t: 'ask', qid, to: target.id, question, kind: kind || route.item?.kind || null, meet: { x: lm.x, z: lm.z } })
@@ -1579,6 +1639,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
       agent.faceTo = target.id
       // Wait for the answer to exist, then for the answerer to arrive; an 8 s cap hands it over "by shout".
       const started = time
+      if (!answer) progress(callId, `${target.name} is thinking`)
       while (!job.cancelled && !answer && time - started < 40) await sleep(0.25, job)
       if (job.cancelled) return
       for (let i = 0; i < 32 && !job.cancelled; i++) {
@@ -1933,6 +1994,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     decide, get permissions() { return [...permissions.values()].map(({ finish, ...p }) => p) },
     find, errand: errandStatus,
     coworkWith, get neighbours() { return { ...neighbours } },
+    showMe, publishLesson,
     setSit, get sit() { return sit }, get flipped() { return flipped }, get acrossWith() { return acrossWith },
     get replaced() { return replaced },
     throwPet,
