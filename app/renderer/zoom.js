@@ -147,7 +147,7 @@ export function attachZoom({ world, root, seat } = {}) {
     return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
   }
   // The pane's own controls (pip, chat, permission card, mic) keep their clicks.
-  const control = event => event.target !== root && !!event.target?.closest?.('button, input, textarea, select, a, .pp-chat, .pp-perm, .pp-mic, .pp-zoom-pip')
+  const control = event => event.target !== root && !!event.target?.closest?.('button, input, textarea, select, a, .pp-chat, .pp-perm, .pp-mic, .pp-grip, .pp-tab, .pp-zoom-pip')
   function onWheel(event) {
     if (disposed || !inside(event.clientX, event.clientY) || control(event)) return
     event.preventDefault()
