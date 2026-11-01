@@ -7,7 +7,7 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { DEFAULT_RELAY, codexMcpState, parseArgs, profileName, readJson, registerMcp, relayList, userDataDir, writeJson } from './cli.js'
-import { createClickThrough, createPaneWindow, dockBounds, edgeGap, paneSize, placePane, raiseToTop } from './window.js'
+import { createClickThrough, createPaneWindow, dockBounds, edgeGap, onDockSide, paneSize, placePane, raiseToTop } from './window.js'
 import { createTray } from './tray.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -43,6 +43,8 @@ const settings = { dock: 'right', align: 0, room: null, seat: null, ...readJson(
 if (flags.dock === 'left' || flags.dock === 'right') settings.dock = flags.dock
 if (typeof flags.room === 'string' && flags.room.trim()) settings.room = flags.room.trim()
 if (flags.seat !== undefined) settings.seat = /^\d+$/.test(String(flags.seat)) ? Number(flags.seat) : null
+// Seating: 'side' (laptops side by side, one strip) or 'across' (facing each other across a table: one seat, flipped).
+if (flags.sit === 'side' || flags.sit === 'across') settings.sit = flags.sit
 saveSettings()
 function saveSettings() {
   try { writeJson(SETTINGS_FILE, settings) } catch (error) { console.error(`petpack: settings not saved (${error.message})`) }
@@ -91,7 +93,7 @@ function config() {
     name: typeof flags.name === 'string' ? flags.name : null, pet: typeof flags.pet === 'string' ? flags.pet : null,
     profile: PROFILE || null, version: VERSION, platform: process.platform,
     pane: { ...paneSize(paneScale), scale: paneScale }, debug: DEBUG,
-    sharing: brainSharing(), dnd: Boolean(traySharing()?.dnd),
+    sharing: brainSharing(), dnd: Boolean(traySharing()?.dnd), sit: settings.sit === 'across' ? 'across' : 'side',
   }
 }
 
@@ -107,7 +109,8 @@ const MOUNTS = [
 ]
 
 const OPTIONAL_MODULES = new Set(['/app/renderer/world/sound.js', '/app/renderer/world/play.js',
-  '/app/renderer/world/mood.js', '/app/renderer/collapse.js'])
+  '/app/renderer/world/mood.js', '/app/renderer/collapse.js', '/app/renderer/zoom.js', '/app/renderer/chat.js',
+  '/app/renderer/life.js'])
 
 function relayOrigins() {
   // Every relay, in both forms: wss for the socket, https for sprites and the primary health probe.
@@ -489,6 +492,14 @@ function trayActions() {
       saveSettings(); refreshTray(); win?.webContents.reload()
     },
     setSeat: seat => { settings.seat = seat; saveSettings(); refreshTray(); win?.webContents.reload() },
+    // Sharing changes from the popover land in settings.json `share` (L3b's catalog filter reads it).
+    setShare: patch => setShare(patch),
+    // "Sitting: side by side / across the table": the page's brain tells the relay; no reload.
+    setSit: sit => {
+      settings.sit = sit === 'across' ? 'across' : 'side'
+      saveSettings(); refreshTray()
+      if (win && !win.isDestroyed()) win.webContents.send('petpack:panel-command', { cmd: 'sit', sit: settings.sit })
+    },
     setDock: side => {
       if (side === settings.dock) return
       settings.dock = side; saveSettings(); dock(); refreshTray(); win?.webContents.reload()
@@ -591,6 +602,7 @@ app.whenReady().then(async () => {
   await loadCodex()
   await startChat() // before the page loads, so its handlers exist; it also allows our page the microphone
   createWindow()
+  onDockSide?.(side => trayActions().setDock(side)) // COLLAPSE: dragged onto the other edge
   const stopStatus = startStatus()
   app.on('before-quit', () => { try { stopStatus?.(); codex.dispose(); codexLink?.close() } catch {} })
   await startCodexLink()

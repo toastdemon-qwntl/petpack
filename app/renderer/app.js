@@ -92,7 +92,8 @@ const brain = createBrain({
   net: { send: msg => net?.send(msg) ?? false },
   me: { id: myId, name: config.name || me.displayName || me.petName || 'Pip', spriteUrl: me.spriteUrl || null, atlas: me.atlas || null,
     skills: Array.isArray(me.skills) ? me.skills : [], catalog, sprite },
-  config: { demo, seat: config.seat, dock, room: config.room || null, sharing: config.sharing || null, dnd: !!config.dnd },
+  config: { demo, seat: config.seat, dock, room: config.room || null, sharing: config.sharing || null, dnd: !!config.dnd,
+    sit: config.sit === 'across' ? 'across' : 'side' },
   view: {
     // One text bubble per pane at a time, and only for pets this pane shows.
     ask: (a, b, o) => queueText({ ids: [a, b], hold: 4800, first: true, run: () => world.ask(a, b, o) }),
@@ -316,13 +317,15 @@ bridge.onPanelCommand?.(msg => {
   else if (cmd === 'dnd') brain.setDnd?.(!!on)
   else if (cmd === 'mute') joy.setMuted(!!on, true)
   else if (cmd === 'party') brain.party?.()
-  else if (cmd === 'sharing' && msg.sharing) {
+  else if (cmd === 'sit') brain.setSit?.(msg.sit === 'across' ? 'across' : 'side')
+  else if (cmd === 'sharing' && msg.sharing) { // main already saved it (settings.json `share`); the live brain follows
     const s = msg.sharing
-    const mode = s.mode === 'off' ? 'never' : s.mode
-    brain.setSharing?.({ mode, items: Object.fromEntries((s.hidden || []).map(ref => [ref, false])) })
-    bridge.setShare?.({ mode, off: s.hidden || [] }).catch?.(() => {})
+    brain.setSharing?.({ mode: s.mode === 'off' ? 'never' : s.mode, items: s.items || Object.fromEntries((s.hidden || []).map(ref => [ref, false])) })
   }
 })
+// Across the table: the later pane of a pair draws the shared seat from the other side.
+brain.on?.('flip', on => { world.setFlip?.(!!on); flash(on ? 'across the table' : 'side by side') })
+brain.on?.('replaced', () => flash('this pet opened on another pane'))
 function activity(text, kind) { if (text) try { bridge.activity?.({ text: String(text).slice(0, 160), kind }) } catch { /* bridge gone */ } }
 // Heads-down: the pane folds and goes quiet; back on, it opens again.
 brain.on?.('dnd', on => {
@@ -341,7 +344,8 @@ brain.on?.('need', n => { if (n?.item?.title) activity(`stuck? ${n.item.title} m
 brain.on?.('online', info => bridge.panelReport?.({ online: info ? brain.pets().filter(p => !p.bot).length : null }))
 setInterval(() => {
   const mine = brain.me || {}
-  try { bridge.panelReport?.({ name: mine.name, status: mine.status, home: chunkOf(mine.x) === brain.seat, dnd: !!brain.dnd, muted: joy.muted }) } catch { /* bridge gone */ }
+  const busyWith = mine.job && mine.job.mode !== 'return' ? (mine.jobWith || null) : null
+  try { bridge.panelReport?.({ name: mine.name, status: mine.status, home: chunkOf(mine.x) === brain.seat, dnd: !!brain.dnd, muted: joy.muted, busyWith }) } catch { /* bridge gone */ }
 }, 2000)
 
 // ---- share permission ('ask' mode): the request with ✓/✗ in the pane ----
