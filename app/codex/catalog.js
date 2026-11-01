@@ -31,7 +31,7 @@ const SUMMARY_MAX = 240
 // ---------------------------------------------------------------- paths
 
 export function resolveCodexHome (opts = {}) {
-  if (opts.codexHome) return opts.codexHome
+  if (opts.codexHome || opts.home) return opts.codexHome || opts.home
   const env = opts.env || process.env
   const home = opts.homeDir || os.homedir()
   if (env.CODEX_HOME && isDir(env.CODEX_HOME)) return env.CODEX_HOME
@@ -577,7 +577,7 @@ async function collectAnswers (answersDir, add) {
 let lastBuilt = null // { at, key, items, index }
 
 function optsKey (opts) {
-  return JSON.stringify([opts.codexHome, opts.homeDir, opts.cwd, opts.answersDir, opts.includeProcessCwd, opts.env?.CODEX_HOME])
+  return JSON.stringify([opts.codexHome, opts.home, opts.homeDir, opts.cwd, opts.answersDir, opts.includeProcessCwd, opts.env?.CODEX_HOME])
 }
 
 // Builds the catalog. Returns {items, index (Map ref -> internal entry), projects, codexHome}.
@@ -618,8 +618,11 @@ export async function buildCatalog (opts = {}) {
 
 // The bridge's getCatalog(): metadata only.
 export async function getCatalog (opts = {}) {
-  return (await buildCatalog(opts)).items
+  return (await cached(opts, 2000)).items
 }
+
+// Drops the cached build (after an install or a new answer card).
+export function invalidateCatalog () { lastBuilt = null }
 
 async function cached (opts, maxAgeMs = 5000) {
   if (lastBuilt && lastBuilt.key === optsKey(opts) && Date.now() - lastBuilt.at < maxAgeMs) return lastBuilt
@@ -749,12 +752,23 @@ export async function installResource (pkg, fromName = 'a teammate', opts = {}) 
   return { installed: true, path: configPath, name, env_keys: pkg.env_keys || [] }
 }
 
-// installItem(item|pkg, fromName): notes and resources here; skill packages belong to install.js (L3a).
+// installItem(item|pkg, fromName): the bridge's generalised installSkill. Notes and resources here; skill packages
+// go to install.js (L3a) as skills/petpack-<name>/, and an existing folder counts as installed.
 export async function installItem (pkg, fromName, opts = {}) {
-  const kind = pkg?.kind || String(pkg?.ref || '').split(':')[0]
-  if (kind === 'resource') return installResource(pkg, fromName, opts)
-  if (kind === 'memory' || kind === 'technique') return installNote({ ...pkg, kind }, fromName, opts)
-  return { installed: false, reason: `kind ${kind || 'unknown'} is installed by installSkill` }
+  const kind = pkg?.kind || (Array.isArray(pkg?.files) ? 'skill' : String(pkg?.ref || '').split(':')[0])
+  invalidateCatalog()
+  try {
+    if (kind === 'resource') return await installResource(pkg, fromName, opts)
+    if (kind === 'memory' || kind === 'technique') return await installNote({ ...pkg, kind }, fromName, opts)
+    if (kind === 'skill') {
+      const { installSkill } = await import('./install.js')
+      const r = await installSkill(pkg, fromName, { ...opts, home: resolveCodexHome(opts) })
+      return r.reason === 'exists' ? { installed: true, existed: true, path: r.path } : r
+    }
+    return { installed: false, reason: `unknown kind ${kind || '?'}` }
+  } catch (err) {
+    return { installed: false, reason: String(err?.message || err) }
+  }
 }
 
 // ---------------------------------------------------------------- watch

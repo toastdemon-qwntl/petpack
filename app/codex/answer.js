@@ -15,7 +15,16 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { spawn, spawnSync } from 'node:child_process'
-import { buildCatalog, readItem, itemSource, defaultAnswersDir, slugify, summarize } from './catalog.js'
+import { buildCatalog, readItem, itemSource, defaultAnswersDir, slugify, summarize, invalidateCatalog } from './catalog.js'
+
+// GUI launches (Finder, login items) get a thin PATH; add the usual homes of a `codex` binary.
+export function childEnv (env = process.env) {
+  if (process.platform === 'win32') return env
+  const home = os.homedir()
+  const extra = ['/opt/homebrew/bin', '/usr/local/bin', path.join(home, '.local', 'bin'), path.join(home, '.npm-global', 'bin'), path.join(home, '.volta', 'bin'), path.join(home, '.bun', 'bin')]
+  const have = String(env.PATH || '').split(path.delimiter).filter(Boolean)
+  return { ...env, PATH: [...have, ...extra.filter(d => !have.includes(d))].join(path.delimiter) }
+}
 
 export const TIER1_MIN = 0.5
 export const ROUTE_MIN = 0.3
@@ -107,7 +116,10 @@ async function tier1 (best, ctx) {
   if (!r.ok) return null
   let text = r.text
   if (item.kind === 'skill') text = (await readItem(item.ref, 'text', ctx)).text || ''
-  const answer = `${item.title}: ${item.summary}\n\n${excerptOf(text)}`.slice(0, ANSWER_MAX)
+  const body = text.replace(/^\s*#\s+.*\n+/, '')
+  const answer = (item.kind === 'skill' || item.kind === 'resource'
+    ? `${item.title}: ${item.summary}\n\n${excerptOf(body)}`
+    : `${item.title}\n\n${excerptOf(body, 1000)}`).slice(0, ANSWER_MAX)
   return {
     ok: true,
     tier: 1,
@@ -145,7 +157,7 @@ export function execArgs ({ project, schemaPath, outPath, effort }) {
     '-C', project,
     '-c', 'mcp_servers={}', // no MCP servers in the answer run: petpack can't recurse, and nothing slow starts
     '-c', 'features.hooks=false',
-    '-c', `model_reasoning_effort="${effort}"`,
+    '-c', `model_reasoning_effort=${effort}`, // bare word: Codex takes non-TOML values as strings (no quotes for cmd.exe)
     '--output-schema', schemaPath,
     '-o', outPath,
     '-'
@@ -271,7 +283,7 @@ export function createAnswerer ({ queueMax = 1 } = {}) {
 
     if (!(await acquire())) return done({ ok: false, busy: true, tier: 2, text: 'busy', reason: 'busy' })
     try {
-      const env = ctx.env || process.env
+      const env = childEnv(ctx.env || process.env)
       const timeoutMs = Math.max(1000, (ctx.timeoutMs ?? ASK_TIMEOUT_MS) - (Date.now() - t0))
       const hints = []
       for (const r of ranked) hints.push({ ...r, file: await itemSource(r.item.ref, ctx).catch(() => null) })
@@ -291,6 +303,7 @@ export function createAnswerer ({ queueMax = 1 } = {}) {
       const text = String(r.answer).trim().slice(0, ANSWER_MAX)
       const share = cleanShare(r.share)
       const card = await saveAnswerCard({ question, fromName, answer: text, share }, ctx)
+      invalidateCatalog()
       const out = { ok: true, tier: 2, text, execMs: r.ms, card }
       if (share) {
         out.share = share

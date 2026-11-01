@@ -163,6 +163,19 @@ test('install: a note installs as petpack-note-*, once, and is not re-published'
   assert.ok(!refs.some(ref => ref.includes('petpack-note')), 'adopted notes are not re-published')
 })
 
+test('install: a skill package from readItem adopts through installItem, once', async () => {
+  const fx = fixture()
+  const other = fixture()
+  const { pkg } = await readItem('skill:alpha', 'pkg', fx.opts)
+  const r = await installItem(pkg, 'Bea', other.opts)
+  assert.equal(r.installed, true, r.reason)
+  assert.equal(fs.readFileSync(path.join(r.path, 'scripts', 'run.sh'), 'utf8'), 'echo frob\n')
+  assert.match(fs.readFileSync(path.join(r.path, 'SKILL.md'), 'utf8'), /name: alpha/)
+  const again = await installItem(pkg, 'Bea', other.opts)
+  assert.equal(again.installed, true)
+  assert.equal(again.existed, true)
+})
+
 test('install: a resource installs through codex mcp add', async () => {
   const fx = fixture()
   const other = fixture()
