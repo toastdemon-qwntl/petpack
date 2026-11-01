@@ -32,7 +32,7 @@ export function petPrompt({ question, petName = 'Pip', userName = '', history = 
     'Speak as the pet: warm, short and genuinely helpful. Usually one to three short sentences, under 60 words, unless they ask for detail. Plain text: no markdown, headings or lists; code only when they ask for code.',
     'You have the petpack tools: petpack_search finds who on the team knows something (their skills, memories, techniques, resources), petpack_get reads one, petpack_ask asks a teammate\'s agent, petpack_status says who is around.',
     'When they ask about the team, who knows what, or something a teammate may already have done, call petpack_search first and answer with names and what they have. If the tools say the team is offline, say so kindly and help from what you know.',
-    'You are read-only here: never change files or run anything that writes.',
+    'Your shell is read-only: never change files or run commands that write. The petpack tools are yours to use freely; petpack_get may adopt a teammate\'s skill, which is how pets share.',
   ]
   const turns = history.slice(-HISTORY_TURNS)
   if (turns.length) {
@@ -100,6 +100,27 @@ export function codexPath(env = process.env, platform = process.platform) {
 }
 
 /**
+ * How to start `codex`. Windows: codex.exe on PATH, else npm's codex.cmd shim's own script run by this runtime as node
+ * (no shell, so the -c values keep their quotes and spaces); a shell only as the last resort.
+ */
+export function resolveCodex(codexBin = 'codex', env = process.env, platform = process.platform, exists = fs.existsSync) {
+  const plain = { command: codexBin, pre: [], env: {}, shell: false }
+  if (platform !== 'win32') return plain
+  if (/\.exe$/i.test(codexBin)) return plain
+  for (const dir of codexPath(env, platform).split(';')) {
+    if (!dir) continue
+    if (exists(path.join(dir, `${codexBin}.exe`))) return { ...plain, command: path.join(dir, `${codexBin}.exe`) }
+    const script = path.join(dir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js')
+    if (exists(path.join(dir, `${codexBin}.cmd`)) && exists(script)) {
+      const electron = /electron/i.test(path.basename(process.execPath)) || Boolean(process.versions.electron)
+      return { command: process.execPath, pre: [script], env: electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}, shell: false }
+    }
+  }
+  return { ...plain, shell: true }
+}
+const shellQuote = a => (/[\s"&|<>^]/.test(a) ? `"${String(a).replace(/"/g, '\\"')}"` : a)
+
+/**
  * One answer from Codex. Resolves (never rejects) with { ok, text, ms, tools, error, timedOut }.
  * onEvent gets { type: 'tool' | 'tool-done' | 'partial' | 'thinking', ... } as Codex works.
  */
@@ -111,8 +132,13 @@ export function runCodex({ question, history = [], petName, userName, cwd = os.t
   return new Promise(resolve => {
     let child
     try {
-      child = spawnImpl(codexBin, args, { cwd, env: { ...env, PATH: codexPath(env) }, stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true, shell: process.platform === 'win32' && !/\.exe$/i.test(codexBin) })
+      const run = resolveCodex(codexBin, env)
+      const argv = [...run.pre, ...args]
+      const childEnv = { ...env }
+      for (const k of Object.keys(childEnv)) if (/^path$/i.test(k)) delete childEnv[k] // Windows spells it Path
+      Object.assign(childEnv, { PATH: codexPath(env) }, run.env)
+      child = spawnImpl(run.command, run.shell ? argv.map(shellQuote) : argv, { cwd, env: childEnv,
+        stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: run.shell })
     } catch (error) {
       resolve({ ok: false, text: '', ms: 0, tools: [], error: `codex not started: ${error.message}` })
       return

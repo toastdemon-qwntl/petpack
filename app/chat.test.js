@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { REALTIME_MODEL, codexArgs, exchangeSdp, findApiKey, mintClientSecret, parseEvent, petPrompt, realtimeSession,
-  runCodex, setupChat, voiceTools } from './chat-main.js'
+  resolveCodex, runCodex, setupChat, voiceTools } from './chat-main.js'
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 
@@ -91,6 +91,18 @@ test('codex failing or missing gives an error, never a throw', { skip: process.p
   const missing = await runCodex({ question: 'hi', cwd: dir, codexBin: path.join(dir, 'nope', 'codex'), env: { PATH: '/nonexistent' } })
   assert.equal(missing.ok, false)
   assert.match(missing.error, /not found|ENOENT/)
+})
+
+test('Windows: codex.exe, else the npm shim\'s script without a shell, else a shell', () => {
+  const env = { PATH: 'C:\\bin;C:\\npm' }
+  const exe = resolveCodex('codex', env, 'win32', f => f === path.join('C:\\bin', 'codex.exe'))
+  assert.equal(exe.shell, false)
+  assert.equal(exe.command, path.join('C:\\bin', 'codex.exe'))
+  const script = path.join('C:\\npm', 'node_modules', '@openai', 'codex', 'bin', 'codex.js')
+  const shim = resolveCodex('codex', env, 'win32', f => f === path.join('C:\\npm', 'codex.cmd') || f === script)
+  assert.deepEqual([shim.command, shim.pre, shim.shell], [process.execPath, [script], false])
+  assert.equal(resolveCodex('codex', env, 'win32', () => false).shell, true)
+  assert.deepEqual(resolveCodex('codex', env, 'darwin'), { command: 'codex', pre: [], env: {}, shell: false })
 })
 
 test('parseEvent ignores junk and records failures', () => {

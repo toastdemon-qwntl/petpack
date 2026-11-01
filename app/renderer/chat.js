@@ -65,13 +65,20 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
 
   // Our own pet: a click (not a throw) opens the chat. Capture phase, so the seat hint doesn't talk over it.
   let down = null
-  window.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY, at: performance.now() } }, true)
+  window.addEventListener('pointerdown', e => {
+    // Picked at press time too: a walking pet may have moved off the cursor by the click.
+    let id = null
+    try { id = e.target?.closest?.('[data-pet-id]')?.dataset.petId ?? world.pick(e.clientX, e.clientY) } catch { /* no world */ }
+    down = { x: e.clientX, y: e.clientY, at: performance.now(), id }
+  }, true)
   window.addEventListener('click', e => {
     if (box.contains(e.target) || mic.contains(e.target)) return
     const moved = down ? Math.hypot(e.clientX - down.x, e.clientY - down.y) : 0
     if (moved > 6 || (down && performance.now() - down.at > 600)) return
-    const id = world.pick(e.clientX, e.clientY)
-    if (id && id === myId()) { e.stopPropagation(); openChat() }
+    // The play layer's hit button (a tap giggles), else the world's own picker.
+    const mine = String(myId())
+    const ids = [down?.id, e.target?.closest?.('[data-pet-id]')?.dataset.petId, world.pick(e.clientX, e.clientY)]
+    if (ids.some(id => id != null && String(id) === mine)) { e.stopPropagation(); openChat() }
   }, true)
 
   // Keys: Enter opens, Escape closes, Space (outside the field) is push-to-talk. Typing never reaches the pane's hotkeys.
