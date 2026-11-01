@@ -86,7 +86,7 @@ jobs:
             set -u
             CTRL=$(mktemp -d)
             cd "$CTRL" && npm init -y >/dev/null && npm install --no-audit --no-fund electron@45.2.1 >/dev/null
-            EL=$(node -p "require('electron')")
+            EL=$(node -p "require('electron')" | tail -1)
             echo "control electron: $EL"
             INST=$(ls -d "$TMPDIR"/petpack-pkg-*/ | head -1)
             cd "$INST" && PETPACK_ELECTRON="$EL" PETPACK_USER_DATA="$CTRL/ud" npx --no-install petpack --demo --smoke "$(Build.ArtifactStagingDirectory)/smoke/control" --smoke-wait 8 2>&1 | grep -E "^petpack|renderer error" ; echo "control exit ${PIPESTATUS[0]}"
