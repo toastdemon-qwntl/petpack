@@ -1487,7 +1487,17 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     async petpack_ask({ question = '', to, kind } = {}) {
       if (!String(question).trim()) throw new Error('question is required')
       if (teamOffline()) return { answered_by: null, answer: OFFLINE, dot: null, offline: true }
-      return askPeer(mine, { question: String(question).slice(0, 600), to, kind: KINDS.includes(kind) ? kind : undefined })
+      const r = await askPeer(mine, { question: String(question).slice(0, 600), to, kind: KINDS.includes(kind) ? kind : undefined })
+      // Actual info sharing: the shared item's real text travels back to Codex with the answer (8 s cap, never fatal).
+      try {
+        if (r?.answered_by && r.answer) r.says = `${r.answered_by} says: ${r.answer}`
+        const found = r?.dot?.id ? lookupItem(r.dot.id) : null
+        if (found) {
+          const res = await Promise.race([fetchItem(found.owner, found.item.ref, 'text'), sleep(8).then(() => null)])
+          if (res?.ok && res.text) { r.content = String(res.text).slice(0, 12000); r.from = `${found.owner.name}'s ${found.item.title}` }
+        }
+      } catch {}
+      return r
     },
     // Codex sends the pet off to find something out; it returns at once with an errand id to poll.
     async petpack_find({ question = '', kind } = {}) {

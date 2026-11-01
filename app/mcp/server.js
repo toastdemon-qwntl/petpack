@@ -31,7 +31,10 @@ function pkgVersion() {
 const INSTRUCTIONS =
   'petpack puts your Codex agent on a shared map with your team\'s agents (the pets). Their skills, memories, ' +
   'techniques and resources are one commons: before solving something from scratch, or as soon as you are stuck, ' +
-  'call petpack_search; read a hit with petpack_get; ask a teammate\'s agent with petpack_ask.'
+  'call petpack_search; read a hit with petpack_get; ask a teammate\'s agent with petpack_ask. Whenever the user asks ' +
+  'a question the team might know (how-to, project conventions, deploys, errors, tools), consult petpack FIRST, ' +
+  'then answer: relay the reply as "<name> says: …", name the teammate it came from, and use the returned shared ' +
+  'content (skills and memories arrive on this machine) directly.'
 
 const KINDS = ['skill', 'memory', 'technique', 'resource']
 
@@ -188,7 +191,14 @@ const TOOL_MAP = new Map(TOOLS.map((t) => [t.name, t]))
 function publicTool({ timeoutMs, ...t }) { return t }
 
 function textResult(value, isError = false) {
-  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  let text = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  // Shared content reaches Codex verbatim (not as an escaped JSON string), after a one-line header.
+  const shared = value && typeof value === 'object' && !Array.isArray(value) && (typeof value.content === 'string' ? value.content : null)
+  if (shared) {
+    const { content: _c, ...rest } = value
+    const header = value.says || (value.from ? `From ${value.from}:` : 'Shared from your team:')
+    text = `${header}\n${value.from ? `From ${value.from}:\n` : ''}\n${shared}\n\n${JSON.stringify(rest, null, 2)}`
+  }
   const out = { content: [{ type: 'text', text }] }
   if (isError) out.isError = true
   return out

@@ -174,7 +174,23 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
     pending.set(id, think)
     thinking(true)
     let result
+    // The team first: the pet asks a teammate's agent and brings the answer (and its skill or memory) back to this
+    // machine. No Codex CLI needed. Local Codex only answers when nobody on the team could.
     try {
+      const team = await Promise.race([brain.call?.('petpack_ask', { question }), new Promise(r => setTimeout(() => r(null), 30000))])
+      if (team?.answered_by && team.answer && !team.offline) {
+        let text = `${team.answered_by} says: ${team.answer}`
+        if (team.installed?.path || team.dot?.title) text += ` I brought ${team.dot?.title || 'it'} back to your machine.`
+        result = { ok: true, text, team }
+        // Make the transfer visible: what arrived, where it landed, and a peek at the shared text.
+        if (team.dot?.title || team.installed?.path) {
+          line('pet', `[received] ${team.dot?.kind || 'item'} "${team.dot?.title || ''}" from ${team.answered_by}` +
+            (team.installed?.path ? ` -> ${team.installed.path}` : ''), 'pp-transfer')
+        }
+        if (team.content) line('pet', `${team.from || team.answered_by}: ${String(team.content).replace(/\s+/g, ' ').slice(0, 220)}…`, 'pp-transfer')
+      }
+    } catch (error) { console.warn('petpack chat (team):', error) }
+    if (!result) try {
       result = bridge?.chat?.ask
         ? await bridge.chat.ask({ id, question, petName: petName(), userName: userName() })
         : { ok: false, error: 'offline', text: '' }
@@ -193,7 +209,7 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
         : result?.error === 'timeout' ? 'I got lost in thought. Ask me again?'
         : /not found|ENOENT|not started/i.test(result?.error || '') ? 'I need Codex on this computer to think. Install it and sign in, then ask me again.'
         : /login|auth|401|sign in/i.test(result?.error || '') ? 'Sign in to Codex and I can answer.'
-        : 'Hmm, my head is fuzzy. Ask me again?'
+        : `Codex couldn't answer here (${String(result?.error || 'no reply').slice(0, 60)}). Ask me about something your team knows and I'll fetch it.`
       think.set(why)
       think.row.classList.add('pp-err')
       sayBubble(why)
