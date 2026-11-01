@@ -551,6 +551,7 @@ async function collectResources (codexHome, add) {
       mtime,
       src: {
         type: 'resource',
+        file,
         text: snippet,
         pkg: { kind: 'resource', name, command: cfg.command || null, args: Array.isArray(cfg.args) ? cfg.args.map(String) : [], url: cfg.url || null, env_keys: envKeys }
       }
@@ -610,15 +611,63 @@ export async function buildCatalog (opts = {}) {
     () => collectAnswers(answersDir, add)
   ]
   for (const step of steps) { try { await step() } catch {} } // one bad source never sinks the catalog
-  const items = [...index.values()].map(e => e.item)
-  const built = { at: Date.now(), key: optsKey(opts), items, index, projects, codexHome }
+  const all = [...index.values()].map(e => e.item)
+  const built = { at: Date.now(), key: optsKey(opts), all, items: all, index, projects, codexHome }
   lastBuilt = built
-  return built
+  return withShare(built, opts)
 }
 
-// The bridge's getCatalog(): metadata only.
+// ---------------------------------------------------------------- sharing (the tray panel's choices)
+
+// petpack settings: { share: { mode: 'free'|'ask'|'never', off: [itemId (= ref), ...] } }, from opts.settings,
+// else opts.settingsFile, else <opts.userData>/settings.json (the shell's file). Missing or bad -> free, none off.
+export function readShareSettings (opts = {}) {
+  let s = opts.settings
+  if (!s || typeof s !== 'object') {
+    const file = opts.settingsFile || (opts.userData ? path.join(opts.userData, 'settings.json') : null)
+    s = null
+    if (file) { try { s = JSON.parse(fs.readFileSync(file, 'utf8')) } catch {} }
+  }
+  const share = (s && typeof s.share === 'object' && s.share) || {}
+  const mode = ['free', 'ask', 'never'].includes(share.mode) ? share.mode : 'free'
+  const off = new Set((Array.isArray(share.off) ? share.off : []).map(String))
+  return { mode, off }
+}
+
+function isOff (share, ref) {
+  if (share.off.has(ref)) return true
+  for (const id of share.off) if (id.endsWith('/' + ref)) return true // a global "<owner>/<ref>" id works too
+  return false
+}
+
+// Applies the share settings to a build (read fresh each call, so a tray toggle shows within one catalog tick).
+function withShare (built, opts) {
+  const share = readShareSettings(opts)
+  let items = []
+  if (share.mode !== 'never') {
+    items = built.all.filter(i => !isOff(share, i.ref))
+    if (share.mode === 'ask') items = items.map(i => ({ ...i, askFirst: true }))
+  }
+  return { ...built, items, share }
+}
+
+function sourcePathOf (src) {
+  if (!src) return null
+  if (src.type === 'skill') return src.dir
+  return src.file || null
+}
+
+// Every item this machine could share, for the tray panel: {id (= ref), kind, title, sourcePath, on}.
+// `on` is the per-item switch (not in share.off); the panel shows share.mode beside it.
+export async function listShareable (opts = {}) {
+  const built = await cached(opts, 2000)
+  const share = readShareSettings(opts)
+  return built.all.map(i => ({ id: i.ref, kind: i.kind, title: i.title, sourcePath: sourcePathOf(built.index.get(i.ref)?.src), on: !isOff(share, i.ref) }))
+}
+
+// The bridge's getCatalog(): metadata only, after the share settings.
 export async function getCatalog (opts = {}) {
-  return (await cached(opts, 2000)).items
+  return withShare(await cached(opts, 2000), opts).items
 }
 
 // Drops the cached build (after an install or a new answer card).
@@ -626,7 +675,8 @@ export function invalidateCatalog () { lastBuilt = null }
 
 async function cached (opts, maxAgeMs = 5000) {
   if (lastBuilt && lastBuilt.key === optsKey(opts) && Date.now() - lastBuilt.at < maxAgeMs) return lastBuilt
-  return buildCatalog(opts)
+  await buildCatalog(opts)
+  return lastBuilt
 }
 
 async function packSkillDir (dir, name, description) {
@@ -650,10 +700,13 @@ export async function readItem (ref, as = 'text', opts = {}) {
   if (typeof as === 'object' && as) { opts = as; as = 'text' }
   let built = await cached(opts)
   let entry = built.index.get(ref)
-  if (!entry) { built = await buildCatalog(opts); entry = built.index.get(ref) }
+  if (!entry) { await buildCatalog(opts); built = lastBuilt; entry = built.index.get(ref) }
   if (!entry) return { ok: false, ref, reason: 'not found' }
+  const share = readShareSettings(opts)
+  if (share.mode === 'never' || isOff(share, ref)) return { ok: false, ref, reason: 'not shared' }
   const { item, src } = entry
   const base = { ok: true, ref, kind: item.kind, title: item.title, sha: item.sha }
+  if (share.mode === 'ask') base.askFirst = true
   try {
     if (src.type === 'skill') {
       if (as === 'pkg') return { ...base, pkg: { ...(await packSkillDir(src.dir, src.name, src.description)), ref, title: item.title } }

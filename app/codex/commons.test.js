@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { buildCatalog, getCatalog, readItem, installNote, installItem, findCurrentProject, parseToml } from './catalog.js'
+import { buildCatalog, getCatalog, readItem, installNote, installItem, findCurrentProject, parseToml, listShareable, readShareSettings } from './catalog.js'
 import { answerAsk, createAnswerer, scoreItem, rankItems } from './answer.js'
 import { shortQuestion, currentNeed, analyzeRollout, needFrom } from './question.js'
 
@@ -321,6 +321,54 @@ test('answer: a memory answers in one teammate sentence with the most relevant c
   assert.equal(r.item.ref, 'memory:mem-glass-pane-click-through')
   assert.equal(r.text, "I've hit this before. SetIgnoreMouseEvents needs {forward:true} on Windows.")
   assert.ok(r.short.length <= 40)
+})
+
+// ---- sharing choices (tray panel): settings.share = { mode: 'free'|'ask'|'never', off: [ref, ...] }
+
+test('share: items in off are not published or served; listShareable shows them switched off', async () => {
+  const fx = fixture()
+  const opts = { ...fx.opts, settings: { share: { mode: 'free', off: ['skill:alpha', 'resource:docs-server'] } } }
+  const refs = (await getCatalog(opts)).map(i => i.ref)
+  assert.ok(!refs.includes('skill:alpha') && !refs.includes('resource:docs-server'))
+  assert.ok(refs.includes('skill:beta'))
+  assert.equal((await readItem('skill:alpha', 'pkg', opts)).reason, 'not shared')
+  assert.equal((await readItem('skill:beta', 'text', opts)).ok, true)
+  const list = await listShareable(opts)
+  assert.equal(list.length, 12)
+  const alpha = list.find(i => i.id === 'skill:alpha')
+  assert.deepEqual(alpha, { id: 'skill:alpha', kind: 'skill', title: 'alpha', sourcePath: path.join(fx.codex, 'skills', 'alpha'), on: false })
+  assert.equal(list.find(i => i.id === 'resource:docs-server').sourcePath, path.join(fx.codex, 'config.toml'))
+  assert.equal(list.find(i => i.id === 'memory:mem-glass-pane-click-through').sourcePath, path.join(fx.codex, 'memories', 'MEMORY.md'))
+  assert.equal(list.find(i => i.id === 'skill:beta').on, true)
+  // tier 1 never answers from a switched-off item
+  const r = await answerAsk('how do I frobnicate alpha widgets?', { ...opts, noExec: true })
+  assert.notEqual(r.item?.ref, 'skill:alpha')
+})
+
+test('share: ask mode marks items and answers askFirst; never publishes and answers nothing', async () => {
+  const fx = fixture()
+  const ask = { ...fx.opts, settings: { share: { mode: 'ask' } } }
+  const items = await getCatalog(ask)
+  assert.equal(items.length, 12)
+  assert.ok(items.every(i => i.askFirst === true))
+  assert.equal((await readItem('skill:alpha', 'text', ask)).askFirst, true)
+  const r = await answerAsk('how do I frobnicate alpha widgets?', { ...ask, noExec: true })
+  assert.equal(r.tier, 1)
+  assert.equal(r.askFirst, true)
+  // never: read from the shell's settings.json under userData
+  const userData = path.join(fx.root, 'userData')
+  W(path.join(userData, 'settings.json'), JSON.stringify({ dock: 'right', share: { mode: 'never', off: [] } }))
+  const never = { ...fx.opts, userData }
+  assert.deepEqual(await getCatalog(never), [])
+  assert.equal((await readItem('skill:alpha', 'text', never)).reason, 'not shared')
+  const stub = stubCodex(fx.root)
+  const n = await answerAsk('why does the overlay ignore clicks on Linux?', { ...never, env: stub.env })
+  assert.equal(n.ok, false)
+  assert.equal(n.reason, 'not shared')
+  assert.equal(fs.existsSync(stub.log), false, 'no exec when not sharing')
+  assert.equal((await listShareable(never)).length, 12, 'the panel still lists everything')
+  // missing or broken settings: free
+  assert.deepEqual(readShareSettings({ userData: path.join(fx.root, 'nope') }), { mode: 'free', off: new Set() })
 })
 
 // ---- proactive asks from a stuck session (fixture rollouts)

@@ -250,7 +250,8 @@ async function tier1 (best, ctx, question, opts = {}) {
     short: say.short,
     item,
     share: { kind: item.kind, ref: item.ref, title: item.title, body: excerptOf(text, 4000) },
-    pkg: r.pkg
+    pkg: r.pkg,
+    ...(item.askFirst || r.askFirst ? { askFirst: true } : {})
   }
 }
 
@@ -398,6 +399,7 @@ export function createAnswerer ({ queueMax = 1 } = {}) {
 
     let built = { items: [], projects: [] }
     try { built = await buildCatalog(ctx) } catch {}
+    if (built.share?.mode === 'never') return done({ ok: false, tier: 0, text: "I'm keeping my notes to myself right now.", short: 'not sharing right now', reason: 'not shared' })
     const ranked = rankItems(question, built.items, kind, 3)
     const pick = tier1Pick(question, built.items, kind, ctx.tier1Threshold ?? TIER1_MIN)
     if (pick) {
@@ -441,6 +443,7 @@ export function createAnswerer ({ queueMax = 1 } = {}) {
       const card = await saveAnswerCard({ question, fromName, answer: text, share }, ctx)
       invalidateCatalog()
       const out = { ok: true, tier: 2, text, short: clipWords(r.short || shortAnswer(text), SHORT_MAX), execMs: r.ms, card }
+      if (built.share?.mode === 'ask') out.askFirst = true
       if (share) {
         out.share = share
         out.pkg = { kind: share.kind, ref: null, title: share.title, text: `# ${share.title}\n\n${share.body}\n` }
