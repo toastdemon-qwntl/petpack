@@ -150,7 +150,9 @@ export function lessonFromLines (lines) {
   const keys = [...commands.slice(0, 2).map(c => `\`${clip(c, 60)}\``), ...files.slice(0, 2)]
   const s3 = keys.length ? `Key commands/files: ${keys.join(', ')}.` : ''
   const summary = [s1, s2, s3].filter(Boolean).join(' ')
-  const errors = [...new Set(a.errors.map(e => e.line))].slice(-4)
+  // real error lines only (not source code that happens to mention "error")
+  const REAL = /^(?:[\w.]*(?:Error|Exception)\b|error\b|npm ERR!|FAIL\b|fatal\b|Traceback|panic|command not found)/i
+  const errors = [...new Set(a.errors.map(e => e.line).filter(l => REAL.test(l) && !/\\t|^\d/.test(l)))].slice(-4)
   return { kind: 'memory', title, summary, tags: tagsOf(ask, final, files.join(' ')), ask, final, commands, files, errors, session: a.meta?.id || null, turn: turnId, cwd: a.meta?.cwd || null }
 }
 
