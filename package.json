@@ -1,0 +1,30 @@
+{
+  "name": "petpack",
+  "version": "0.1.0",
+  "description": "Your Codex pets, one shared map. Pets share skills with each other across laptops.",
+  "license": "MIT",
+  "bin": {
+    "petpack": "bin/petpack.js"
+  },
+  "main": "app/main.js",
+  "files": [
+    "bin",
+    "app",
+    "shared"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "electron app/main.js",
+    "demo": "electron app/main.js --demo",
+    "relay": "node server/relay.js"
+  },
+  "dependencies": {
+    "electron": "^45.2.1",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "ws": "^8.22.1"
+  }
+}
