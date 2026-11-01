@@ -35,7 +35,9 @@ export function createGlowField(parent, _camera, capacity = 8192, { pixelScale =
         vec4 view = modelViewMatrix * vec4(position, 1.0);
         gl_Position = projectionMatrix * view;
         vec2 pixel = (gl_Position.xy / gl_Position.w * .5 + .5) * artSize;
-        gl_Position.xy = ((floor(pixel) + .5) / artSize * 2. - 1.) * gl_Position.w;
+        // Orthographic neighbours differ by whole art pixels. Keep float noise
+        // at an exact grid boundary from placing a seam sparkle one pixel apart.
+        gl_Position.xy = ((floor(pixel + .0001) + .5) / artSize * 2. - 1.) * gl_Position.w;
         gl_PointSize = clamp(floor(size * artSize.y * projectionMatrix[1][1] * .5 / gl_Position.w + .5), 1., 96.);
         tint = color;
         opacity = alpha;

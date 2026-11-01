@@ -32,6 +32,7 @@ export function createPainter(root) {
         const geometry = kind === 'tile' ? new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2) : kind === 'stone' ? new THREE.CylinderGeometry(0.43, 0.5, 1, 5) :
           kind === 'pyramid' ? new THREE.ConeGeometry(0.7, 1, 4) : new THREE.BoxGeometry(1, 1, 1)
         const material = toonMaterial({ color: '#ffffff', emissive: kind === 'glow' ? '#a15c18' : '#000000' })
+        if (kind === 'glow') material.userData.nightGlow = true
         const mesh = new THREE.InstancedMesh(geometry, material, instances.length)
         mesh.name = `village-${kind}`
         instances.forEach((item, i) => {

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>petpack · a village that grows with you</title><link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./pane.css">
+  <script type="importmap">{"imports":{"three":"../../../node_modules/three/build/three.module.js","three/addons/":"../../../node_modules/three/examples/jsm/"}}</script>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;padding:34px 40px;background:#eeeae2;color:#526052;font:13px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1160px;margin:auto}header{display:flex;justify-content:space-between;align-items:end;margin-bottom:22px}.eyebrow{font-size:10px;letter-spacing:.19em;text-transform:uppercase;color:#8a9384}h1{font:400 35px/1.15 Georgia,serif;letter-spacing:-.8px;margin:9px 0 0}header p{max-width:290px;font-size:12px;color:#84907e;margin:0}.studies{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px}.study-label{display:flex;justify-content:space-between;color:#7f8979;font-size:10px;margin:7px 4px 0}.glass{padding:5px;background:linear-gradient(145deg,#fff9,#fff3);border:1px solid #fffb;border-radius:18px;box-shadow:inset 0 1px #fff,0 10px 30px #344d3312;backdrop-filter:blur(24px) saturate(1.4)}canvas{display:block;image-rendering:pixelated;border-radius:12px}.pair{display:flex;justify-content:center;margin:30px auto 0;gap:0;max-width:1054px}.pane-wrap{position:relative}.pair .glass{padding:7px}.pair .left{border-right:0;padding-right:0;border-radius:22px 0 0 22px}.pair .right{border-left:0;padding-left:0;border-radius:0 22px 22px 0}.pair .left canvas{border-radius:15px 0 0 15px}.pair .right canvas{border-radius:0 15px 15px 0}.caption{display:flex;justify-content:space-between;margin:12px auto 0;max-width:1040px;color:#83907b;font-size:11px}.caption strong{font-weight:500;color:#5b6e54}footer{font-size:10px;margin:16px 0 0;color:#9aa08f;text-align:center}
+    @media(min-width:1800px){body{padding:68px 60px}main{max-width:1740px}h1{font-size:50px}header{margin-bottom:36px}header p{font-size:15px;max-width:340px}.studies{gap:28px}.pair{max-width:1574px;margin-top:58px}.caption{max-width:1560px;font-size:14px}.study-label{font-size:12px;margin-top:12px}footer{margin-top:27px;font-size:12px}}
+    @media(max-width:700px){body{padding:24px 16px}header p{display:none}h1{font-size:29px}.studies{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.pair{margin-top:24px}.caption{font-size:9px;gap:15px}footer{font-size:9px}}
+  </style>
+</head>
+<body><main>
+  <header><div><div class="eyebrow">Petpack · light & knowledge garden</div><h1>A village that grows with you.</h1></div><p>Skills become sunflowers. Memories become bells.<br>A little more life, every time we share.</p></header>
+  <section class="studies" aria-label="The four gardens through a day"></section>
+  <section class="pair" aria-label="One continuous world across two panes"><div class="glass left"><canvas id="left"></canvas></div><div class="glass right"><canvas id="right"></canvas></div></section>
+  <div class="caption"><span><strong>Same world. Same hour.</strong> <span id="time-label"></span></span><span>The plants stay where they grew, on every screen.</span></div>
+  <footer>One useful exchange, one new bloom. The road stays open.</footer>
+</main>
+<script type="module">
+  import { createStage } from './stage.js'
+  import { createMap, CHUNK_W } from './map.js'
+  import { createPixelPet } from './pixel-pet.js'
+  const params=new URLSearchParams(location.search)
+  const fixed=params.has('hour')&&Number.isFinite(Number(params.get('hour'))) ? Number(params.get('hour')) : null
+  const pixelScale=Math.max(1,Math.round(Number(params.get('px'))||2))
+  const kinds=['skill','memory','technique','resource']
+  const garden=Array.from({length:40},(_,seed)=>({kind:kinds[seed%4],seed}))
+  const views=[],studies=document.querySelector('.studies')
+  let time=Number(params.get('t'))||0,paused=params.has('paused'),disposed=false,frame,previous=performance.now()
+  function view(canvas,seat,hour,pets=false){
+    const stage=createStage(canvas,{pixelScale,timeOfDay:hour}),map=createMap(stage.scene,{seed:77})
+    map.ensure(seat,seat);if(!params.has('bare'))map.setGarden(garden)
+    const cast=pets?[createPixelPet({kind:'cat',color:'#719fda'}),createPixelPet({kind:'robot',color:'#d18076'})]:[]
+    cast.forEach(p=>stage.scene.add(p.object3d))
+    const result={canvas,stage,map,cast,seat};views.push(result);return result
+  }
+  for(const [seat,hour,label] of [[0,14,'Afternoon · sunwheels'],[1,17.5,'Golden hour · bells'],[2,18.5,'Dusk · bamboo'],[-1,22,'Moonlight · berries']]){
+    const card=document.createElement('div'),glass=document.createElement('div'),canvas=document.createElement('canvas')
+    glass.className='glass';glass.append(canvas);card.append(glass)
+    const labelElement=document.createElement('div');labelElement.className='study-label';labelElement.textContent=label
+    card.append(labelElement);studies.append(card);view(canvas,seat,hour)
+  }
+  const seat=Math.trunc(Number(params.get('seat'))||0)
+  view(document.querySelector('#left'),seat,fixed,true);view(document.querySelector('#right'),seat+1,fixed,true)
+  function resize(){
+    const large=innerWidth>=1800, available=document.querySelector('main').clientWidth
+    for(let i=0;i<views.length;i++){
+      const v=views[i],width=i<4?Math.floor((v.canvas.parentElement.parentElement.clientWidth-12)/(pixelScale*4))*pixelScale*4:Math.min(large?780:520,Math.floor((available-16)/2/(pixelScale*4))*pixelScale*4)
+      v.canvas.style.width=width+'px';v.canvas.style.height=width*.75+'px';v.stage.resize(width,width*.75)
+      const center=v.map.chunkCenter(v.seat);v.stage.focus(center.x,center.z,{span:CHUNK_W})
+      for(let j=0;j<24;j++)v.stage.update(.25,time)
+    }
+    render()
+  }
+  function render(dt=0){
+    for(const v of views){
+      v.cast.forEach((p,i)=>{
+        const x=i?seat*14+10.9:seat*14-1.8+Math.sin(time*.19)*3
+        p.object3d.position.set(x,v.map.ground(x,1.5),1.5)
+        p.set({anim:i?'idle':'run',moving:i?0:.57*Math.abs(Math.cos(time*.19)),facing:i?-1:Math.cos(time*.19)>=0?1:-1});p.update(dt,time)
+      })
+      v.stage.update(dt,time);v.map.update(dt,time);v.stage.render()
+    }
+    const hour=views[4].stage.timeOfDay
+    document.querySelector('#time-label').textContent=`${String(Math.floor(hour)).padStart(2,'0')}:${String(Math.round(hour%1*60)).padStart(2,'0')}`
+  }
+  let lastBloom=-1
+  function tick(now){
+    if(disposed)return
+    const dt=Math.min(.1,(now-previous)/1000);previous=now
+    if(!paused){time+=dt;const bloom=Math.floor(time/5);if(bloom!==lastBloom&&!params.has('bare')){lastBloom=bloom;for(const v of views)v.map.bloom({kind:kinds[bloom%4],seed:'sharing-'+bloom%8})}render(dt)}
+    frame=requestAnimationFrame(tick)
+  }
+  function dispose(){if(disposed)return;disposed=true;cancelAnimationFrame(frame);removeEventListener('resize',resize);for(const v of views){v.cast.forEach(p=>p.dispose());v.map.dispose();v.stage.dispose()}}
+  window.lightPreview={views,garden,render,pause(){paused=true},play(){paused=false},setTime(t){time=t;render()},setTimeOfDay(hour){for(const v of views.slice(4))v.stage.setTimeOfDay(hour);render()},bloom(item){for(const v of views)v.map.bloom(item);render()},setGarden(items){for(const v of views)v.map.setGarden(items);render()},step(dt=1/60){time+=dt;render(dt)},dispose}
+  resize();addEventListener('resize',resize);addEventListener('pagehide',dispose,{once:true});frame=requestAnimationFrame(tick)
+</script></body></html>

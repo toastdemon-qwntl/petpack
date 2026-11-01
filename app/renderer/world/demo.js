@@ -1,5 +1,5 @@
 import { createWorld } from './index.js'
-import { createStory, DURATION } from './story.js'
+import { createStory, DURATION, previousGarden, storyGift } from './story.js'
 import { createDesk } from './desk.js'
 
 const params = new URLSearchParams(location.search)
@@ -40,11 +40,23 @@ const worlds = desks.map(({ paneHost, dock }, i) => createWorld(paneHost, {
 }))
 const world = worlds[0]
 const story = createStory(world.map, { testPet })
+// Sample the daylight on the same clock as the visits; noon is the locked look.
+// An explicit ?hour= pins captures, while ?hour=local follows the laptop's clock.
+const requestedHour = params.get('hour')
+function daylight(at) {
+  if (requestedHour === 'local') return null
+  if (requestedHour !== null && Number.isFinite(Number(requestedHour))) return Number(requestedHour)
+  const t = ((at % DURATION) + DURATION) % DURATION
+  if (t < 54) return 14
+  const progress = Math.min(1, (t - 54) / 18)
+  return 14 + 10 * Math.sin(Math.PI * progress) ** 2
+}
 
 function applyState(at) {
   const state = story.sample(at)
   const nextIds = new Set(state.map(pet => pet.id))
   for (const current of worlds) {
+    current.setTimeOfDay(daylight(at))
     for (const id of ids) if (!nextIds.has(id)) current.removePet(id)
     for (const pet of state) {
       current.upsertPet(pet.id, {
@@ -61,11 +73,14 @@ function applyState(at) {
 function dispatch(event) {
   for (const current of worlds) {
     if (event.type === 'ask') current.ask(event.from, event.to, {
-      question: event.question, answer: event.answer, kind: event.kind, label: event.label,
+      question: event.question, answer: event.answer, ...storyGift(event),
     })
-    else if (event.type === 'gift') current.gift(event.from, event.to, { color: event.color, label: event.label })
+    else if (event.type === 'gift') current.gift(event.from, event.to, storyGift(event))
     else if (event.type === 'collab') current.collab(event.from, event.to, { kind: event.kind, label: event.label })
     else if (event.type === 'say') current.say(event.id, event.text)
+    else if (event.type === 'handshake') current.handshake({ seat: event.seat, side: event.side })
+    else if (event.type === 'knock') current.knock(event.id, event.enabled)
+    else if (event.type === 'celebrate') current.celebrate(event.id)
   }
 }
 function draw(dt, at, render = true) {
@@ -73,17 +88,19 @@ function draw(dt, at, render = true) {
 }
 
 // Reconstruct the active conversation as well as the positions for captures.
-// Only the last 12 seconds can still have live effects. Replay without GPU draws.
+// Reconstruct the current loop: a visit or a gently repeating knock can outlive
+// a speech bubble. Replay without GPU draws, using the same shared clock.
 async function seek(at) {
   const generation = ++seekGeneration
   seeking = true
   const target = Math.max(0, Number(at) || 0)
   for (const current of worlds) {
     current.resetEffects()
+    current.setGarden(previousGarden(target))
     for (const id of ids) current.removePet(id)
   }
   ids.clear()
-  let cursor = Math.max(0, target - 12)
+  let cursor = Math.floor(target / DURATION) * DURATION
   applyState(cursor)
   draw(0, cursor, false)
   while (cursor < target - .000001 && !disposed && generation === seekGeneration) {
@@ -107,6 +124,11 @@ function tick(now) {
   if (!seeking) {
     if (!paused) time = now / 1000 - origin
     const delta = Math.max(0, time - previousTime)
+    if (delta > 3) {
+      void seek(time)
+      frameId = requestAnimationFrame(tick)
+      return
+    }
     applyState(time)
     for (const event of story.events(previousTime, time)) dispatch(event)
     draw(delta, time)

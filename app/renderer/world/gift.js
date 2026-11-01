@@ -5,8 +5,9 @@ const BURST = .55
 const ease = p => p * p * (3 - 2 * p)
 
 /** One moving pixel, a sparse comet tail, and a little eight-way arrival burst. */
-export function createGifts(_parent, field, bubbles, pets) {
+export function createGifts(_parent, field, bubbles, pets, { onGift } = {}) {
   const flights = new Set()
+  let sequence = 0
   const point = new THREE.Vector3()
   function endpoint(pet, result) {
     pet.anchor.getWorldPosition(result)
@@ -20,19 +21,26 @@ export function createGifts(_parent, field, bubbles, pets) {
     result.y += Math.sin(p * Math.PI) * Math.min(1.6, .65 + start.distanceTo(end) * .13)
     return result
   }
+  function contact(flight) {
+    if (flight.arrived) return
+    flight.arrived = true
+    onGift?.({ fromId: flight.fromId, toId: flight.toId, ...flight.knowledge })
+    flight.resolve(true)
+  }
   function finish(flight, arrived) {
     flights.delete(flight)
     flight.cancelled = !arrived
-    if (arrived) flight.arrived = true
+    if (arrived) contact(flight)
     flight.label?.remove()
     flight.resolve(arrived)
   }
-  function start(fromId, toId, { color, label, duration = FLIGHT } = {}) {
+  function start(fromId, toId, { color, label, kind = 'skill', seed, duration = FLIGHT } = {}) {
     const giver = pets.get(fromId), receiver = pets.get(toId)
     if (!giver || !receiver || fromId === toId) return null
     let resolve
     const promise = new Promise(done => { resolve = done })
     const flight = { fromId, toId, color: new THREE.Color(color || giver.color),
+      knowledge: { kind, seed: seed ?? `${fromId}:${toId}:${label || kind}:${++sequence}`, color: color || `#${giver.color.getHexString()}` },
       age: 0, resolve, promise, duration: Math.max(.1, Number(duration) || FLIGHT),
       start: new THREE.Vector3(), end: new THREE.Vector3(), label: bubbles.createGiftLabel(label) }
     flights.add(flight)
@@ -68,7 +76,7 @@ export function createGifts(_parent, field, bubbles, pets) {
           bubbles.projectGift(flight.label, point, Math.max(0, Math.min(1, progress * 7, (1 - progress) * 6)))
         } else {
           // Preserve the World API's contact cue; the visual burst finishes afterward.
-          if (!flight.arrived) { flight.arrived = true; flight.resolve(true) }
+          contact(flight)
           flight.label?.remove(); flight.label = null
           const p = after / BURST, spread = (1 - (1 + p * 5) * Math.exp(-p * 5)) * .95
           for (let i = 0; i < 10; i++) {

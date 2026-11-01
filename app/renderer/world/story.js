@@ -1,4 +1,5 @@
-export const DURATION = 60
+export const DURATION = 72
+const INTRO = 12
 export const PETS = [
   { id: 'pip', displayName: 'Pip', color: '#6d99e5', kind: 'cat', skillCount: 3, homeSeat: 0 },
   { id: 'cleo', displayName: 'Cleo', color: '#df706d', kind: 'cat', skillCount: 5, homeSeat: 1 },
@@ -82,18 +83,37 @@ function itinerary(map, keys) {
 
 // One useful request, then the favour returned. Events have absolute timestamps
 // within the loop, so all panes receive exactly the same choreography.
-export const EVENTS = [
+const REQUESTS = [
   { at: 4.2, type: 'say', id: 'pip', text: 'Azure deploy is missing…' },
   { at: 14.2, type: 'ask', from: 'pip', to: 'cleo', question: 'how do we ship to Azure?',
     answer: 'my azure-deploy skill', kind: 'skill', label: 'azure-deploy' },
   { at: 18, type: 'say', id: 'pip', text: 'learned azure-deploy' },
   { at: 23.2, type: 'collab', from: 'pip', to: 'cleo', kind: 'memory', label: 'deployment checklist' },
   { at: 27.2, type: 'say', id: 'pip', text: 'Got it. Thank you!' },
-  { at: 38.5, type: 'say', id: 'pip', text: 'Shipped to Azure!' },
+  { at: 41.4, type: 'say', id: 'pip', text: 'Shipped to Azure!' },
   { at: 48.4, type: 'say', id: 'cleo', text: 'Let’s improve it together.' },
   { at: 49.3, type: 'collab', from: 'pip', to: 'cleo', kind: 'skill', label: 'a reusable deploy skill' },
   { at: 53.1, type: 'say', id: 'cleo', text: 'Next time, one step.' },
 ]
+export const EVENTS = [
+  { at: .25, type: 'handshake', seat: 0, side: 'right' },
+  { at: 10, type: 'knock', id: 'pip', enabled: true },
+  { at: 15, type: 'knock', id: 'pip', enabled: false },
+  ...REQUESTS.map(event => ({ ...event, at: event.at + INTRO })),
+  { at: 50, type: 'celebrate', id: 'pip' },
+  { at: 65.4, type: 'gift', from: 'pip', to: 'cleo', kind: 'skill', label: 'reusable-deploy', color: '#ffcd78' },
+].sort((a, b) => a.at - b.at)
+
+const giftColors = { skill: '#ffcd78', memory: '#9be5d5', technique: '#d8d1fb', resource: '#ffc88a' }
+export function storyGift(event) {
+  return { kind: event.kind || 'skill', color: event.color || giftColors[event.kind] || '#ffcd78',
+    label: event.label, seed: `demo:${event.from}:${event.to}:${event.label || event.kind}` }
+}
+// A loop revisits the same knowledge: learned flowers persist without unlimited
+// duplicates. A capture in a later loop restores those already-learned records.
+export function previousGarden(time) {
+  return time < DURATION ? [] : EVENTS.filter(e => (e.type === 'ask' || e.type === 'gift') && e.kind).map(storyGift)
+}
 
 /** Hidden tabs resume life now instead of replaying stale conversations. */
 export function storyEvents(previous, current) {
@@ -140,7 +160,7 @@ export function createStory(map, { testPet = false } = {}) {
       key(50, offset(library, -3.2, .65)), key(60, offset(workshop, -3.2, .65))]),
   }
   function sample(time) {
-    const t = loopTime(time)
+    const t = Math.max(0, loopTime(time) - INTRO)
     return [...PETS, ...(testPet ? [TEST_PET] : [])].map(pet => {
       const pose = positions[pet.id](t)
       let anim = pose.speed > .07 ? 'run' : 'idle', status = 'idle', skillCount = pet.skillCount

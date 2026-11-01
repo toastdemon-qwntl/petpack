@@ -12,14 +12,14 @@ function isVisible(anchor) {
 }
 
 /** Pixel effects in world space, with matching pixel-snapped DOM bubbles. */
-export function createFx({ scene, camera, overlay, stage }) {
+export function createFx({ scene, camera, overlay, stage, onGift }) {
   const root = new THREE.Group()
   root.name = 'petpack-fx'
   scene.add(root)
   const pets = new Map()
   const field = createGlowField(root, camera, 8192, { pixelScale: stage?.pixelScale || 2 })
   const bubbles = createBubbles(overlay, camera, stage)
-  const gifts = createGifts(root, field, bubbles, pets)
+  const gifts = createGifts(root, field, bubbles, pets, { onGift })
   const collabs = createCollabs(field, bubbles, pets)
   const asks = createAsks(bubbles, gifts, pets)
   const feet = new THREE.Vector3(), head = new THREE.Vector3()

@@ -12,13 +12,13 @@ export function createAsks(bubbles, gifts, pets) {
     ask.resolve(result)
   }
   return {
-    ask(fromId, toId, { question = 'Can you lend a hand?', answer = 'Here, try this.', kind, label = '' } = {}) {
+    ask(fromId, toId, { question = 'Can you lend a hand?', answer = 'Here, try this.', kind, label = '', seed } = {}) {
       const asker = pets.get(fromId), answerer = pets.get(toId)
       if (!asker || !answerer || fromId === toId) return Promise.resolve(false)
       const token = bubbles.reserve([asker.ui, answerer.ui])
       return new Promise(resolve => active.add({ fromId, toId, token, resolve, age: 0,
         question: String(question).slice(0, 96), answer: String(answer).slice(0, 96),
-        kind: COLORS[kind] ? kind : null, label: String(label).slice(0, 64), flight: null }))
+        kind: COLORS[kind] ? kind : null, label: String(label).slice(0, 64), seed, flight: null }))
     },
     detach(id) {
       for (const ask of active) if (ask.fromId === id || ask.toId === id) finish(ask, false)
@@ -36,7 +36,8 @@ export function createAsks(bubbles, gifts, pets) {
         if (!ask.kind && ask.age >= GIFT_AT) { finish(ask, true); continue }
         if (ask.kind && ask.age >= GIFT_AT && !ask.flight) {
           // The answer names the useful thing; keep the dot itself unlabelled and readable.
-          ask.flight = gifts.start(ask.toId, ask.fromId, { color: COLORS[ask.kind], duration: FLIGHT })
+          ask.flight = gifts.start(ask.toId, ask.fromId, { color: COLORS[ask.kind], duration: FLIGHT,
+            kind: ask.kind, seed: ask.seed, label: '' })
         }
         if (ask.flight?.arrived) finish(ask, true)
         else if (ask.flight?.cancelled) finish(ask, false)
