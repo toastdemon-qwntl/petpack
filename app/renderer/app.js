@@ -103,9 +103,12 @@ const brainBridge = typeof bridge.answerAsk !== 'function' ? bridge : Object.ass
 })
 // Today's own help count (answers given, items shared) survives a restart; the brain drops yesterday's.
 const HELPED_KEY = 'petpack:helped'
-function readHelped() {
-  try { const v = JSON.parse(localStorage.getItem(HELPED_KEY) || 'null'); return v && typeof v === 'object' ? v : null } catch { return null }
+const GARDEN_KEY = 'petpack:garden' // this week's garden: { week, items }
+const BOOTH_KEY = 'petpack:booth' // the week the Friday photo booth last ran
+function readStored(key) {
+  try { const v = JSON.parse(localStorage.getItem(key) || 'null'); return v && typeof v === 'object' ? v : null } catch { return null }
 }
+function readHelped() { return readStored(HELPED_KEY) }
 const brain = createBrain({
   bridge: brainBridge,
   net: { send: msg => net?.send(msg) ?? false },
@@ -113,7 +116,7 @@ const brain = createBrain({
     skills: Array.isArray(me.skills) ? me.skills : [], catalog, sprite },
   config: { demo, seat: config.seat, dock, room: config.room || null, sharing: config.sharing || null, dnd: !!config.dnd,
     sit: config.sit === 'across' ? 'across' : 'side', device: config.device || null, nextTo: config.nextTo || null,
-    helpVisits: !!config.helpVisits, helped: readHelped() },
+    helpVisits: !!config.helpVisits, helped: readHelped(), garden: readStored(GARDEN_KEY), boothWeek: localStorage.getItem(BOOTH_KEY) || null },
   view: {
     // One text bubble per pane at a time, and only for pets this pane shows.
     ask: (a, b, o) => queueText({ ids: [a, b], hold: 4800, first: true, run: () => world.ask(a, b, o) }),
@@ -270,7 +273,7 @@ function syncPets() {
     if (p.atlas) info.atlas = p.atlas
     const key = JSON.stringify(info)
     if (shown.get(p.id) !== key) { world.upsertPet(p.id, info); shown.set(p.id, key) }
-    world.updatePet(p.id, { x: p.x, z: p.z, facing: p.facing, anim: p.anim, status: p.status, speed: p.speed, snap: true })
+    world.updatePet(p.id, { x: p.x, z: p.z, facing: p.facing, anim: p.anim, status: p.status, speed: p.speed, snap: true, ...noticeCursor(p) })
     const waiting = petWaiters.get(p.id)
     if (waiting) { petWaiters.delete(p.id); for (const fn of waiting) { try { fn() } catch (error) { console.warn('petpack joy', error) } } }
   }
@@ -320,7 +323,7 @@ let hoverSaid = 0
 window.addEventListener('mousemove', event => {
   const id = world.playHitTest?.(event.clientX, event.clientY) ?? world.pick(event.clientX, event.clientY)
   // Pets, the share request, the chat field and the zoom pip / zoomed-out strip catch the cursor.
-  const want = !!id || !!event.target?.closest?.('.pp-perm, .pp-chat, .pp-mic') || !!zoom?.wantsPointer?.(event.clientX, event.clientY)
+  const want = !!id || !!event.target?.closest?.('.pp-perm, .pp-mailcard, .pp-chat, .pp-mic') || !!zoom?.wantsPointer?.(event.clientX, event.clientY)
   if (want !== interactive) { interactive = want; try { bridge.setInteractive?.(want) } catch { /* bridge gone */ } }
   if (id === myId && performance.now() - hoverSaid > 6000) {
     hoverSaid = performance.now()
@@ -345,7 +348,8 @@ window.addEventListener('contextmenu', async event => {
   if (them) {
     items.push({ label: `${them.displayName} · ${them.dnd ? 'do not disturb' : them.status || 'idle'}`, enabled: false },
       { id: `wave:${them.id}`, label: `Wave at ${them.displayName}` },
-      { id: `visit:${them.id}`, label: `Visit ${them.displayName}` })
+      { id: `visit:${them.id}`, label: `Visit ${them.displayName}` },
+      { id: `mail:${them.id}`, label: `Send ${them.displayName} a note…` })
     if (!them.local) items.push({ id: `sit:${them.id}`, label: `Sit next to ${them.displayName}` })
     items.push({ type: 'separator' })
   }
@@ -356,6 +360,7 @@ window.addEventListener('contextmenu', async event => {
       { id: 'walk', label: 'Go for a walk' },
     ] },
     { id: 'showMe', label: 'Show me' },
+    { id: 'duck', label: 'Rubber duck…' },
     { type: 'separator' },
     { id: 'party', label: 'Party' },
     { id: 'photo', label: 'Take a photo' },
@@ -374,6 +379,8 @@ window.addEventListener('contextmenu', async event => {
   else if (what === 'walk') said(brain.sendAway?.())
   else if (what === 'visit') said(brain.sendAway?.(target))
   else if (what === 'wave') brain.waveAt?.(target)
+  else if (what === 'mail') composeNote(target)
+  else if (what === 'duck') window.petpackChat?.duck?.()
   else if (what === 'sit') said(brain.coworkWith?.(target))
   else if (what === 'showMe') showMe()
   else if (what === 'party') brain.party?.()
@@ -675,6 +682,148 @@ brain.on?.('leader', id => {
   const who = id && (id === myId ? 'you' : brain.pets().find(p => p.id === id)?.displayName)
   if (who) activity(id === myId ? 'your pet is the most helpful today 🏆' : `${who} is the most helpful today`, 'trophy')
 })
+
+// ---- high five: a little pixel starburst between the two pets as the dot lands ----
+const FIVE_SVG = '<svg viewBox="0 0 9 9" aria-hidden="true"><path fill="#ffe27a" d="M4 0h1v3H4zM4 6h1v3H4zM0 4h3v1H0zM6 4h3v1H6z"/>' +
+  '<path fill="#fff3b0" d="M1 1h1v1H1zM7 1h1v1H7zM1 7h1v1H1zM7 7h1v1H7zM3 3h3v3H3z"/></svg>'
+brain.on?.('highfive', (a, b) => {
+  const stage = world.stage
+  const pa = brain.pets().find(p => p.id === a), pb = brain.pets().find(p => p.id === b)
+  if (!pa || !pb || !shown.has(a) || !shown.has(b) || !stage?.toScreen) return
+  const V3 = stage.camera.position.constructor
+  const x = (pa.x + pb.x) / 2, z = (pa.z + pb.z) / 2
+  const s = stage.toScreen(new V3(x, (world.map?.ground?.(x, z) || 0) + 1.5, z))
+  const burst = Object.assign(document.createElement('div'), { className: 'pp-five', innerHTML: FIVE_SVG })
+  burst.style.left = `${s.x}px`; burst.style.top = `${s.y}px`
+  viewport.append(burst)
+  setTimeout(() => burst.remove(), 900)
+})
+
+// ---- pet mail: write a note (right-click a teammate), and read the ones our pet is handed ----
+const noteSheet = new CSSStyleSheet()
+noteSheet.replaceSync(`
+.pp-five { position: absolute; z-index: 7; width: 22px; height: 22px; pointer-events: none; transform: translate(-50%, -50%);
+  animation: pp-five .9s ease-out forwards; }
+.pp-five svg { display: block; width: 100%; height: 100%; shape-rendering: crispEdges; }
+@keyframes pp-five { 0% { transform: translate(-50%, -50%) scale(.3) rotate(0); opacity: 1; }
+  60% { transform: translate(-50%, -50%) scale(1.25) rotate(20deg); opacity: 1; } 100% { transform: translate(-50%, -70%) scale(1.4) rotate(35deg); opacity: 0; } }
+.pp-mailcard { position: absolute; z-index: 9; left: 50%; bottom: 12px; transform: translateX(-50%); width: min(300px, 86%); box-sizing: border-box;
+  padding: 7px 8px 7px 10px; border-radius: 10px; background: #fffaf0f5; box-shadow: 0 2px 12px #0c1d3338; color: #24323d;
+  font: 500 11px/15px ui-rounded, system-ui, sans-serif; }
+.pp-mailcard b { font-weight: 700; }
+.pp-mailcard p { margin: 2px 0 6px; max-height: 60px; overflow: auto; overflow-wrap: anywhere; }
+.pp-mailcard .row { display: flex; gap: 6px; justify-content: flex-end; }
+.pp-mailcard button { border: 0; border-radius: 999px; padding: 2px 10px; font: 600 11px/18px ui-rounded, system-ui, sans-serif; cursor: pointer;
+  background: #e8e2d4; color: #24323d; }
+.pp-mailcard button.go { background: #4f9c6c; color: #fff; }
+.pp-mailcard input { width: 100%; box-sizing: border-box; margin: 4px 0 6px; padding: 4px 7px; border: 1px solid #d8cfbd; border-radius: 6px;
+  font: 500 11px/16px ui-rounded, system-ui, sans-serif; background: #fff; color: #24323d; outline: none; }
+.pp-mailcard input:focus { border-color: #4f9c6c; }
+`)
+document.adoptedStyleSheets = [...document.adoptedStyleSheets, noteSheet]
+let noteCard = null
+function closeNote() { noteCard?.remove(); noteCard = null; try { bridge.setInteractive?.(false) } catch { /* bridge gone */ } }
+function noteShell(title) {
+  closeNote()
+  noteCard = Object.assign(document.createElement('div'), { className: 'pp-mailcard' })
+  noteCard.append(Object.assign(document.createElement('b'), { textContent: title }))
+  viewport.append(noteCard)
+  collapse?.expand?.()
+  return noteCard
+}
+const btn = (text, cls, fn) => { const b = Object.assign(document.createElement('button'), { type: 'button', textContent: text, className: cls }); b.addEventListener('click', fn); return b }
+function composeNote(id) {
+  const to = brain.pets().find(p => p.id === id)
+  if (!to) return
+  const card = noteShell(`Note to ${to.displayName}`)
+  const input = Object.assign(document.createElement('input'), { maxLength: 280, placeholder: 'lunch?', spellcheck: true })
+  const send = () => {
+    const r = brain.sendMail?.(id, input.value)
+    if (r?.message) activity(r.message, 'mail')
+    if (r?.ok) closeNote()
+    else if (r?.message) flash(r.message)
+  }
+  input.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') send(); if (e.key === 'Escape') closeNote() })
+  input.addEventListener('keyup', e => e.stopPropagation())
+  const row = Object.assign(document.createElement('div'), { className: 'row' })
+  row.append(btn('Cancel', '', closeNote), btn('Send', 'go', send))
+  card.append(input, row)
+  try { bridge.setInteractive?.(true) } catch { /* bridge gone */ }
+  setTimeout(() => input.focus({ preventScroll: true }), 30)
+}
+function showNote(title, text, reply) {
+  const card = noteShell(title)
+  const row = Object.assign(document.createElement('div'), { className: 'row' })
+  if (reply) row.append(btn('Reply', 'go', reply))
+  row.append(btn('OK', '', closeNote))
+  card.append(Object.assign(document.createElement('p'), { textContent: text }), row)
+}
+brain.on?.('mail', m => {
+  activity(`note from ${m.fromName}: ${m.text}`, 'mail')
+  showNote(`✉ ${m.fromName}`, m.text, () => composeNote(m.from))
+})
+// Who touched this: the answer about the file our Codex is stuck in.
+brain.on?.('touched', t => {
+  if (!t?.answered_by || !t.answer) return
+  const file = String(t.file).split('/').pop()
+  activity(`${t.answered_by} on ${file}: ${t.answer}`, 'touched')
+  showNote(`${t.answered_by} on ${file}${t.touchedBy ? ` (last touched by ${t.touchedBy})` : ''}`, t.answer)
+})
+
+// ---- photos: the Friday photo booth, and Monday's recap before the garden starts again ----
+brain.on?.('booth', ({ startAt, week } = {}) => {
+  try { localStorage.setItem(BOOTH_KEY, String(week || '')) } catch { /* storage gone */ }
+  flash('team photo! everyone in')
+  activity('Friday photo booth: conga, then a team photo', 'photo')
+  setTimeout(() => takePhoto(), Math.max(0, (startAt || Date.now()) - Date.now()) + 6000)
+})
+brain.on?.('garden', items => {
+  try { localStorage.setItem(GARDEN_KEY, JSON.stringify({ week: brain.gardenWeek, items })) } catch { /* storage full or gone */ }
+})
+brain.on?.('garden-reset', ({ items } = {}) => {
+  flash(`this week's garden: ${items?.length || 0} plants`)
+  activity('weekly garden photo saved; a fresh garden starts today', 'photo')
+  takePhoto()
+})
+
+// ---- pets notice the cursor: idle pets turn to look at it, and a fast shake startles them ----
+const cursor = { x: NaN, y: NaN, dir: 0, flips: [], lastX: NaN }
+const startled = new Map() // pet id -> until (ms)
+window.addEventListener('mousemove', e => {
+  const now = performance.now()
+  const dx = Number.isFinite(cursor.lastX) ? e.clientX - cursor.lastX : 0
+  cursor.x = e.clientX; cursor.y = e.clientY; cursor.lastX = e.clientX
+  if (Math.abs(dx) < 6) return
+  const dir = Math.sign(dx)
+  if (dir !== cursor.dir) { cursor.dir = dir; cursor.flips.push(now) }
+  cursor.flips = cursor.flips.filter(t => now - t < 700)
+  if (cursor.flips.length >= 5) { cursor.flips = []; startleNear(now) }
+})
+window.addEventListener('mouseleave', () => { cursor.x = NaN; cursor.y = NaN })
+function screenOf(p) {
+  const stage = world.stage
+  if (!stage?.toScreen) return null
+  return stage.toScreen(new stage.camera.position.constructor(p.x, (world.map?.ground?.(p.x, p.z) || 0) + 0.8, p.z))
+}
+function startleNear(now) {
+  for (const p of brain.pets()) {
+    if (!shown.has(p.id) || p.away) continue
+    const s = screenOf(p)
+    if (!s || Math.hypot(s.x - cursor.x, s.y - cursor.y) > 130) continue
+    if ((startled.get(p.id) || 0) > now) continue
+    startled.set(p.id, now + 900)
+    queueText({ ids: [p.id], hold: 900, run: () => world.say(p.id, '!') })
+  }
+}
+/** Display-only tweaks for this pane: a startled hop, or an idle pet facing the cursor. */
+function noticeCursor(p) {
+  const now = performance.now()
+  if ((startled.get(p.id) || 0) > now) return { anim: 'jump' }
+  if (!Number.isFinite(cursor.x) || p.speed > 0.05 || p.anim !== 'idle') return null
+  const s = screenOf(p)
+  if (!s || Math.abs(s.x - cursor.x) > 110 || Math.abs(s.y - cursor.y) > 90 || Math.abs(s.x - cursor.x) < 6) return null
+  return { facing: cursor.x > s.x ? 1 : -1 }
+}
 
 async function takePhoto() {
   try {

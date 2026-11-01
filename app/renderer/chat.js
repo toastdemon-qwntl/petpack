@@ -61,6 +61,7 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
     box.classList.remove('on')
     pane.classList.remove('pp-chatting')
     input.blur()
+    if (duck.on) stopDuck()
   }
 
   // Our own pet: a click (not a throw) opens the chat. Capture phase, so the seat hint doesn't talk over it.
@@ -160,10 +161,64 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
   form.addEventListener('submit', async e => {
     e.preventDefault()
     const question = input.value.trim()
+    if (duck.on) { input.value = ''; await duckLine(question); return }
     if (!question || busy) return
     input.value = ''
     await ask(question)
   })
+
+  // ---- rubber duck: talk it through line by line; the pet only nods, then sums it up when you're done ----
+  const duck = { on: false, lines: [] }
+  const NODS = ['mm-hm', 'go on', 'I see', 'right...', 'and then?', 'ooh', 'hmm']
+  const PLACEHOLDER = input.placeholder
+  function startDuck() {
+    duck.on = true
+    duck.lines = []
+    openChat()
+    box.classList.add('pp-duck')
+    input.placeholder = 'talk it through... (empty Enter: sum up)'
+    line('pet', "Rubber duck mode. Tell me the problem, one line at a time. Press Enter on an empty line and I'll sum it up.")
+    sayBubble("I'm listening")
+    bounce(1.2, 'wave')
+  }
+  function stopDuck() {
+    duck.on = false
+    box.classList.remove('pp-duck')
+    input.placeholder = PLACEHOLDER
+  }
+  async function duckLine(text) {
+    if (busy) return
+    if (text) {
+      line('you', text)
+      duck.lines.push(text)
+      sayBubble(NODS[duck.lines.length % NODS.length])
+      bounce(0.45, 'jump') // a nod
+      return
+    }
+    if (!duck.lines.length) { stopDuck(); closeChat(); return }
+    busy = true
+    box.classList.add('busy')
+    const think = line('pet', '…', 'pp-thinking')
+    thinking(true)
+    const question = 'You are my rubber duck. Do not use tools and do not solve it for me unless the answer is obvious. ' +
+      'In at most two short sentences, tell me back what the problem really seems to be and the one thing I should check next.\n\n' +
+      `What I said:\n${duck.lines.map(l => `- ${l}`).join('\n')}`
+    let result
+    try {
+      result = bridge?.chat?.ask ? await bridge.chat.ask({ id: `d${Date.now().toString(36)}`, question, petName: petName(), userName: userName() })
+        : { ok: false, error: 'offline' }
+    } catch (error) { result = { ok: false, error: String(error?.message || error) } }
+    thinking(false)
+    think.row.classList.remove('pp-thinking')
+    busy = false
+    box.classList.remove('busy')
+    const text2 = result?.ok && result.text ? result.text
+      : `So: ${duck.lines.slice(-3).join(' ... ')}. Say that out loud once more, and check the bit you just skipped.`
+    think.set(text2)
+    sayBubble(text2)
+    bounce(2, 'wave')
+    stopDuck()
+  }
 
   async function ask(question) {
     busy = true
@@ -409,7 +464,7 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
   mic.addEventListener('pointercancel', () => talkStop())
   mic.addEventListener('click', e => e.stopPropagation())
 
-  const api = { open: openChat, close: closeChat, ask, talkStart, talkStop, hangUp, get isOpen() { return open }, get busy() { return busy }, el: box }
+  const api = { open: openChat, close: closeChat, ask, duck: startDuck, get ducking() { return duck.on }, talkStart, talkStop, hangUp, get isOpen() { return open }, get busy() { return busy }, el: box }
   window.petpackChat = api
   return api
 }

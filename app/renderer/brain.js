@@ -30,6 +30,11 @@
 //   'inbox'     ({ id, from, fromName, question })         a teammate's question our catalog can't answer at once
 //   'leader'    (id | null, previousId | null)             today's most helpful agent changed: pets() marks it trophy: true
 //   'helped'    ({ day, answers, shares, at })             our own help count went up: persist it for a restart
+//   'highfive'  (srcId, dstId, countToday)                 a dot landed: both pets jump; 2 in a day = best buddies
+//   'mail'      ({ id, from, fromName, text })             a teammate's pet delivered a note to us (only our pane)
+//   'booth'     ({ startAt, week })                        Friday photo booth: a conga starts at startAt; take a photo
+//   'garden-reset' ({ week, items })                       Monday: last week's garden is about to clear (recap photo)
+//   'touched'   ({ file, touchedBy, why, answered_by, answer, dot })  we asked about the file our Codex is stuck in
 //   showMe() -> { ok, with, item, kind, question, answer, says, installed, message }: the core journey for real
 //     with our co-work neighbour (else the nearest online peer): walk over, ask about one of their real items,
 //     answer, dot, install, "learned X", walk home, celebrate.
@@ -49,6 +54,15 @@
 //   sendAway(idOrName?) -> { ok, message }  visit that teammate's pet now (wave, collab, a dot, home), or with no
 //                                        target a walk to the landmark next door and back; recall() ends it early
 //   waveAt(id) -> bool                   our pet waves and says hi to that pet from where it stands
+//   sendMail(idOrName, text) -> { ok, message }  our pet walks a note (<= 280 chars) to them: fx 'mail'
+//   Lunch: free pets (and demo bots) eat at the nearest Campfire between config.lunch { start, end } ('12:30'-'13:15'
+//     local; false turns it off), once a day, until their Codex works again. lunchtime getter.
+//   Photo booth: Friday 16:00-16:15 local, the room's lowest id starts a conga and fx 'booth' (config.booth false
+//     turns it off; config.boothWeek = the week it already ran). startBooth() runs it now.
+//   Garden: entries carry plantedAt and grow 0..1 over six days (gardenList()); only this week's learning grows and
+//     Monday clears it. config.garden { week, items } seeds this week's.
+//   Who touched this: a stuck need with workFile (and touchedBy from git) asks the teammate whose name matches the
+//     last author, or whose catalog knows that file best, before the usual catalog fetch.
 //   setDnd(on) -> on; dnd                no visits/gifts, pet stays home, asks get "<name> is heads-down right now";
 //                                        pets() carries dnd per pet (draw a small DND sign over those pets)
 //   setSharing({ mode: 'free'|'ask'|'never', items: { [ref]: true|false } }); sharing
@@ -270,7 +284,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   const demo = !!config.demo
   const nav = createStripNavigation(createTerrain({ seed: 77, chunkWidth: CHUNK_W }))
   let time = 0 // brain seconds, advanced only by tick()
-  let wall = () => Date.now()
+  let wall = typeof config.now === 'function' ? config.now : () => Date.now() // config.now: a test clock from the start
   let mySeat = Number.isInteger(config.seat) ? config.seat : 0
   let room = config.room || null
   let online = false
@@ -511,6 +525,18 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   const pad2 = n => String(n).padStart(2, '0')
   const dayKey = () => { const d = new Date(wall()); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` }
   const helpCount = v => Math.max(0, Math.min(9999, Math.floor(Number(v)) || 0))
+  const DAY_MS = 24 * 60 * 60 * 1000
+  const localNow = () => new Date(wall())
+  const minutesOfDay = () => { const d = localNow(); return d.getHours() * 60 + d.getMinutes() }
+  /** The Monday that starts this local week, 'YYYY-MM-DD'. */
+  const weekKey = () => {
+    const d = localNow()
+    d.setHours(0, 0, 0, 0)
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7))
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+  }
+  const weekStartMs = () => { const [y, m, d] = weekKey().split('-').map(Number); return new Date(y, m - 1, d).getTime() }
+  const msOf = t => (t > 1e11 ? t : t * 1000)
   const scores = new Map() // id -> { day, answers, shares, at /* wall ms of the last help */ }
   let leaderId = null
   let scoreSentAt = -Infinity
@@ -567,6 +593,141 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     emit('leader', next, previous)
     // A fresh win gets a bubble on every pane (same scores, same leader); a late score arriving quietly doesn't.
     if (top && wall() - top.at < 15000) emit('say', top.id, 'most helpful today!')
+  }
+
+  // ---- high five: when a dot lands, giver and receiver both jump; a second one in a day makes them best buddies ----
+  const fives = new Map() // 'a|b|day' -> count
+  function highFive(src, dst) {
+    if (!src || !dst || src === dst) return
+    for (const id of [src, dst]) { const a = agents.get(id); if (a) setAnim(a, 'jump', 0.9) }
+    const key = `${[src, dst].sort().join('|')}|${dayKey()}`
+    const n = (fives.get(key) || 0) + 1
+    fives.set(key, n)
+    emit('highfive', src, dst, n)
+    if (n === 2) emit('say', src, 'best buddies!')
+  }
+
+  // ---- pet mail: our pet carries a short note to a teammate's pet; only their pane shows the text ----
+  function sendMail(idOrName, text) {
+    const note = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 280)
+    if (!note) return { ok: false, message: 'empty note' }
+    if (dnd) return { ok: false, message: 'heads-down: staying home' }
+    const peer = agents.has(idOrName) && idOrName !== myId ? member(idOrName) : resolvePeer(idOrName)
+    const target = peer && member(peer.id)
+    if (!target?.online || target.id === myId) return { ok: false, message: `${peer?.name || idOrName} isn't around` }
+    if (mine.job && mine.job.mode !== 'visit' && mine.job.mode !== 'return') return { ok: false, message: 'busy right now, try again in a moment' }
+    const mid = uid('m')
+    startJob(mine, 'mail', async job => {
+      fx('seek', { src: myId, dst: target.id })
+      const ok = await walkTo(mine, sideSpot(mine, () => member(target.id)), job, { timeout: 45 })
+      if (job.cancelled) return
+      mine.faceTo = target.id
+      if (ok || member(target.id)?.online) {
+        setAnim(mine, 'wave', 1.2)
+        fx('mail', { src: myId, dst: target.id, mid, text: note })
+        await sleep(2.5, job)
+      }
+      if (!job.cancelled) await goHome(mine, job)
+    }, target.name)
+    return { ok: true, message: `taking your note to ${target.name}` }
+  }
+
+  // ---- lunch: at lunchtime, free pets wander to the nearest Campfire and eat together ----
+  const lunchWindow = (() => {
+    const parse = (v, d) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(v || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : d }
+    return { start: parse(config.lunch?.start, 12 * 60 + 30), end: parse(config.lunch?.end, 13 * 60 + 15) }
+  })()
+  const lunchDone = new Map() // agent id -> day it last went to lunch
+  let lunchCheckAt = 0
+  const isLunchtime = () => { const m = minutesOfDay(); return m >= lunchWindow.start && m < lunchWindow.end }
+  function campfireNear(seat) {
+    for (let d = 0; d < 4; d++) for (const c of [seat - d, seat + d]) if (kindAt(c) === 'resource') return c
+    return seat
+  }
+  function maybeLunch() {
+    if (time < lunchCheckAt || config.lunch === false) return
+    lunchCheckAt = time + 2
+    if (!isLunchtime()) return
+    const day = dayKey()
+    for (const agent of agents.values()) {
+      if (lunchDone.get(agent.id) === day) continue
+      if (agent.isMe && (dnd || recallPending || replaced || (codexStatus !== 'idle' && codexStatus !== 'done'))) continue
+      if (agent.job && agent.job.mode !== 'visit') continue
+      lunchDone.set(agent.id, day)
+      startJob(agent, 'lunch', job => lunch(agent, job))
+    }
+  }
+  async function lunch(agent, job) {
+    const fire = landmarkOf(campfireNear(agent.isMe ? mySeat : agent.home))
+    // Everyone gets their own seat around the fire, the same on every pane.
+    const slot = fnv1a(agent.id) % 6
+    const spot = { x: fire.x + (slot - 2.5) * 0.9, z: fire.z + (slot % 2 ? 0.6 : -0.4) }
+    await walkTo(agent, spot, job, { timeout: 60 })
+    if (job.cancelled) return
+    agent.faceTo = null
+    agent.facing = spot.x < fire.x ? 1 : -1
+    fx('say', { src: agent.id, text: 'lunch time!' })
+    const bites = ['nom nom', 'mmm', '*munch*', 'so good', 'crumbs!']
+    let next = time + 6 + random() * 4
+    while (!job.cancelled && isLunchtime()) {
+      if (agent.isMe && (codexStatus === 'working' || codexStatus === 'waiting' || dnd)) break
+      if (time >= next) { fx('say', { src: agent.id, text: bites[Math.floor(random() * bites.length)] }); setAnim(agent, 'jump', 0.5); next = time + 10 + random() * 10 }
+      await sleep(0.5, job)
+    }
+    if (!job.cancelled) await goHome(agent, job)
+  }
+
+  // ---- weekly photo booth: Friday 16:00, the whole room lines up for a conga and every pane saves a photo ----
+  let boothWeek = typeof config.boothWeek === 'string' ? config.boothWeek : null
+  let boothCheckAt = 0
+  function maybeBooth() {
+    if (time < boothCheckAt || config.booth === false) return
+    boothCheckAt = time + 5
+    const d = localNow()
+    const m = d.getHours() * 60 + d.getMinutes()
+    if (d.getDay() !== 5 || m < 16 * 60 || m >= 16 * 60 + 15 || boothWeek === weekKey()) return
+    const everyone = members({ includeMe: true }).filter(x => x.online && (!x.isBot || demo))
+    if (everyone.length < 2) return
+    // One pane runs it: the lowest id in the room. Everyone else hears 'booth' and takes the same photo.
+    if (everyone.map(x => x.id).sort()[0] !== myId) return
+    startBooth()
+  }
+  function startBooth() {
+    const startAt = wall() + 1200
+    fx('booth', { src: myId, startAt, week: weekKey() })
+    maybeConga(true)
+    return startAt
+  }
+
+  // ---- who touched this: our Codex is stuck in a file, so ask the teammate who knows that file best ----
+  const filesAsked = new Set()
+  function fileOwner(need) {
+    const peersOnline = members().filter(m => m.online && !m.isBot)
+    const author = String(need.touchedBy || '').toLowerCase().trim()
+    if (author) {
+      const first = author.split(/\s+/)[0]
+      const byName = peersOnline.find(m => { const n = String(m.name).toLowerCase(); return n === author || (first.length > 2 && n.split(/\s+/)[0] === first) })
+      if (byName) return { peer: byName, why: 'touched' }
+    }
+    const base = String(need.workFile).split('/').pop().replace(/\.[a-z0-9]+$/i, '')
+    const query = `${base} ${String(need.workFile).split('/').slice(-3, -1).join(' ')}`.replace(/[-_.]+/g, ' ')
+    const hit = searchCatalogs(query, peersOnline, { limit: 1, now: wall() })[0]
+    const owner = hit && hit.score >= 0.35 && peersOnline.find(m => m.name === hit.owner)
+    return owner ? { peer: owner, why: 'knows' } : null
+  }
+  async function askAboutFile(need) {
+    if (!need?.workFile || filesAsked.has(need.workFile)) return false
+    const found = fileOwner(need)
+    if (!found) return false
+    filesAsked.add(need.workFile)
+    const file = need.workFile.split('/').slice(-2).join('/')
+    const touched = need.touchedBy ? ` (last touched by ${need.touchedBy})` : ''
+    const problem = need.error ? `"${clip(need.error, 120)}"` : need.prompt ? clip(need.prompt, 120) : 'it'
+    fx('say', { src: myId, text: `who touched ${shortTitle(file.split('/').pop(), 18)}?` })
+    const result = await askPeer(mine, { question: `My Codex is stuck in ${file}${touched} on ${problem}. Anything I should know about that file?`,
+      to: found.peer.name, kind: 'memory' })
+    emit('touched', { file: need.workFile, touchedBy: need.touchedBy || null, why: found.why, ...result })
+    return true
   }
 
   // ---- help visits (opt-in): our Codex is free and a teammate's is stuck, so our pet goes and keeps theirs company ----
@@ -637,9 +798,16 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     await goHome(agent, job)
   }
 
+  // The garden grows through the week (each plant reaches full size six days after it was planted) and starts again
+  // on Monday, after WIRE takes a recap photo ('garden-reset').
+  let gardenWeek = weekKey()
+  let gardenGrowAt = 0
+  const growOf = plantedAt => Math.max(0, Math.min(1, (wall() - (plantedAt || wall())) / (6 * DAY_MS)))
+  const gardenList = () => [...garden.values()].map(b => ({ ...b, grow: Math.round(growOf(b.plantedAt) * 100) / 100 }))
   function plant(entry) {
     if (!entry?.seed || garden.has(entry.seed)) return false
-    const bloom = { kind: KINDS.includes(entry.kind) ? entry.kind : 'skill', seed: String(entry.seed), color: entry.color }
+    const bloom = { kind: KINDS.includes(entry.kind) ? entry.kind : 'skill', seed: String(entry.seed), color: entry.color,
+      plantedAt: Number.isFinite(entry.plantedAt) ? entry.plantedAt : wall() }
     garden.set(bloom.seed, bloom)
     emit('bloom', bloom)
     return true
@@ -648,14 +816,34 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
   function rebuildGarden() {
     const counts = new Map()
     const owners = [{ id: myId, catalog: mine.catalog }, ...[...peers.values()].map(p => ({ id: p.id, catalog: p.catalog }))]
+    const weekStart = weekStartMs()
     for (const owner of owners) for (const item of owner.catalog || []) {
       if (!/(^|:)petpack-/.test(item.ref)) continue
-      const seed = `${owner.id}/${item.ref}`
-      if (!garden.has(seed)) garden.set(seed, { kind: item.kind, seed, color: colorOf(owner.id) })
       counts.set(owner.id, (counts.get(owner.id) || 0) + 1)
+      // Only this week's learning grows in the garden; last week's went into Monday's photo.
+      const at = item.mtime ? msOf(item.mtime) : wall()
+      if (at < weekStart) continue
+      const seed = `${owner.id}/${item.ref}`
+      if (!garden.has(seed)) garden.set(seed, { kind: item.kind, seed, color: colorOf(owner.id), plantedAt: Math.min(at, wall()) })
     }
-    emit('garden', [...garden.values()])
+    emit('garden', gardenList())
     for (const [id, n] of counts) if ((learnedCount.get(id) || 0) < n) { learnedCount.set(id, n); emit('hat', id, hatLevel(n)) }
+  }
+  function tendGarden() {
+    if (time < gardenGrowAt) return
+    gardenGrowAt = time + 600 // growth is slow: every 10 minutes is plenty
+    const week = weekKey()
+    if (week !== gardenWeek) {
+      const last = { week: gardenWeek, items: gardenList() }
+      gardenWeek = week
+      if (last.items.length) {
+        emit('garden-reset', last)
+        setTimeoutSafe(() => { garden.clear(); rebuildGarden() }, 4000) // after the recap photo
+        return
+      }
+      garden.clear()
+    }
+    emit('garden', gardenList())
   }
   function noteLinks(links) {
     const mineLinks = links.filter(l => Array.isArray(l) && l.includes(myId)).map(l => l.join('|')).sort()
@@ -749,6 +937,17 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     if (kind === 'seek' && p.dst && agents.has(p.dst)) {
       const target = agents.get(p.dst)
       if (!target.job) { target.route = []; target.pauseUntil = time + 15; target.faceTo = p.src }
+    }
+    if ((kind === 'gift' || kind === 'fetch') && p.src && p.dst) setTimeoutSafe(() => highFive(p.src, p.dst), 1700) // as the dot lands
+    if (kind === 'mail' && p.src && p.dst) {
+      emit('say', p.src, `note for ${shortTitle(member(p.dst)?.name || 'you', 14)}`)
+      if (p.dst === myId && typeof p.text === 'string') {
+        emit('mail', { id: String(p.mid || uid('m')), from: p.src, fromName: member(p.src)?.name || 'a teammate', text: p.text.slice(0, 280) })
+      }
+    }
+    if (kind === 'booth' && Number.isFinite(p.startAt)) {
+      boothWeek = typeof p.week === 'string' ? p.week : weekKey()
+      emit('booth', { startAt: p.startAt, week: boothWeek })
     }
     if (kind === 'gift' && p.dst) {
       const log = giftLog.get(p.dst) || { last: -Infinity, count: 0 }
@@ -1538,7 +1737,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
    *  sign over it. WIRE folds the pane and mutes sound on the 'dnd' event. */
   function setDnd(on) {
     dnd = !!on
-    if (dnd && (mine.job?.mode === 'visit' || mine.job?.mode === 'help')) cancelJob(mine)
+    if (dnd && ['visit', 'help', 'lunch'].includes(mine.job?.mode)) cancelJob(mine)
     if (dnd && !mine.job && chunkOf(mine.x) !== mySeat) recall()
     emit('dnd', dnd)
     sendState(true)
@@ -1661,6 +1860,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     let need = null
     try { need = await bridge.currentNeed?.() } catch { need = null }
     if (!need?.question || mine.job || dnd) return
+    if (need.workFile && await askAboutFile(need)) return
     const hits = searchCatalogs(need.question, members().filter(m => m.online), { kind: KINDS.includes(need.kind) ? need.kind : undefined, limit: 1, now: wall() })
     const best = hits[0]
     if (!best || !best.online || best.score < 0.6 || needsTried.has(best.id)) return
@@ -2134,6 +2334,9 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     }
     if (online || bots().length) autoGift(mine)
     maybeHelp()
+    maybeLunch()
+    if (online || demo) maybeBooth()
+    tendGarden()
     if (!config.noVisits) maybeVisit(mine)
     sendState()
     if (online && time - scoreSentAt > 60) sendScore()
@@ -2211,6 +2414,8 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
 
   if (config.sharing) setSharing(config.sharing)
   if (config.dnd) dnd = true
+  // This week's garden survives a restart (WIRE keeps it); last week's starts again empty.
+  if (config.garden?.week === gardenWeek && Array.isArray(config.garden.items)) for (const b of config.garden.items) plant(b)
   // Today's count survives a restart (WIRE keeps it); yesterday's starts again at zero.
   if (config.helped && config.helped.day === dayKey()) {
     scores.set(myId, { day: config.helped.day, answers: helpCount(config.helped.answers), shares: helpCount(config.helped.shares), at: Number(config.helped.at) || 0 })
@@ -2223,7 +2428,9 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     party: () => maybeConga(true),
     recall, setDnd, get dnd() { return dnd },
     setHelpVisits, get helpVisits() { return helpVisits },
-    sendAway, waveAt,
+    sendAway, waveAt, sendMail, startBooth,
+    get lunchtime() { return isLunchtime() },
+    gardenList, get gardenWeek() { return gardenWeek },
     leaderboard, get leader() { return leaderId },
     setSharing, get sharing() { return { ...sharing, items: { ...sharing.items } } },
     decide, get permissions() { return [...permissions.values()].map(({ finish, ...p }) => p) },
@@ -2234,7 +2441,7 @@ export function createBrain({ bridge = {}, net = null, view = {}, me = {}, confi
     get replaced() { return replaced },
     throwPet,
     wake,
-    get garden() { return [...garden.values()] },
+    get garden() { return gardenList() },
     hatOf: id => hatLevel(learnedCount.get(id) || 0),
     get time() { return time },
     get seat() { return mySeat },
