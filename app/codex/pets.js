@@ -12,10 +12,12 @@
 //
 // Lookup order (first usable sheet wins; a malformed candidate is skipped, never thrown):
 //   1. --pet override: a pet folder, a sheet file, a custom pet's folder/id/displayName, or a built-in id
-//   2. the pet selected in Codex: desktop app `selected-avatar-id` in <home>/.codex-global-state.json, then the CLI's
-//      `[tui] pet` in <home>/config.toml. Values: 'custom:<folder>', a built-in id, or a gallery id ('pet_...').
-//   3. custom pets in <home>/pets/<folder>/pet.json and <home>/avatars/<folder>/avatar.json (Pet Drop and
-//      codex-pets.net downloads use the same layout); the most recently updated one
+//   2. the pet selected in Codex: the desktop app's `selected-avatar-id` in <home>/config.toml (any table, see
+//      openai/codex#32685; also looked for in .codex-global-state.json), then the CLI's `[tui] pet`. Values:
+//      'custom:<folder>', a bare folder, a folder path, a built-in id; 'disabled' is skipped.
+//   3. custom pets in <home>/pets/<folder>/pet.json and <home>/avatars/<folder>/avatar.json (codex-pets.net zips and
+//      Pet Drop pets unzip to the same layout, incl. v2 8x11 sheets); the most recently updated one.
+//      pet.json `frame: { columns, rows }` is honoured when it covers the sheet exactly.
 //   4. none: spriteUrl null (the world's built-in pixel pet)
 // Built-in sheets come from the installed Codex desktop app (app.asar webview/assets/<id>-spritesheet-v*.webp), then
 // the CLI's cache (<home>/cache/tui-pets), then the same CDN the CLI uses, cached under cacheDir.
@@ -90,19 +92,29 @@ export function atlasOf (info) {
   return null
 }
 
-function sheetFromBuffer (buf) {
+// pet.json may declare its grid: `frame: { width, height, columns, rows }` (Codex PetFile). Used when it covers the
+// image exactly; otherwise the 8x9 / 8x11 detection applies.
+function atlasFromFrame (info, frame) {
+  if (!info || !frame || typeof frame !== 'object') return null
+  const cols = Number(frame.columns); const rows = Number(frame.rows)
+  if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1 || cols * rows > 256) return null
+  if (info.width % cols || info.height % rows) return null
+  return { width: info.width, height: info.height, cols, rows, cellW: info.width / cols, cellH: info.height / rows, version: rows === 11 ? 2 : 1 }
+}
+
+function sheetFromBuffer (buf, frame) {
   if (!buf || buf.length > MAX_SHEET_BYTES) return null
   const info = imageInfo(buf)
-  const atlas = atlasOf(info)
+  const atlas = atlasFromFrame(info, frame) || atlasOf(info)
   if (!atlas) return null
   return { spriteUrl: `data:${info.mime};base64,${buf.toString('base64')}`, atlas }
 }
 
-async function readSheetFile (file) {
+async function readSheetFile (file, frame) {
   try {
     const st = await fsp.stat(file)
     if (!st.isFile() || st.size > MAX_SHEET_BYTES) return null
-    return sheetFromBuffer(await fsp.readFile(file))
+    return sheetFromBuffer(await fsp.readFile(file), frame)
   } catch { return null }
 }
 
@@ -140,6 +152,7 @@ function describeFolder (dir, source = 'custom') {
       displayName: str(m.displayName) || str(m.name) || str(m.id) || folder,
       dir,
       sheets: uniq,
+      frame: m.frame && typeof m.frame === 'object' ? m.frame : null,
       updatedAt,
       source
     }
@@ -167,7 +180,7 @@ export function listPets (opts = {}) {
 async function loadCandidate (c, source) {
   if (!c) return null
   for (const file of c.sheets) {
-    const s = await readSheetFile(file)
+    const s = await readSheetFile(file, c.frame)
     if (s) return { petName: c.petName, displayName: c.displayName, spriteUrl: s.spriteUrl, source, path: file, atlas: s.atlas }
   }
   return null
@@ -192,41 +205,56 @@ function deepFind (obj, key, depth = 0) {
   return undefined
 }
 
-// Minimal TOML read of `[tui] pet = "..."` (also accepts `tui.pet = "..."` at top level).
-export function tuiPetFromToml (text) {
-  if (!text) return null
+// Minimal TOML read: string values by dotted key (`[tui] pet = "x"` -> 'tui.pet'). Enough for the two pet keys.
+export function tomlStrings (text) {
+  const out = []
+  if (!text) return out
   let table = ''
   for (const raw of String(text).split(/\r?\n/)) {
-    const line = raw.replace(/\s+#.*$/, '').trim()
+    const line = raw.trim()
     if (!line || line.startsWith('#')) continue
-    const t = line.match(/^\[\s*([^\]]+?)\s*\]$/)
-    if (t) { table = t[1].replace(/\s+/g, ''); continue }
-    const kv = line.match(/^([A-Za-z0-9_.\-"]+)\s*=\s*(.+)$/)
+    const t = line.match(/^\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$/)
+    if (t) { table = t[1].replace(/\s+/g, '').replace(/"/g, ''); continue }
+    const kv = line.match(/^([A-Za-z0-9_.\-"]+)\s*=\s*("((?:[^"\\]|\\.)*)"|'([^']*)')/)
     if (!kv) continue
-    const key = (table ? table + '.' : '') + kv[1].replace(/"/g, '')
-    if (key === 'tui.pet') {
-      const v = kv[2].trim()
-      const q = v.match(/^"((?:[^"\\]|\\.)*)"|^'([^']*)'/)
-      if (q) return q[1] ?? q[2]
-      return v
-    }
+    let v = kv[4]
+    if (kv[3] !== undefined) { try { v = JSON.parse(`"${kv[3]}"`) } catch { v = kv[3] } }
+    out.push({ key: (table ? table + '.' : '') + kv[1].replace(/"/g, ''), value: v })
   }
-  return null
+  return out
+}
+
+// The CLI's choice: `[tui] pet = "<built-in id>" | "custom:<dir>" | "<dir>" | "<path>" | "disabled"`.
+export function tuiPetFromToml (text) {
+  const hit = tomlStrings(text).find((e) => e.key === 'tui.pet')
+  return hit ? hit.value : null
+}
+
+// The desktop app's choice: top-level `selected-avatar-id = "custom:<dir>" | "<built-in id>"` in config.toml. A known
+// app bug appends it inside the last table (openai/codex#32685), so it's accepted from any table.
+export function appPetFromToml (text) {
+  const hit = tomlStrings(text).find((e) => e.key === 'selected-avatar-id' || e.key.endsWith('.selected-avatar-id'))
+  return hit ? hit.value : null
 }
 
 export function selectedPetIds (opts = {}) {
   const homes = opts.homes || codexHomes(opts)
   const ids = []
+  const tomls = homes.map((home) => {
+    try { return { home, text: fs.readFileSync(path.join(home, 'config.toml'), 'utf8') } } catch { return { home, text: '' } }
+  })
+  for (const { home, text } of tomls) {
+    const v = appPetFromToml(text)
+    if (v) ids.push({ id: v, from: 'app', home })
+  }
   for (const home of homes) {
     const gs = readJsonLoose(path.join(home, '.codex-global-state.json'))
     const v = gs && deepFind(gs, 'selected-avatar-id')
-    if (typeof v === 'string' && v) ids.push({ id: v, from: 'app' })
+    if (typeof v === 'string' && v) ids.push({ id: v, from: 'app-state', home })
   }
-  for (const home of homes) {
-    try {
-      const v = tuiPetFromToml(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'))
-      if (v) ids.push({ id: v, from: 'tui' })
-    } catch {}
+  for (const { home, text } of tomls) {
+    const v = tuiPetFromToml(text)
+    if (v) ids.push({ id: v, from: 'tui', home })
   }
   return ids
 }
@@ -373,10 +401,18 @@ export async function loadBuiltin (id, opts = {}) {
 
 // ---------- resolution ----------
 
-async function resolveId (id, pets, opts, source) {
+const looksLikePath = (v) => /[/\\]/.test(v) || /^~|^\.\.?$/.test(v) || path.isAbsolute(v)
+
+async function resolveId (id, pets, opts, source, base) {
   if (!id || typeof id !== 'string') return null
   const v = id.trim()
   if (!v || /^(none|off|disabled|false)$/i.test(v)) return null
+  if (looksLikePath(v)) {
+    // the CLI loads a path value as a pet folder (relative to the Codex home it came from)
+    const p = path.resolve(base || process.cwd(), v.replace(/^~(?=$|[/\\])/, os.homedir()))
+    const r = await loadCandidate(describeFolder(p), source)
+    if (r) return r
+  }
   const custom = v.replace(/^custom:/i, '')
   for (const c of findCustom(pets, custom)) {
     const r = await loadCandidate(c, source)
@@ -421,7 +457,7 @@ export async function getPet (opts = {}) {
       if (r) return r
     }
     for (const sel of selectedPetIds(o)) {
-      const r = await resolveId(sel.id, pets, o, 'selected')
+      const r = await resolveId(sel.id, pets, o, 'selected', sel.home)
       if (r) return r
     }
     const newest = [...pets].sort((a, b) => b.updatedAt - a.updatedAt)
