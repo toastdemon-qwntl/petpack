@@ -57,7 +57,10 @@ export function codexArgs({ cwd, mcp = null, effort = 'low', model = null } = {}
       '-c', `mcp_servers.petpack.args=[${rest.map(toml).join(', ')}]`,
       '-c', 'mcp_servers.petpack.default_tools_approval_mode="approve"',
       '-c', 'mcp_servers.petpack.startup_timeout_sec=30')
-    if (mcp.pathEnv) args.push('-c', `mcp_servers.petpack.env={ PATH = ${toml(mcp.pathEnv)} }`)
+    // Codex starts MCP servers with a trimmed environment: hand over PATH (GUI apps) and a custom userData folder.
+    const env = { ...(mcp.pathEnv ? { PATH: mcp.pathEnv } : {}), ...(mcp.env || {}) }
+    const pairs = Object.entries(env).filter(([k, v]) => /^[A-Z_][A-Z0-9_]*$/.test(k) && v)
+    if (pairs.length) args.push('-c', `mcp_servers.petpack.env={ ${pairs.map(([k, v]) => `${k} = ${toml(v)}`).join(', ')} }`)
   }
   args.push('-') // the prompt comes on stdin (no shell quoting, any length)
   return args
@@ -176,7 +179,8 @@ export async function petpackMcp({ root, profile = '' } = {}) {
       command = resolved.command
       pathEnv = resolved.pathEnv
     } catch {}
-    return { command, pathEnv }
+    const env = process.env.PETPACK_USER_DATA ? { PETPACK_USER_DATA: process.env.PETPACK_USER_DATA } : {}
+    return { command, pathEnv, env }
   } catch { return null }
 }
 

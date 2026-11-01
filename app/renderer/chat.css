@@ -9,22 +9,17 @@
   color: var(--pp-ink);
 }
 /* Pixel frame: four hard offsets leave the corners notched, like the speech bubbles. */
-.pp-px {
-  box-shadow: 0 calc(-1 * var(--pp-px)) 0 0 var(--pp-ink), 0 var(--pp-px) 0 0 var(--pp-ink),
-    calc(-1 * var(--pp-px)) 0 0 0 var(--pp-ink), var(--pp-px) 0 0 0 var(--pp-ink);
-}
 
 .pp-chat {
-  position: absolute; z-index: 9; bottom: 12px; left: 46px; right: 14px;
+  position: absolute; z-index: 9; bottom: 12px; left: 46px; right: 40px; /* the zoom pip keeps the bottom-right corner */
   display: flex; flex-direction: column; gap: 8px; pointer-events: none;
   transform: translateY(calc(100% + 18px)); opacity: 0;
   transition: transform .26s steps(5, end), opacity .12s steps(2, end);
 }
-.petpack-pane[data-dock='left'] .pp-chat { left: 14px; right: 46px; }
 .pp-chat.on { transform: translateY(0); opacity: 1; pointer-events: auto; }
 
 .pp-chat-log {
-  display: none; max-height: 132px; overflow-y: auto; overscroll-behavior: contain; padding: 5px 7px;
+  display: none; max-height: 92px; overflow-y: auto; overscroll-behavior: contain; padding: 5px 7px;
   background: color-mix(in srgb, var(--pp-paper) 92%, transparent);
   box-shadow: 0 -2px 0 0 var(--pp-ink), 0 2px 0 0 var(--pp-ink), -2px 0 0 0 var(--pp-ink), 2px 0 0 0 var(--pp-ink), 0 5px 0 0 #0c1d3330;
   scrollbar-width: thin; scrollbar-color: var(--pp-ink) transparent; user-select: text; -webkit-user-select: text;
@@ -65,7 +60,6 @@
   box-shadow: 0 -2px 0 0 var(--pp-ink), 0 2px 0 0 var(--pp-ink), -2px 0 0 0 var(--pp-ink), 2px 0 0 0 var(--pp-ink), 0 4px 0 0 #0c1d3330;
   transition: opacity .15s steps(2, end);
 }
-.petpack-pane[data-dock='left'] .pp-mic { left: auto; right: 14px; }
 .pp-mic:hover, .pp-chatting .pp-mic, .pp-mic.live { opacity: 1; }
 .pp-mic-icon {
   position: absolute; inset: 0; image-rendering: pixelated; background-repeat: no-repeat; background-position: center; background-size: 16px 16px;
@@ -83,5 +77,4 @@
   background: var(--pp-paper); opacity: 0; transform: translateY(4px); transition: opacity .2s steps(3, end), transform .2s steps(3, end);
   box-shadow: 0 -2px 0 0 var(--pp-ink), 0 2px 0 0 var(--pp-ink), -2px 0 0 0 var(--pp-ink), 2px 0 0 0 var(--pp-ink), 0 4px 0 0 #0c1d3330;
 }
-.petpack-pane[data-dock='left'] .pp-mic-tip { left: auto; right: 12px; }
 .pp-mic-tip.on { opacity: 1; transform: translateY(0); }

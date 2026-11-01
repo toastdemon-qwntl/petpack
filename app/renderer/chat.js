@@ -8,6 +8,7 @@ const NO_KEY_SEEN = 'petpack.voice.noKeyShown'
 
 export function attachChat({ world, brain, bridge = window.petpack, root } = {}) {
   if (!world || !brain) return null
+  if (window.petpackChat) return window.petpackChat // one chat per page, however many times it is attached
   const pane = root?.classList?.contains('petpack-pane') ? root : (root?.querySelector?.('.petpack-pane') || document.querySelector('.petpack-pane'))
   if (!pane) return null
   const viewport = pane.querySelector('.world-viewport') || pane
@@ -30,11 +31,21 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
   mic.append(el('span', 'pp-mic-icon'))
   const tip = el('div', 'pp-mic-tip')
   viewport.append(box, mic, tip)
-  pane.dataset.chatDock = pane.dataset.dock || 'right'
+  // A focused field must never scroll the world inside its overflow-hidden frame.
+  for (const node of new Set([viewport, pane])) {
+    node.addEventListener('scroll', () => { if (node.scrollTop || node.scrollLeft) { node.scrollTop = 0; node.scrollLeft = 0 } })
+  }
+
 
   const myId = () => brain.me?.id
-  const petName = () => brain.me?.name || 'Pip'
-  const userName = () => bridge?.config?.name || ''
+  // The pet's own name (Codex pet), not the person's display name the room shows.
+  let ownPet = null
+  Promise.resolve(bridge?.getMe?.()).then(m => {
+    const name = String(m?.petName || '').trim()
+    if (name) ownPet = /^[a-z0-9-]+$/.test(name) ? name.replace(/(^|-)([a-z])/g, (_, d, c) => (d ? ' ' : '') + c.toUpperCase()) : name
+  }).catch(() => {})
+  const petName = () => ownPet || brain.me?.name || 'Pip'
+  const userName = () => bridge?.config?.name || (ownPet ? brain.me?.name : '') || ''
   const setInteractive = on => { try { bridge?.setInteractive?.(on) } catch { /* bridge gone */ } }
 
   // ---- open / close ----
@@ -42,7 +53,7 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
   function openChat() {
     if (!open) { open = true; box.classList.add('on'); pane.classList.add('pp-chatting') }
     setInteractive(true)
-    setTimeout(() => input.focus(), 30)
+    setTimeout(() => input.focus({ preventScroll: true }), 30)
   }
   function closeChat() {
     if (!open) return
@@ -69,25 +80,20 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
     if (e.key === 'Escape') { e.preventDefault(); closeChat() }
   })
   input.addEventListener('keyup', e => e.stopPropagation())
+  const typing = t => t === input || t?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t?.tagName || '')
   window.addEventListener('keydown', e => {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.target === input) return
+    if (e.metaKey || e.ctrlKey || e.altKey || typing(e.target)) return
     if (e.key === 'Enter' && !open) { e.preventDefault(); openChat() }
     else if (e.key === 'Escape' && open) closeChat()
     else if (e.code === 'Space' && !e.repeat) { e.preventDefault(); e.stopPropagation(); talkStart() }
   }, true)
   window.addEventListener('keyup', e => {
-    if (e.target === input) return
+    if (typing(e.target)) return
     if (e.code === 'Space') { e.preventDefault(); talkStop() }
   }, true)
   window.addEventListener('blur', () => { talkStop(); if (open && !input.value.trim() && !busy) closeChat() })
 
-  // The pane is click-through except over pets; the chat and the mic catch the cursor while it is over them.
-  let overUi = false
-  window.addEventListener('mousemove', e => {
-    const hit = (open && hitRect(box, e)) || hitRect(mic, e)
-    if (hit) { overUi = true; setInteractive(true) }
-    else if (overUi) { overUi = false; if (!world.pick(e.clientX, e.clientY)) setInteractive(false) }
-  })
+  // The pane is click-through except over pets: app.js's cursor rule takes .pp-chat and .pp-mic too.
 
   // ---- transcript ----
   function line(who, text, cls = '') {
@@ -104,8 +110,9 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
   const sayBubble = text => {
     const id = myId()
     if (!id || !text) return
-    const t = String(text).replace(/\s+/g, ' ').trim()
-    try { world.say(id, t.length > BUBBLE_MAX ? `${t.slice(0, BUBBLE_MAX - 1)}…` : t) } catch { /* pet not shown */ }
+    // The bubbles' pixel font has no "…" or curly quotes.
+    const t = String(text).replace(/\s+/g, ' ').replace(/…/g, '...').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').trim()
+    try { world.say(id, t.length > BUBBLE_MAX ? `${t.slice(0, BUBBLE_MAX - 3).trimEnd()}...` : t) } catch { /* pet not shown */ }
   }
 
   // Working dots while Codex thinks (the pet's status bubble, which the room sees too), then back.
@@ -185,7 +192,7 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
       sayBubble(why)
       if (result?.error) console.warn('petpack chat:', result.error)
     }
-    if (open) input.focus()
+    if (open) input.focus({ preventScroll: true })
     return result
   }
 
@@ -204,18 +211,21 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
     if (voice.pc) return true
     if (voice.connecting) return voice.connecting
     voice.connecting = (async () => {
-      const ready = bridge?.voice?.prepare ? await bridge.voice.prepare().catch(() => null) : null
-      if (!ready?.available) {
-        let seen = false
-        try { seen = localStorage.getItem(NO_KEY_SEEN) === '1'; localStorage.setItem(NO_KEY_SEEN, '1') } catch { /* no storage */ }
-        if (!seen) showTip('add an OpenAI API key for voice')
-        mic.classList.add('nokey')
-        return false
-      }
-      mic.classList.add('connecting')
+      let stream = null
+      let pc = null
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
-        const pc = new RTCPeerConnection()
+        const ready = bridge?.voice?.prepare ? await bridge.voice.prepare().catch(() => null) : null
+        if (!ready?.available) {
+          let seen = false
+          try { seen = localStorage.getItem(NO_KEY_SEEN) === '1'; localStorage.setItem(NO_KEY_SEEN, '1') } catch { /* no storage */ }
+          if (!seen) showTip('add an OpenAI API key for voice')
+          mic.classList.add('nokey')
+          return false
+        }
+        mic.classList.remove('nokey')
+        mic.classList.add('connecting')
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
+        pc = new RTCPeerConnection()
         const audio = new Audio()
         audio.autoplay = true
         pc.ontrack = e => { audio.srcObject = e.streams[0]; watchLevel(e.streams[0]) }
@@ -240,6 +250,8 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
       } catch (error) {
         console.warn('petpack voice:', error?.message || error)
         showTip(/permission|denied|NotAllowed/i.test(String(error?.name || error?.message)) ? 'petpack needs the microphone for voice' : 'voice is unavailable right now')
+        try { stream?.getTracks().forEach(t => t.stop()) } catch {}
+        try { pc?.close() } catch {}
         hangUp()
         return false
       } finally {
@@ -368,7 +380,3 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
 }
 
 function el(tag, className) { return Object.assign(document.createElement(tag), { className }) }
-function hitRect(node, e) {
-  const r = node.getBoundingClientRect()
-  return r.width > 0 && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom
-}
