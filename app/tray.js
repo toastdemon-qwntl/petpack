@@ -179,6 +179,10 @@ export function createTray({ state, actions, onPetChange, pane, userData }) {
         { label: 'Left', type: 'radio', checked: s.dock === 'left', click: () => actions.setDock('left') },
         { label: 'Right', type: 'radio', checked: s.dock !== 'left', click: () => actions.setDock('right') },
       ] },
+      ...(actions.setSit ? [{ label: 'Sitting', submenu: [
+        { label: 'Side by side', type: 'radio', checked: s.sit !== 'across', click: () => actions.setSit('side') },
+        { label: 'Across the table', type: 'radio', checked: s.sit === 'across', click: () => actions.setSit('across') },
+      ] }] : []),
       { label: 'Align', submenu: [
         { label: 'Up', click: () => actions.nudge(-8) },
         { label: 'Down', click: () => actions.nudge(8) },
