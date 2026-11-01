@@ -1,32 +1,37 @@
 import * as THREE from 'three'
 
-// The mesh stays at the feet while the pet hops.
-export function createContactShadow(color = '#617073') {
+// A stepped, pixel-cut contact shadow; no soft radial gradient or mipmaps.
+export function createContactShadow(color = '#405b58') {
   const canvas = document.createElement('canvas')
-  canvas.width = canvas.height = 64
+  canvas.width = 32; canvas.height = 20
   const ctx = canvas.getContext('2d')
-  const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32)
-  gradient.addColorStop(0, 'rgba(255,255,255,.65)')
-  gradient.addColorStop(.3, 'rgba(255,255,255,.42)')
-  gradient.addColorStop(.65, 'rgba(255,255,255,.12)')
-  gradient.addColorStop(1, 'rgba(255,255,255,0)')
-  ctx.fillStyle = gradient
-  ctx.fillRect(0, 0, 64, 64)
+  for (let y = 0; y < 20; y++) {
+    for (let x = 0; x < 32; x++) {
+      const radius = ((x - 15.5) / 15) ** 2 + ((y - 9.5) / 9) ** 2
+      if (radius > 1) continue
+      ctx.fillStyle = radius < .48 ? '#ffffff' : '#ffffff80'
+      ctx.fillRect(x, y, 1, 1)
+    }
+  }
   const texture = new THREE.CanvasTexture(canvas)
+  texture.magFilter = texture.minFilter = THREE.NearestFilter
+  texture.generateMipmaps = false
   const material = new THREE.MeshBasicMaterial({
-    color, map: texture, transparent: true, opacity: .35,
-    depthWrite: false, toneMapped: false,
+    color, map: texture, transparent: true, opacity: .25, alphaTest: .01,
+    depthWrite: false, toneMapped: false, polygonOffset: true,
+    polygonOffsetFactor: -1, polygonOffsetUnits: -1,
   })
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 1.32), material)
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1.45, .92), material)
   mesh.rotation.x = -Math.PI / 2
-  mesh.position.y = .014
+  mesh.position.y = .025
   mesh.renderOrder = -1
   mesh.userData.noPick = true
+  mesh.userData.noOutline = true
   return {
     mesh,
     update(lift = 0, width = 1) {
-      mesh.scale.setScalar(width * (1 + lift * .22))
-      material.opacity = .35 / (1 + lift * 1.8)
+      mesh.scale.setScalar(width * (1 + lift * .2))
+      material.opacity = .25 / (1 + lift * 1.8)
     },
     dispose() { mesh.geometry.dispose(); material.dispose(); texture.dispose() },
   }

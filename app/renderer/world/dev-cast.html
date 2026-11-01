@@ -4,179 +4,172 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>petpack · cast</title>
+  <title>petpack · pixel cast</title>
   <link rel="icon" href="data:,">
   <script type="importmap">{ "imports": {
     "three": "../../../node_modules/three/build/three.module.js",
     "three/addons/": "../../../node_modules/three/examples/jsm/" } }</script>
   <style>
     * { box-sizing: border-box; }
-    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
-    body { background: #f6f8f7; color: #243338; font: 500 13px/1.4 system-ui, -apple-system, sans-serif; }
-    header { position: absolute; z-index: 2; top: 0; inset-inline: 0; padding: 30px 38px; display: flex; align-items: center; justify-content: space-between; }
-    .wordmark { font-size: 23px; font-weight: 750; letter-spacing: -1.2px; display: flex; align-items: center; gap: 10px; }
-    .mark { width: 13px; height: 13px; border-radius: 50%; background: #0a84ff; box-shadow: inset -2px -2px 3px #0062d466, 0 2px 7px #0a84ff25; }
-    nav { display: flex; gap: 8px; }
-    button { font: inherit; color: #55636b; background: #ffffffb5; border: 1px solid #dce3e3; padding: 9px 15px; border-radius: 99px; cursor: pointer; box-shadow: 0 2px 3px #18333103; }
-    button:hover { background: #fff; color: #0a84ff; }
-    button:focus-visible { outline: 3px solid #0a84ff66; outline-offset: 2px; }
-    #canvas { display: block; width: 100%; height: 100%; }
+    html, body { margin: 0; width: 100%; height: 100%; }
+    body { overflow: hidden; background: #f3f1e8; color: #384c45; font: 500 13px/1.4 system-ui, -apple-system, sans-serif; }
+    header { position: absolute; top: 36px; left: 42px; }
+    .eyebrow { text-transform: uppercase; letter-spacing: 3px; font-size: 11px; color: #7a8475; }
+    h1 { margin: 17px 0; font-size: clamp(28px, 3.8vw, 52px); line-height: 1.06; font-weight: 650; letter-spacing: -2.7px; }
+    header p { max-width: 420px; line-height: 1.65; color: #7a8475; }
+    .swatches { display: flex; gap: 19px; margin-top: 27px; color: #677c6f; font-size: 11px; }
+    .swatches span::before { content: ''; display: inline-block; width: 7px; height: 7px; background: var(--c); margin-right: 7px; box-shadow: 1px 1px 0 #405b5830; }
+    #pane { position: absolute; top: 24px; right: 24px; width: 520px; height: 340px; padding: 7px; border-radius: 22px; background: #ffffff5c; border: 1px solid #ffffffbf; backdrop-filter: blur(24px) saturate(1.4); box-shadow: 0 18px 55px #42594b25, inset 0 1px 0 #ffffff; }
+    #pane canvas { display: block; width: 100%; height: 100%; border-radius: 15px; }
+    #sheet { position: absolute; top: 389px; left: 24px; right: 24px; bottom: 22px; overflow: hidden; border: 1px solid #d5ddcc; border-radius: 18px; background: #e3e9d7; }
+    #sheet canvas { width: 100%; height: 100%; display: block; }
     #labels { position: absolute; inset: 0; pointer-events: none; }
-    .label { position: absolute; text-align: center; transform: translate(-50%, 0); color: #697780; font-size: 12px; white-space: nowrap; }
-    .label strong { display: block; font-size: 13px; color: #35434a; font-weight: 600; margin-bottom: 4px; }
-    .label span { opacity: .8; }
-    .row-label { position: absolute; left: 38px; font-size: 10px; color: #859294; letter-spacing: 1.7px; text-transform: uppercase; }
-    #error { position: absolute; bottom: 30px; left: 38px; color: #d44848; }
-    @media (max-width: 700px) { header { padding: 20px; } .row-label { left: 20px; } .label { font-size: 9px; } .label strong { font-size: 10px; } }
+    .label { position: absolute; text-align: center; transform: translate(-50%, 0); color: #6f8066; font-size: 10px; white-space: nowrap; }
+    .label strong { font-weight: 650; color: #435948; margin-right: 5px; }
+    #error { position: absolute; left: 42px; top: 330px; color: #a54c39; }
+    @media (min-width: 1800px) { #sheet { left: 8%; right: 8%; bottom: 4%; } header { left: 8%; } }
+    @media (max-width: 900px) { header { display: none; } #pane { right: 50%; transform: translateX(50%); width: min(520px, 94vw); } .label { font-size: 8px; } }
   </style>
 </head>
 <body>
   <header>
-    <div class="wordmark"><span class="mark"></span>petpack</div>
-    <nav aria-label="Character previews">
-      <button id="pop" type="button">Gift pop</button>
-      <button id="replay" type="button">Replay</button>
-      <button id="pause" type="button" aria-pressed="false">Pause</button>
-    </nav>
+    <div class="eyebrow">petpack / the neighbours</div>
+    <h1>Small pixels.<br>Big personalities.</h1>
+    <p>Four little locals, and room for your Codex pet.<br>Made to wander, meet, and learn together.</p>
+    <div class="swatches"><span style="--c:#86b7ae">Pip</span><span style="--c:#d98a54">Miso</span><span style="--c:#86a8ba">Bolt</span><span style="--c:#a4b565">Bud</span></div>
   </header>
-  <canvas id="canvas" aria-label="Eight colourful Dot characters and eight cream sprite pets showing their animation states"></canvas>
-  <div id="labels"></div>
+  <div id="pane"><canvas aria-label="Pixel pets walking and meeting in a small glass pane"></canvas></div>
+  <main id="sheet"><canvas aria-label="Four built-in pets and a Codex-format atlas in every animation state"></canvas><div id="labels"></div></main>
   <div id="error" role="alert"></div>
   <script type="module">
     import * as THREE from 'three'
-    import { createDot } from './dot.js'
+    import { createStage } from './stage.js'
+    import { createPixelPet } from './pixel-pet.js'
     import { createSpritePet } from './sprite-pet.js'
     import { makeTestAtlas } from './atlas.js'
 
-    const canvas = document.querySelector('#canvas')
-    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true })
-    renderer.setClearColor(0xf6f8f7, 1)
-    renderer.outputColorSpace = THREE.SRGBColorSpace
-    renderer.toneMapping = THREE.ACESFilmicToneMapping
-    renderer.toneMappingExposure = 1.08
-    renderer.shadowMap.enabled = true
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap
-    const scene = new THREE.Scene()
-    scene.fog = new THREE.Fog(0xf6f8f7, 38, 85)
-    const camera = new THREE.PerspectiveCamera(24, 1, .1, 100)
-    scene.add(new THREE.HemisphereLight('#e7f0ff', '#a9b7a6', 2.1))
-    const key = new THREE.DirectionalLight('#ffe2b8', 3.2)
-    key.position.set(-6, 15, 9)
-    key.castShadow = true
-    key.shadow.mapSize.set(2048, 2048)
-    Object.assign(key.shadow.camera, { left: -13, right: 13, top: 11, bottom: -11, near: 1, far: 40 })
-    key.shadow.bias = -.0003
-    key.shadow.normalBias = .035
-    key.shadow.radius = 4
-    scene.add(key)
-    const rim = new THREE.DirectionalLight('#e0f0ff', 1.4)
-    rim.position.set(6, 7, -10)
-    scene.add(rim)
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(180, 180), new THREE.MeshStandardMaterial({ color: '#f2f5f1', roughness: .95 }))
-    floor.rotation.x = -Math.PI / 2
-    floor.position.y = -.018
-    floor.receiveShadow = true
-    scene.add(floor)
-
-    const colors = ['#0A84FF', '#FF375F', '#FF9F0A', '#30D158', '#BF5AF2', '#64D2FF', '#FFD60A', '#5E5CE6']
-    const poses = ['idle', 'run', 'run', 'wave', 'jump', 'failed', 'waiting', 'review']
-    const names = ['Blue', 'Rosie', 'Mango', 'Clover', 'Lilac', 'Sky', 'Sunny', 'Indigo']
-    const captions = ['Idle', 'Run right', 'Run left', 'Wave', 'Jump', 'Failed', 'Waiting', 'Review']
-    const characters = []
-    const labels = []
-    const overlay = document.querySelector('#labels')
-    const p = new THREE.Vector3()
-    const rowLabels = ['Dot', 'Codex pet'].map(name => {
-      const el = document.createElement('div')
-      el.className = 'row-label'
-      el.textContent = name
-      overlay.append(el)
-      return el
-    })
-    function addCharacter(pet, col, row) {
-      pet.object3d.position.set((col - 3.5) * 2.35, 0, row === 0 ? -3.25 : 3.25)
-      const state = { anim: poses[col], facing: col === 2 ? -1 : 1, moving: poses[col] === 'run' ? 1 : 0 }
-      pet.set(state)
-      scene.add(pet.object3d)
-      characters.push({ pet, state })
-      const label = document.createElement('div')
-      label.className = 'label'
-      const name = document.createElement('strong')
-      name.textContent = row === 0 ? names[col] : 'Mochi'
-      const caption = document.createElement('span')
-      caption.textContent = captions[col]
-      label.append(name, caption)
-      overlay.append(label)
-      labels.push({ element: label, anchor: pet.object3d })
+    const query = new URLSearchParams(location.search)
+    const pixelScale = Math.max(1, Math.min(4, Number(query.get('px')) || 2))
+    const sheet = document.querySelector('#sheet')
+    const pane = document.querySelector('#pane canvas')
+    const stage = createStage(sheet.querySelector('canvas'), { pixelScale })
+    const closeup = createStage(pane, { pixelScale })
+    const floors = []
+    for (const s of [stage, closeup]) {
+      s.scene.background = new THREE.Color('#e4ead6')
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), new THREE.MeshBasicMaterial({ color: '#e4ead6' }))
+      floor.rotation.x = -Math.PI / 2
+      floor.position.y = -.012
+      s.scene.add(floor)
+      floors.push(floor)
     }
-    colors.forEach((color, i) => addCharacter(createDot({ color }), i, 0))
+    const kinds = ['blob', 'cat', 'robot', 'sprout', 'codex']
+    const colors = ['#86b7ae', '#d98a54', '#86a8ba', '#a4b565', '#e5bb87']
+    const names = ['Pip', 'Miso', 'Bolt', 'Bud', 'Codex']
+    const poses = ['idle', 'run', 'run', 'wave', 'jump', 'failed', 'waiting', 'review']
+    const captions = ['idle', 'right', 'left', 'wave', 'jump', 'slump', 'tap', 'review']
+    const characters = [], neighbours = [], labels = []
+    const p = new THREE.Vector3()
+    let paused = query.has('paused'), time = 0, previous, frameRequest, disposed = false
+    let spriteUrl
+
+    function addCharacter(pet, col, row) {
+      pet.object3d.position.set((col - 3.5) * 3.75, 0, (row - 2) * 4.75)
+      const state = { anim: poses[col], facing: col === 2 ? -1 : 1, moving: poses[col] === 'run' ? 1.8 : 0 }
+      pet.set(state)
+      stage.scene.add(pet.object3d)
+      characters.push({ pet, state, kind: kinds[row], col, row })
+      const element = document.createElement('div')
+      element.className = 'label'
+      const name = document.createElement('strong')
+      name.textContent = names[row]
+      element.append(name, document.createTextNode(captions[col]))
+      document.querySelector('#labels').append(element)
+      labels.push({ element, anchor: pet.object3d })
+    }
 
     function resize() {
-      const width = innerWidth, height = innerHeight
-      renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2))
-      renderer.setSize(width, height, false)
-      camera.aspect = width / height
-      const distance = Math.max(29, 10.7 / (Math.tan(THREE.MathUtils.degToRad(12)) * camera.aspect))
-      camera.position.set(0, distance * Math.sin(.46), distance * Math.cos(.46))
-      camera.lookAt(0, .1, 0)
-      camera.updateProjectionMatrix()
-      camera.updateMatrixWorld()
-      for (const [i, label] of rowLabels.entries()) {
-        p.set(-8.2, 2.6, i === 0 ? -3.25 : 3.25).project(camera)
-        label.style.top = `${(1 - p.y) * height / 2}px`
-      }
+      const width = sheet.clientWidth, height = sheet.clientHeight
+      stage.resize(width, height)
+      stage.focus(0, -.45, { span: Math.max(32, 15.2 * width / height) })
+      closeup.resize(pane.clientWidth, pane.clientHeight)
+      closeup.focus(0, -1.6, { span: 12 })
     }
     resize()
-    window.addEventListener('resize', resize)
-    let paused = false
-    let time = 0
-    let previous = performance.now()
-    let frameRequest
-    function draw(now) {
-      const dt = Math.min(.05, (now - previous) / 1000)
-      previous = now
-      if (!paused) {
-        time += dt
-        characters.forEach(({ pet }) => pet.update(dt, time))
+    const observer = new ResizeObserver(resize)
+    observer.observe(sheet); observer.observe(pane)
+
+    function step(dt) {
+      time += dt
+      for (const { pet } of characters) pet.update(dt, time)
+      const phase = time % 16
+      for (const [i, pet] of neighbours.entries()) {
+        const left = i % 2 === 0, row = Math.floor(i / 2)
+        const travel = phase < 5 ? phase / 5 : phase < 10 ? 1 : phase < 15 ? 1 - (phase - 10) / 5 : 0
+        const x = (left ? -1 : 1) * (4.3 - travel * 3.1)
+        const walking = phase < 5 || (phase >= 10 && phase < 15)
+        const facing = (left ? 1 : -1) * (phase < 10 ? 1 : -1)
+        pet.object3d.position.set(x, 0, row ? 2.1 : -2.3)
+        pet.set({ anim: walking ? 'run' : phase < 7 ? 'wave' : phase < 10 ? 'review' : 'idle', facing, moving: walking ? .62 : 0 })
+        pet.update(dt, time)
       }
-      renderer.render(scene, camera)
+      stage.update(dt, time); closeup.update(dt, time)
+      if (neighbours.length) closeup.focus(Math.sin(time * .24) * .4, -1.6, { span: 12 })
+    }
+    function render() {
+      stage.render(); closeup.render()
       for (const { element, anchor } of labels) {
-        p.copy(anchor.position)
-        p.y = -.18
-        p.project(camera)
-        element.style.left = `${(p.x + 1) * innerWidth / 2}px`
-        element.style.top = `${(1 - p.y) * innerHeight / 2}px`
+        p.copy(anchor.position); p.z += .48
+        const screen = stage.toScreen(p)
+        element.style.left = `${screen.x}px`; element.style.top = `${screen.y}px`
       }
+    }
+    function draw(now) {
+      if (disposed) return
+      const dt = previous === undefined ? 1 / 60 : Math.min(.05, (now - previous) / 1000)
+      previous = now
+      if (!paused) step(dt)
+      render()
       frameRequest = requestAnimationFrame(draw)
     }
-    frameRequest = requestAnimationFrame(draw)
-    document.querySelector('#pop').onclick = () => characters.forEach(({ pet }) => pet.pop())
-    document.querySelector('#replay').onclick = () => characters.forEach(({ pet, state }) => { pet.set({ anim: 'idle' }); pet.set(state) })
-    document.querySelector('#pause').onclick = event => {
-      paused = !paused
-      event.target.textContent = paused ? 'Play' : 'Pause'
-      event.target.setAttribute('aria-pressed', String(paused))
+    function dispose() {
+      if (disposed) return
+      disposed = true
+      cancelAnimationFrame(frameRequest); observer.disconnect()
+      for (const { pet } of characters) pet.dispose()
+      for (const pet of neighbours) pet.dispose()
+      for (const floor of floors) { floor.geometry.dispose(); floor.material.dispose() }
+      stage.dispose(); closeup.dispose()
     }
     try {
-      const spriteUrl = await makeTestAtlas()
-      const pets = await Promise.all(colors.map(color => createSpritePet({ spriteUrl, color })))
-      pets.forEach((pet, i) => addCharacter(pet, i, 1))
-      // Intentional inspection surface for the isolated character preview.
-      window.castDemo = { characters, renderer, scene, camera, spriteUrl, pause(value = true) { paused = value } }
+      spriteUrl = await makeTestAtlas()
+      for (let row = 0; row < kinds.length; row++) {
+        for (let col = 0; col < poses.length; col++) {
+          const pet = row === 4 ? await createSpritePet({ spriteUrl, color: colors[row] }) : createPixelPet({ color: colors[row], kind: kinds[row] })
+          addCharacter(pet, col, row)
+        }
+      }
+      for (let i = 0; i < 4; i++) {
+        const pet = createPixelPet({ kind: kinds[i], color: colors[i] })
+        closeup.scene.add(pet.object3d); neighbours.push(pet)
+      }
+      for (let i = 0; i < 120; i++) { stage.update(1 / 60, 0); closeup.update(1 / 60, 0) }
+      step(0)
+      window.castDemo = {
+        characters, neighbours, stage, closeup, renderer: stage.renderer, scene: stage.scene, camera: stage.camera, spriteUrl,
+        pause(value = true) { paused = value },
+        advance(seconds) { for (let t = 0; t < seconds; t += 1 / 60) step(Math.min(1 / 60, seconds - t)); render() },
+        pop() { neighbours.forEach(pet => pet.pop()) },
+        render, dispose,
+      }
       document.documentElement.dataset.ready = 'true'
+      frameRequest = requestAnimationFrame(draw)
     } catch (error) {
       document.querySelector('#error').textContent = error.message
       console.error(error)
+      dispose()
     }
-    window.addEventListener('pagehide', () => {
-      cancelAnimationFrame(frameRequest)
-      window.removeEventListener('resize', resize)
-      characters.forEach(({ pet }) => pet.dispose())
-      floor.geometry.dispose()
-      floor.material.dispose()
-      key.shadow.dispose()
-      renderer.dispose()
-    }, { once: true })
+    window.addEventListener('pagehide', dispose, { once: true })
   </script>
 </body>
 </html>

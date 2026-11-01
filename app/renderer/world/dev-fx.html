@@ -5,172 +5,202 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <link rel="icon" href="data:,">
-  <title>petpack · effects</title>
+  <title>petpack · pixel effects</title>
   <script type="importmap">{ "imports": {
     "three": "../../../node_modules/three/build/three.module.js",
     "three/addons/": "../../../node_modules/three/examples/jsm/" } }</script>
   <style>
     * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; display: grid; place-content: center;
-      background: radial-gradient(ellipse at 50% 35%, #fff 0%, #f3f6f9 55%, #e4ebf3 100%);
-      font: 12px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #677482; }
-    main { width: min(1160px, 96vw); display: grid; justify-items: center; }
-    #view { position: relative; width: 100%; aspect-ratio: 2; }
-    #view.compact { width: min(600px, 96vw); }
-    canvas, #overlay { display: block; position: absolute; inset: 0; width: 100%; height: 100%; }
+    body { margin: 0; min-height: 100vh; overflow-x: hidden; color: #46574f;
+      background: radial-gradient(ellipse at 77% 5%, #d9e6d3, transparent 48%),
+        radial-gradient(ellipse at 10% 96%, #e2c9a2, transparent 52%), #eae9e0;
+      font: 13px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    .desktop { margin: 8vh 0 0 6vw; width: min(690px, 46vw); }
+    .desktop header { font-size: 11px; letter-spacing: .19em; text-transform: uppercase; opacity: .62; }
+    .desktop h1 { margin: 48px 0 10px; font: 400 38px/1.2 Georgia, serif; color: #3b5148; }
+    .desktop p { margin: 0 0 32px; color: #728076; max-width: 32em; }
+    .editor { padding: 24px 28px 36px; border-radius: 14px; border: 1px solid #ffffffe0;
+      background: #ffffff70; box-shadow: 0 20px 50px #4357430a; }
+    .editor label { font: 10px/1.5 monospace; letter-spacing: .09em; color: #8a9589; }
+    pre { margin: 30px 0 0; font: 12px/2.1 ui-monospace, SFMono-Regular, monospace; color: #7d8981; white-space: pre-wrap; }
+    pre em { font-style: normal; color: #789c76; }
+    .glass { position: fixed; top: 24px; right: 24px; width: 540px; height: 360px;
+      padding: 9px; border: 1px solid #ffffffbf; border-radius: 24px; background: #ffffff48;
+      backdrop-filter: blur(24px) saturate(1.3); -webkit-backdrop-filter: blur(24px) saturate(1.3);
+      box-shadow: inset 0 1px 0 #fff, inset 0 -1px 0 #ffffff66, 0 22px 50px #31433029, 0 3px 8px #35443412; }
+    #view { position: relative; width: 520px; height: 340px; border-radius: 15px; overflow: hidden; }
+    #scene, #overlay { display: block; position: absolute; inset: 0; width: 100%; height: 100%; }
+    #scene { image-rendering: pixelated; }
     #overlay { pointer-events: none; }
-    nav { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; max-width: 750px; padding: 15px 20px; }
-    button { border: 1px solid #dfe5ec; background: #ffffffc9; color: #566270; border-radius: 12px;
-      padding: 9px 13px; font: inherit; font-weight: 600; cursor: pointer;
-      box-shadow: 0 2px 5px #324b6604; transition: background .18s, transform .18s; }
-    button:hover { background: white; transform: translateY(-1px); }
-    button:active { transform: scale(.97); }
-    button:focus-visible { outline: 2px solid #0a84ff; outline-offset: 3px; }
-    button.primary { background: #0a84ff; border-color: #0a84ff; color: white; padding-inline: 20px; }
-    button[aria-pressed='true']:not(.primary) { background: #e8f2ff; color: #0876e4; border-color: #b9d8fa; }
+    nav { position: fixed; top: 406px; right: 24px; width: 540px; display: flex; flex-wrap: wrap;
+      justify-content: center; gap: 6px; padding: 0 4px; }
+    button { border: 1px solid #ffffffbf; background: #ffffff89; color: #526459; border-radius: 8px;
+      padding: 7px 11px; font: inherit; font-size: 11px; cursor: pointer; }
+    button:hover { background: #fff; }
+    button:focus-visible { outline: 2px solid #5b897d; outline-offset: 3px; }
+    button[aria-pressed='true'] { background: #546c57; color: #fffbea; }
+    .hint { position: fixed; top: 549px; right: 24px; width: 540px; text-align: center;
+      color: #899384; font-size: 10px; letter-spacing: .025em; }
+    body.solo .desktop { display: none; }
+    body.solo .glass { width: 800px; height: 530px; left: 50%; right: auto; top: 14vh; transform: translateX(-50%); }
+    body.solo #view { width: 780px; height: 510px; }
+    body.solo nav { top: calc(14vh + 558px); right: auto; left: 50%; transform: translateX(-50%); width: 780px; }
+    body.solo .hint { top: calc(14vh + 667px); right: auto; left: 50%; transform: translateX(-50%); }
+    @media (max-width: 800px) { .desktop { display: none; } .glass { right: 8px; } nav, .hint { right: 8px; } }
   </style>
 </head>
 <body>
-<main>
-  <div id="view"><canvas aria-label="Three pets sharing glowing skill dots"></canvas><div id="overlay"></div></div>
-  <nav aria-label="Effect controls">
-    <button class="primary" data-action="gift">Share a skill ↗</button>
-    <button data-action="reply">Send one back ↙</button>
+  <div class="desktop">
+    <header>petpack / DevDay Exchange · London</header>
+    <h1>A little company<br>while you make things.</h1>
+    <p>The village carries on in the corner. A new skill, a shared memory, a neighbour lending a hand.</p>
+    <div class="editor"><label>VILLAGE / TODAY</label><pre>09:41   Mochi found a useful technique.
+09:42   Pip is opening the library.
+09:44   <em>Sunny brought something to share.</em>
+
+        Three neighbours. One little world.
+
+<em>        Working together, on their own.</em></pre></div>
+  </div>
+  <div class="glass"><div id="view"><canvas id="scene" aria-label="Pixel pets collaborating in a village yard"></canvas><div id="overlay"></div></div></div>
+  <nav aria-label="Effect preview controls">
+    <button data-action="gift">Gift</button>
+    <button data-kind="skill">Workshop</button><button data-kind="memory">Library</button>
+    <button data-kind="technique">Dojo</button><button data-kind="resource">Campfire</button>
+    <button data-action="say">Speech</button><button data-action="skills">12 skills</button>
     <button data-status="working">Working</button><button data-status="waiting">Waiting</button>
-    <button data-status="done">Done</button><button data-status="failed">Failed</button>
-    <button data-action="say">Say hello</button><button data-action="skills">12 dots</button>
-    <button data-status="idle">Idle</button><button data-action="size" aria-pressed="false">600 × 300</button>
-    <button data-action="auto" aria-pressed="true">Autoplay</button>
+    <button data-status="done">Done</button><button data-status="failed">Failed</button><button data-status="idle">Idle</button>
+    <button data-action="pan">Follow</button><button data-action="auto" aria-pressed="true">Autoplay</button>
   </nav>
-</main>
+  <p class="hint">FX development controls · 520 × 340 world · 2 CSS pixels per art pixel</p>
 <script type="module">
   import * as THREE from 'three'
+  import { createStage } from './stage.js'
+  import { toonMaterial } from './toon.js'
   import { createFx } from './fx.js'
 
-  const view = document.querySelector('#view')
-  const canvas = document.querySelector('canvas')
-  const overlay = document.querySelector('#overlay')
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true })
-  renderer.setClearColor(0, 0)
-  renderer.outputColorSpace = THREE.SRGBColorSpace
-  renderer.toneMapping = THREE.ACESFilmicToneMapping
-  renderer.toneMappingExposure = 1.12
-  renderer.shadowMap.enabled = true
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap
-  const scene = new THREE.Scene()
-  const camera = new THREE.PerspectiveCamera(22, 2, .1, 100)
-  camera.position.set(8, 10, 26)
-  camera.lookAt(8, 1.3, 0)
-  scene.add(new THREE.HemisphereLight('#e7f1ff', '#9db28a', 2.6))
-  const sun = new THREE.DirectionalLight('#ffe2b8', 3.4)
-  sun.position.set(0, 12, 7); sun.castShadow = true
-  sun.shadow.mapSize.set(2048, 2048)
-  Object.assign(sun.shadow.camera, { left: -12, right: 12, top: 12, bottom: -12 })
-  sun.shadow.normalBias = .025
-  sun.shadow.blurSamples = 8
-  scene.add(sun)
+  const params = new URLSearchParams(location.search)
+  const pixelScale = Math.max(1, Math.min(4, Number(params.get('px')) || 2))
+  if (params.has('solo') || pixelScale === 3) document.body.classList.add('solo')
+  const view = document.querySelector('#view'), overlay = document.querySelector('#overlay')
+  const stage = createStage(document.querySelector('#scene'), { pixelScale })
+  const { scene, camera, renderer } = stage
+  const fx = createFx({ scene, camera, overlay, stage })
+  const geometries = new Set(), materials = new Set(), textures = new Set()
+  const cube = new THREE.BoxGeometry(1, 1, 1); geometries.add(cube)
+  const palette = {}
+  function material(color) {
+    if (!palette[color]) { palette[color] = toonMaterial({ color }); materials.add(palette[color]) }
+    return palette[color]
+  }
+  function box(x,y,z,w,h,d,color) {
+    const object = new THREE.Mesh(cube, material(color))
+    object.position.set(x,y,z); object.scale.set(w,h,d)
+    object.castShadow = object.receiveShadow = true; scene.add(object)
+    return object
+  }
+  box(0,-.22,0,36,.4,28,'#9eaf69')
+  box(0,.01,0,30,.05,3.7,'#d5bf8c')
+  box(.6,.02,-3.2,3.1,.04,10,'#d5bf8c')
+  for (let i=0;i<40;i++) {
+    const x = Math.sin(i * 18.43) * 14, z = Math.cos(i * 7.21) * 10
+    if (Math.abs(z)<2 || (Math.abs(x-.6)<1.8 && z<0)) continue
+    box(x,.09,z,.1,.19,.1,i%3 ? '#81935b' : '#e2d890')
+    if (i%4===0) box(x,.21,z,.14,.1,.14,'#f7d38e')
+  }
+  for (let i=0;i<12;i++) {
+    const x = -7 + i*1.35
+    box(x,.42,-3.5,.18,.88,.18,'#a38a61')
+    box(x,.7,-3.5,1.45,.14,.12,'#baa074')
+    box(x,.32,-3.5,1.45,.12,.12,'#baa074')
+  }
+  for (const [x,z] of [[-5,-6],[4.7,-6.1],[8,-3.8],[-8,2.7]]) {
+    box(x,1,z,.4,2,.4,'#8f7956')
+    box(x,2.8,z,2.3,1.7,1.8,'#657f51')
+    box(x-.3,3.4,z-.1,1.7,.7,1.4,'#85995d')
+    box(x+.65,2.7,z+.15,.8,1.2,1.2,'#779053')
+  }
+  const lantern = box(-4.65,1.4,-2.7,.12,2.8,.12,'#716f54')
+  box(-4.65,2.8,-2.7,.45,.5,.35,'#ffdda2')
+  box(-4.65,3.08,-2.7,.55,.13,.45,'#71806a')
+  for (let i=0;i<7;i++) box(-1.1+i*.38,.08,1.1+Math.sin(i)*.13,.25,.09,.16,'#baa374')
 
-  // A deliberately quiet stand-in for the stage: everything above it is FX.
-  const island = new THREE.Mesh(new THREE.SphereGeometry(1, 64, 32),
-    new THREE.MeshStandardMaterial({ color: '#bedba4', roughness: .95 }))
-  island.scale.set(8.1, .58, 2.7); island.position.set(8, -.52, 0); island.receiveShadow = true
-  scene.add(island)
-  const path = new THREE.Mesh(new THREE.CircleGeometry(1, 80),
-    new THREE.MeshStandardMaterial({ color: '#f4e8cd', roughness: 1 }))
-  path.rotation.x = -Math.PI / 2; path.scale.set(7.7, 1.02, 1); path.position.set(8, .06, 0)
-  path.receiveShadow = true; scene.add(path)
-
-  const fx = createFx({ scene, camera, overlay })
+  // Flat, crisply painted stand-ins keep this page independent of the cast lane.
+  const pixels = [
+    '....................','...dd..........dd...','...dbd........dbd...',
+    '...dbbddddddddbbd...','...dbbbbbbbbbbbbd...','...dbbbbbbbbbbbbd...',
+    '..dbbbbccccccbbbbd..','..dbbccceccceccbbd..','..dbbccceccceccbbd..',
+    '..dbbccccnnccccbbd..','...dbbccccccccbbd...','....dddddddddddd....',
+    '....dbbbbbbbbbbd....','...dbbcbbbbbbcbbd...','...dbbccbbbbccbbd...',
+    '...dbbccccccccbbd...','....dbbccccccbbd....','....dbbbbbbbbbbd....',
+    '....dddd..dddd......','....dffd..dffd......',
+  ]
   const pets = []
-  const sphere = new THREE.SphereGeometry(.62, 40, 28)
-  const eyeGeometry = new THREE.SphereGeometry(1, 20, 16)
-  const white = new THREE.MeshStandardMaterial({ color: 'white', roughness: .3 })
-  const dark = new THREE.MeshStandardMaterial({ color: '#172f49', roughness: .25 })
-  for (const [i, color] of ['#0A84FF', '#BF5AF2', '#FF9F0A'].entries()) {
-    const anchor = new THREE.Group()
-    anchor.position.set(3.15 + i * 4.85, .08, 0)
-    const body = new THREE.Group(); anchor.add(body)
-    const orb = new THREE.Mesh(sphere, new THREE.MeshPhysicalMaterial({ color,
-      roughness: .24, metalness: .03, clearcoat: 1, clearcoatRoughness: .15 }))
-    orb.position.y = .67; orb.castShadow = true; body.add(orb)
-    for (const x of [-.18, .18]) {
-      const eye = new THREE.Mesh(eyeGeometry, white)
-      eye.scale.set(.13, .17, .085); eye.position.set(x, .84, .55); body.add(eye)
-      const pupil = new THREE.Mesh(eyeGeometry, dark)
-      pupil.scale.set(.057, .082, .032); pupil.position.set(x + .023, .85, .63); body.add(pupil)
-    }
+  for (const [i,color] of ['#79a8ad','#d6a05f','#b4a1bd'].entries()) {
+    const texCanvas=document.createElement('canvas'); texCanvas.width=20;texCanvas.height=20
+    const ctx=texCanvas.getContext('2d')
+    const colors={d:'#455b50',b:color,c:'#fff2d6',e:'#354849',n:'#cc8774',f:'#66796b'}
+    pixels.forEach((row,y)=>[...row].forEach((char,x)=>{if(colors[char]){ctx.fillStyle=colors[char];ctx.fillRect(x,y,1,1)}}))
+    const texture=new THREE.CanvasTexture(texCanvas)
+    texture.minFilter=texture.magFilter=THREE.NearestFilter;texture.colorSpace=THREE.SRGBColorSpace
+    textures.add(texture)
+    const spriteMaterial=new THREE.SpriteMaterial({map:texture,transparent:true,alphaTest:.5,depthWrite:true,toneMapped:false})
+    materials.add(spriteMaterial)
+    const sprite=new THREE.Sprite(spriteMaterial);sprite.scale.set(2,2,1);sprite.position.y=1.05
+    const anchor=new THREE.Group();anchor.position.set(-2.65+i*2.65,.045,.3+(i===1?.15:0));anchor.add(sprite)
+    const shadow=new THREE.Mesh(cube,new THREE.MeshBasicMaterial({color:'#647a50',transparent:true,opacity:.3,depthWrite:false}))
+    materials.add(shadow.material);shadow.scale.set(1.3,.025,.65);shadow.position.y=.015;anchor.add(shadow)
     scene.add(anchor)
-    const id = `pet-${i}`
-    fx.attach(id, { anchor, height: 1.32, color, name: ['Mochi', 'Pip', 'Sunny'][i], isMe: i === 0 })
-    fx.setSkills(id, [6, 4, 8][i])
-    pets.push({ id, anchor, body, pop: 0 })
+    const id=`pet-${i}`
+    fx.attach(id,{anchor,height:2.05,color,name:['Mochi','Pip','Sunny'][i],isMe:i===0})
+    fx.setSkills(id,[5,3,7][i]);fx.setStatus(id,['working','waiting','done'][i])
+    pets.push({id,anchor,sprite,baseX:anchor.position.x,pop:0})
   }
-  fx.setStatus('pet-0', 'working')
-  fx.setStatus('pet-1', 'waiting')
-  fx.setStatus('pet-2', 'done')
-
-  let time = 0, last = performance.now(), paused = false, auto = true, nextGift = 2.6, direction = 0
-  async function send(reverse = false) {
-    const source = reverse ? 2 : 0
-    const target = reverse ? 0 : 2
-    const arrived = await fx.gift(pets[source].id, pets[target].id,
-      { color: reverse ? '#FF9F0A' : '#0A84FF', label: reverse ? 'imagegen' : 'pdf' })
-    if (arrived) {
-      pets[target].pop = 1
-      fx.say(pets[target].id, reverse ? 'Ooh, I know this now!' : 'A little more magic ✨')
-    }
-    return arrived
-  }
+  let time=0,last=performance.now(),paused=params.has('paused'),auto=!params.has('paused'),nextAction=2.3,sequence=0,pan=false
+  const labels={skill:'A NEW SKILL',memory:'PROJECT MEMORY',technique:'LEARN BY DOING',resource:'A LITTLE HELP'}
+  function collaborate(kind) { for(const p of pets) fx.setStatus(p.id,'idle'); return fx.collab('pet-0','pet-1',{kind,label:labels[kind]}) }
+  async function send() { const arrived=await fx.gift('pet-0','pet-2',{color:'#edc175',label:'IMAGEGEN'});if(arrived)pets[2].pop=1;return arrived }
   function tick(dt) {
-    time += dt
-    for (let i = 0; i < pets.length; i++) {
-      const pet = pets[i]
-      pet.pop = Math.max(0, pet.pop - dt * 2)
-      const pop = Math.sin((1 - pet.pop) * Math.PI * 3) * pet.pop
-      const breathe = Math.sin(time * 2.4 + i) * .015
-      pet.body.scale.set(1 - pop * .17 - breathe, 1 + pop * .25 + breathe, 1 - pop * .12)
-      pet.body.position.y = Math.max(0, pop * .45)
+    time+=dt
+    for(let i=0;i<pets.length;i++) {
+      const pet=pets[i];pet.pop=Math.max(0,pet.pop-dt*2)
+      pet.sprite.position.y=1.05+Math.sin(time*2.3+i)*.022+Math.sin(pet.pop*Math.PI)*.2
     }
-    fx.update(dt, time)
-    renderer.render(scene, camera)
-    if (auto && time >= nextGift) { send(Boolean(direction++ % 2)); nextGift = time + 6 }
+    stage.update(dt,time);fx.update(dt,time);stage.render()
+    if(auto && time>=nextAction) {
+      const kind=['gift','skill','memory','technique','resource'][sequence++%5]
+      if(kind==='gift')send();else collaborate(kind)
+      nextAction=time+6
+    }
   }
-  function resize() {
-    const { width, height } = view.getBoundingClientRect()
-    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2)); renderer.setSize(width, height, false)
-    camera.aspect = width / height; camera.updateProjectionMatrix()
-    fx.resize(width, height); renderer.render(scene, camera)
-  }
-  const observer = new ResizeObserver(resize); observer.observe(view); resize()
+  function resize() { const {width,height}=view.getBoundingClientRect();stage.resize(width,height);fx.resize(width,height);stage.focus(0,-.25,{span:12});stage.render() }
+  const observer=new ResizeObserver(resize);observer.observe(view);resize()
+  for(let i=0;i<90;i++)stage.update(1/60,i/60)
+  tick(0)
   let frame
-  function loop(now) {
-    const dt = Math.min(.05, (now - last) / 1000); last = now
-    if (!paused) tick(dt)
-    frame = requestAnimationFrame(loop)
-  }
-  frame = requestAnimationFrame(loop)
-  document.querySelector('nav').addEventListener('click', (event) => {
-    const button = event.target.closest('button')
-    if (!button) return
-    if (button.dataset.status) for (const pet of pets) fx.setStatus(pet.id, button.dataset.status)
-    switch (button.dataset.action) {
-      case 'gift': send(); break
-      case 'reply': send(true); break
-      case 'say': fx.say('pet-1', 'Hello, neighbour.'); break
-      case 'skills': for (const pet of pets) fx.setSkills(pet.id, 12); break
-      case 'size': view.classList.toggle('compact'); button.setAttribute('aria-pressed', String(view.classList.contains('compact'))); break
-      case 'auto': auto = !auto; nextGift = time + 1; button.setAttribute('aria-pressed', String(auto)); break
+  function loop(now) { const dt=Math.min(.05,(now-last)/1000);last=now;if(!paused)tick(dt);frame=requestAnimationFrame(loop) }
+  frame=requestAnimationFrame(loop)
+  document.querySelector('nav').addEventListener('click',event=>{
+    const button=event.target.closest('button');if(!button)return
+    if(button.dataset.status)for(const pet of pets)fx.setStatus(pet.id,button.dataset.status)
+    if(button.dataset.kind)collaborate(button.dataset.kind)
+    switch(button.dataset.action) {
+      case 'gift':send();break
+      case 'say':fx.say('pet-1','I saved you a page.');break
+      case 'skills':for(const pet of pets)fx.setSkills(pet.id,12);break
+      case 'pan':pan=!pan;stage.focus(pan?1.9:0,pan?.5:-.25,{span:pan?10:12});break
+      case 'auto':auto=!auto;nextAction=time+1;button.setAttribute('aria-pressed',String(auto));break
     }
   })
-  window.fxDemo = { fx, pets, scene, camera, renderer, send, resize,
-    pause(value = true) { paused = value; auto = false },
-    advance(seconds) { const steps = Math.ceil(seconds * 120); for (let i = 0; i < steps; i++) tick(seconds / steps) },
+  window.fxDemo={fx,pets,scene,camera,renderer,stage,send,collaborate,resize,
+    pause(value=true){paused=value;auto=false},
+    advance(seconds){const steps=Math.max(1,Math.ceil(seconds*60));for(let i=0;i<steps;i++)tick(seconds/steps)},
+    get time(){return time},
+    dispose(){cancelAnimationFrame(frame);observer.disconnect();fx.dispose();
+      for(const geometry of geometries)geometry.dispose();for(const material of materials)material.dispose();
+      for(const texture of textures)texture.dispose();stage.dispose()},
   }
-  window.addEventListener('pagehide', () => {
-    cancelAnimationFrame(frame); observer.disconnect(); fx.dispose()
-    scene.traverse((object) => { object.geometry?.dispose(); object.material?.dispose() })
-    renderer.dispose()
-  }, { once: true })
+  window.addEventListener('pagehide',()=>window.fxDemo.dispose(),{once:true})
 </script>
 </body>
 </html>

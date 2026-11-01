@@ -3,34 +3,62 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#ede9e3">
+  <meta name="theme-color" content="#e9ebe9">
   <title>petpack — a little world, together</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Ccircle cx='20' cy='20' r='17' fill='%230a84ff'/%3E%3Ccircle cx='14' cy='17' r='4' fill='white'/%3E%3Ccircle cx='26' cy='17' r='4' fill='white'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 2h3v2h4V2h3v10H3z' fill='%2374a9c3'/%3E%3Cpath d='M5 7h2v2H5zm5 0h2v2h-2z' fill='%23354451'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="./desk.css">
+  <link rel="stylesheet" href="./pane.css">
+  <link rel="stylesheet" href="./fx.css">
   <script type="importmap">{"imports":{"three":"../../../node_modules/three/build/three.module.js","three/addons/":"../../../node_modules/three/examples/jsm/"}}</script>
 </head>
 <body>
-  <main class="table" aria-label="Three neighbouring laptops sharing one petpack world"></main>
-  <template id="laptop-template">
-    <section class="laptop">
+  <main class="table" aria-label="A little petpack world on a MacBook desktop">
+    <section class="laptop" aria-label="MacBook preview">
       <div class="lid">
         <div class="camera-notch" aria-hidden="true"><i></i></div>
         <div class="desktop">
-          <div class="wallpaper" aria-hidden="true"></div>
+          <div class="wallpaper" aria-hidden="true"><i></i></div>
           <div class="menu-bar" aria-hidden="true">
             <svg viewBox="0 0 18 20" class="apple"><path d="M12.5 0c.2 2-1.2 3.4-2.8 3.4C9.5 1.7 11 .2 12.5 0ZM15.8 14.3c-.5 1.3-2 4.2-3.7 4.2-1 0-1.4-.6-2.7-.6s-1.8.6-2.7.6c-1.6 0-3.1-2.6-3.9-4.6C1.5 10.8 2 7 4.7 5.6c1.4-.7 2.7-.1 3.7.2.6.2 1 .2 1.6 0 1.5-.6 3.4-1.1 5.3.7-2.6 1.5-2.9 5.6.5 7.8Z"/></svg>
-            <span class="menu-dashes"><i></i><i></i><i></i></span>
-            <span class="menu-right"><svg viewBox="0 0 24 18"><path d="M2 5Q12-3 22 5M5 9q7-6 14 0M9 13q3-2 6 0"/><circle cx="12" cy="16" r=".6"/></svg><i class="battery"></i><span class="clock">10:09</span></span>
+            <strong>Code</strong><span>File</span><span>Edit</span><span>Selection</span><span>View</span><span>Go</span><span>Window</span><span>Help</span>
+            <div class="menu-right"><svg viewBox="0 0 24 18"><path d="M2 5Q12-3 22 5M5 9q7-6 14 0M9 13q3-2 6 0"/><circle cx="12" cy="16" r=".6"/></svg><i class="battery"></i><span>Sun 1 Nov</span><span>10:09</span></div>
           </div>
-          <div class="world-viewport"><canvas aria-label="Pets exploring a floating island"></canvas></div>
-          <div class="dock" aria-hidden="true"><i class="dock-finder"></i><i class="dock-terminal"></i><i class="dock-safari"></i><i class="dock-notes"></i><b></b><i class="dock-pet"></i></div>
+          <div class="editor" aria-hidden="true">
+            <div class="editor-title"><div class="traffic"><i></i><i></i><i></i></div><span>village.ts — petpack</span><span class="editor-search">⌕</span></div>
+            <div class="editor-main">
+              <aside class="activity"><span>▱</span><span>⌕</span><span>⑂</span><span>▷</span><span>⊞</span></aside>
+              <aside class="explorer"><b>EXPLORER</b><p>⌄ &nbsp; PETPACK</p><div>⌄ &nbsp; src</div><div class="file">◇ &nbsp; village.ts</div><div class="file active">◇ &nbsp; companions.ts</div><div class="file">◇ &nbsp; memories.ts</div><div class="folder">› &nbsp; skills</div><div class="folder">› &nbsp; techniques</div><div class="folder">› &nbsp; resources</div><div class="root-file">{ } &nbsp; package.json</div><div class="root-file">↳ &nbsp; README.md</div></aside>
+              <div class="editor-content"><div class="editor-tabs"><span>◇ &nbsp; village.ts <i>×</i></span><span>◇ &nbsp; companions.ts</span></div><div class="breadcrumbs">src &nbsp; › &nbsp; village.ts &nbsp; › &nbsp; a little world</div><div class="code"><ol>
+                <li><em>import</em> { village } <em>from</em> <q>'./world'</q></li>
+                <li><em>import</em> { companions } <em>from</em> <q>'./companions'</q></li>
+                <li>&nbsp;</li>
+                <li><small>// A place for good ideas to find each other.</small></li>
+                <li><em>const</em> home = <b>village</b>({</li>
+                <li>  light: <q>'afternoon'</q>,</li>
+                <li>  doors: <q>'always open'</q>,</li>
+                <li>})</li>
+                <li>&nbsp;</li>
+                <li><em>for</em> (<em>const</em> pet <em>of</em> companions) {</li>
+                <li>  home.<b>welcome</b>(pet)</li>
+                <li>}</li>
+                <li>&nbsp;</li>
+                <li><small>// They take it from here.</small></li>
+                <li><em>await</em> home.<b>start</b>()<span class="caret"></span></li>
+                <li>&nbsp;</li>
+                <li>&nbsp;</li>
+              </ol></div><div class="terminal"><div>TERMINAL <span>OUTPUT &nbsp;&nbsp; PROBLEMS</span></div><p><span>~/petpack</span> &nbsp; main</p><p>❯ npx petpack</p><p class="terminal-ready">✓ &nbsp; Your pet is in good company.</p><p class="terminal-muted">&nbsp;&nbsp; A little world, together.</p></div></div>
+            </div>
+            <div class="editor-status"><span>⑂ main &nbsp;&nbsp; ✓</span><span>Ln 15, Col 19 &nbsp;&nbsp; UTF-8 &nbsp;&nbsp; TypeScript</span></div>
+          </div>
+          <section class="petpack-pane" aria-label="The petpack village"><div class="world-viewport"></div></section>
+          <div class="dock" aria-hidden="true"><i class="dock-finder"></i><i class="dock-safari"></i><i class="dock-code"></i><i class="dock-terminal"></i><i class="dock-notes"></i><b></b><i class="dock-pet"></i></div>
         </div>
       </div>
       <div class="hinge" aria-hidden="true"></div>
       <div class="base" aria-hidden="true"><div class="thumb"></div></div>
       <div class="laptop-shadow" aria-hidden="true"></div>
     </section>
-  </template>
+  </main>
   <script type="module" src="./demo.js"></script>
 </body>
 </html>

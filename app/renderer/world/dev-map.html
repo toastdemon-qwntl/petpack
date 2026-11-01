@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>petpack · village study</title>
+  <link rel="icon" href="data:,">
+  <script type="importmap">{ "imports": {
+    "three": "../../../node_modules/three/build/three.module.js",
+    "three/addons/": "../../../node_modules/three/examples/jsm/" } }</script>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#ecebe2;color:#536257;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh}
+    body::before{content:"";position:fixed;inset:0;z-index:-1;background:radial-gradient(ellipse at 80% 3%,#d8e4dc,transparent 50%),radial-gradient(ellipse at 12% 85%,#dcc9aa90,transparent 50%)}
+    header{margin:52px 48px 0;width:calc(100% - 670px);max-width:540px}.eyebrow{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#81907b}h1{font:400 48px/1.04 Georgia,serif;letter-spacing:-2px;color:#445548;margin:22px 0 16px}p{line-height:1.65;font-size:14px;max-width:350px;color:#7e877a}
+    .glass{padding:7px;border:1px solid #ffffffb0;border-radius:22px;background:linear-gradient(145deg,#ffffff8a,#ffffff30);backdrop-filter:blur(24px) saturate(1.35);box-shadow:inset 0 1px 0 #fffffff0,inset 0 -1px 0 #ffffff40,0 17px 55px #35493425,0 3px 10px #36472b10}
+    .pane{position:absolute;right:32px;top:28px;width:520px;height:340px}.glass canvas{display:block;width:100%;height:100%;border-radius:15px;image-rendering:pixelated;background:#9fb982}
+    main{margin:125px 48px 32px;max-width:1280px}.toolbar{display:flex;align-items:center;gap:8px;margin:0 2px 16px;flex-wrap:wrap}button,label{font:inherit;font-size:12px;color:#637260;border:1px solid #9eab9435;background:#ffffff69;border-radius:100px;padding:9px 14px;cursor:pointer}button:hover{background:#fff}label{margin-left:auto;display:flex;align-items:center;gap:7px}input{accent-color:#8d9e71}.study{height:440px;width:100%;border-radius:24px}.study canvas{border-radius:17px}footer{display:flex;justify-content:space-between;font-size:11px;letter-spacing:.025em;margin:15px 4px;color:#8a937f}
+    @media(min-width:1800px){header{margin-top:90px;margin-left:90px}h1{font-size:64px;max-width:500px}.pane{right:60px;top:50px}main{margin:150px 90px 40px;max-width:1600px}.study{height:800px}.toolbar{margin-bottom:20px}}
+    @media(max-width:900px){header{margin:30px 24px;width:auto;max-width:none}h1{font-size:36px}.pane{position:relative;top:auto;right:auto;width:min(520px,calc(100vw - 32px));margin:30px 16px}main{margin:35px 16px}.study{height:420px}label{margin-left:0}}
+  </style>
+</head>
+<body>
+  <header><div class="eyebrow">Petpack · village study / 02</div><h1>A little window.<br>A world of company.</h1><p>A library of memories. A workshop of skills.<br>And the paths that bring everyone together.</p></header>
+  <div class="glass pane"><canvas id="pane" aria-label="Village in a small glass pane"></canvas></div>
+  <main>
+    <div class="toolbar" aria-label="Development inspection controls">
+      <button data-place="library">Library</button><button data-place="bridge">Bridge</button><button data-place="workshop">Workshop</button><button data-place="dojo">Dojo</button><button data-place="campfire">Campfire</button><button data-place="pond">Pond</button><button data-place="overview">Whole village</button><button id="fly">Pause fly-over</button>
+      <label><input id="paths" type="checkbox">Path graph</label>
+    </div>
+    <div class="glass study"><canvas id="study" aria-label="Large village inspection view"></canvas></div>
+    <footer><span>Procedural pixel village · warm afternoon</span><span>64 × 40 tiles / one shared place</span></footer>
+  </main>
+  <script type="module">
+    import * as THREE from 'three'
+    import { createStage } from './stage.js'
+    import { createMap } from './map.js'
+    import { ROAD_NODES, ROAD_EDGES, groundHeight } from './map-paths.js'
+    const params = new URLSearchParams(location.search)
+    const places = {
+      library: {x:-20,z:-12.1,span:13}, bridge:{x:0,z:0,span:13}, workshop:{x:18,z:-12,span:13},
+      dojo:{x:18,z:7,span:13},campfire:{x:-16,z:7,span:14},pond:{x:6.5,z:12.5,span:13},overview:{x:0,z:0,span:70},
+    }
+    let current = params.get('place') || 'library', elapsed = Number(params.get('t') || 0), paused = params.has('paused')
+    if (!places[current]) current = 'library'
+    const stages = [], maps = [], graphs = []
+    for(const [i,canvas] of [...document.querySelectorAll('canvas')].entries()) {
+      const stage=createStage(canvas,{pixelScale:Number(params.get('px')) || (i ? 3 : 2)})
+      stage.resize(canvas.clientWidth,canvas.clientHeight)
+      const map=createMap(stage.scene,{seed:14})
+      const positions=[]
+      for(const [a,b] of ROAD_EDGES) {
+        const p=ROAD_NODES[a],q=ROAD_NODES[b],n=Math.ceil(Math.hypot(q.x-p.x,q.z-p.z)*4)
+        for(let j=0;j<n;j++) for(const f of [j/n,(j+1)/n]) {
+          const x=p.x+(q.x-p.x)*f,z=p.z+(q.z-p.z)*f
+          positions.push(x,groundHeight(x,z)+.13,z)
+        }
+      }
+      const geometry=new THREE.BufferGeometry()
+      geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3))
+      const graph=new THREE.LineSegments(geometry,new THREE.LineBasicMaterial({color:'#fff1af',depthTest:false,transparent:true,opacity:.85}))
+      graph.renderOrder=1000
+      graph.visible=params.has('graph')
+      stage.scene.add(graph)
+      stages.push(stage);maps.push(map);graphs.push(graph)
+    }
+    function focus(name,settle=false) {
+      current=name
+      const p=places[name]
+      stages.forEach((stage,i)=>{
+        // The pane stays pet-sized; the study shows more context around each landmark.
+        const span = name==='overview' ? p.span : p.span*(i ? 2 : 1)
+        stage.focus(p.x,p.z,{span})
+        if(settle) for(let j=0;j<240;j++) stage.update(1/60,elapsed)
+      })
+    }
+    focus(current,true)
+    const stopButton=document.querySelector('#fly')
+    const updateButton=()=>stopButton.textContent=paused?'Resume fly-over':'Pause fly-over'
+    updateButton()
+    document.querySelectorAll('[data-place]').forEach(button=>button.addEventListener('click',()=>{paused=true;updateButton();focus(button.dataset.place)}))
+    stopButton.addEventListener('click',()=>{paused=!paused;updateButton()})
+    const pathToggle=document.querySelector('#paths')
+    pathToggle.checked=params.has('graph')
+    pathToggle.addEventListener('change',()=>graphs.forEach(g=>g.visible=pathToggle.checked))
+    const observer=new ResizeObserver(()=>stages.forEach(stage=>stage.resize(stage.renderer.domElement.clientWidth,stage.renderer.domElement.clientHeight)))
+    document.querySelectorAll('canvas').forEach(c=>observer.observe(c))
+    const tour=['library','bridge','workshop','dojo','pond','campfire']
+    let previous=performance.now(),frame,disposed=false
+    function tick(now){
+      const dt=Math.min(.06,(now-previous)/1000);previous=now
+      if(!paused){elapsed+=dt;const name=tour[Math.floor(elapsed/10)%tour.length];if(name!==current)focus(name)}
+      stages.forEach((stage,i)=>{maps[i].update(dt,elapsed);stage.update(dt,elapsed);stage.render()})
+      frame=requestAnimationFrame(tick)
+    }
+    frame=requestAnimationFrame(tick)
+    function dispose(){
+      if(disposed)return;disposed=true
+      cancelAnimationFrame(frame);observer.disconnect()
+      stages.forEach((stage,i)=>{maps[i].dispose();graphs[i].geometry.dispose();graphs[i].material.dispose();stage.dispose()})
+    }
+    window.mapPreview={stages,maps,graphs,focus:(name)=>{paused=true;updateButton();focus(name,true)},setTime:t=>elapsed=t,dispose}
+    addEventListener('pagehide',dispose,{once:true})
+  </script>
+</body>
+</html>

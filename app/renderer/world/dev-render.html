@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>petpack · pixel light study</title>
+<link rel="icon" href="data:,">
+<script type="importmap">{ "imports": {
+  "three": "../../../node_modules/three/build/three.module.js",
+  "three/addons/": "../../../node_modules/three/examples/jsm/" } }</script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; color: #344944; font: 14px/1.5 system-ui, sans-serif;
+    background: radial-gradient(ellipse at 90% 0%, #efdab1 0, transparent 45%),
+      radial-gradient(ellipse at 5% 80%, #b8cfca 0, transparent 58%), #e2e7dc; }
+  main { max-width: 1600px; margin: auto; padding: 40px 48px 48px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 26px; }
+  h1 { font-size: 24px; letter-spacing: -.8px; font-weight: 580; margin: 0; }
+  header p { margin: 0; color: #64766d; font-size: 12px; }
+  .row { display: flex; align-items: center; gap: 50px; margin-bottom: 34px; }
+  .study { flex: 0 0 auto; width: 618px; }
+  .glass { padding: 8px; border-radius: 24px; border: 1px solid #ffffffa8;
+    background: linear-gradient(145deg, #ffffff66, #eff8f229 65%, #ffffff55);
+    backdrop-filter: blur(24px) saturate(1.4);
+    box-shadow: inset 0 1px 0 #fffffff0, inset 0 -1px 0 #ffffff5a,
+      0 22px 55px #38563c29, 0 3px 9px #365a3d12; }
+  .viewport { height: 380px; border-radius: 16px; overflow: hidden; position: relative;
+    box-shadow: 0 0 0 1px #415e3c14; background: #8fb87b; }
+  canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+  .caption { display: flex; justify-content: space-between; margin: 12px 10px 0;
+    color: #60766a; font: 11px/1.4 ui-monospace, monospace; }
+  .notes { max-width: 280px; }
+  .notes p { margin: 0 0 16px; color: #617269; font-size: 13px; }
+  .notes strong { font-size: 17px; font-weight: 540; color: #385048; }
+  .swatches { display: flex; gap: 6px; margin-top: 24px; }
+  .swatches i { width: 24px; height: 24px; border-radius: 5px; box-shadow: inset 0 1px 0 #ffffff80; }
+  .large .viewport { height: min(40vw, 680px); min-height: 350px; }
+  @media (max-width: 1000px) { main { padding: 24px; } .notes { display: none; } header p { display: none; } }
+</style>
+</head>
+<body>
+<main>
+  <header><h1>A little world, in pixel light.</h1><p>petpack / render study / afternoon</p></header>
+  <div class="row">
+    <div class="study">
+      <div class="glass"><div class="viewport"><canvas id="pane" aria-label="Pixel-art lighting study, 600 by 380 pixels"></canvas></div></div>
+      <div class="caption"><span>600 × 380 · 2× art pixels</span><span>orthographic · 38°</span></div>
+    </div>
+    <div class="notes"><p><strong>Warm sun. Cool shade.<br>Every pixel belongs.</strong></p>
+      <p>Three bands of light, coloured ink at silhouettes, and a fine sunlit edge where faces meet.</p>
+      <p>The camera drifts through the same scene in both windows. Small details keep their shape as the view moves.</p>
+      <div class="swatches"><i style="background:#81a967"></i><i style="background:#dbbc7f"></i><i style="background:#c87754"></i><i style="background:#468c8a"></i><i style="background:#e9dab4"></i></div>
+    </div>
+  </div>
+  <div class="large"><div class="glass"><div class="viewport"><canvas id="large" aria-label="Large pixel-art lighting study"></canvas></div></div>
+    <div class="caption"><span>Same light / larger window</span><span>3× art pixels · nearest neighbour</span></div>
+  </div>
+</main>
+<script type="module">
+import * as THREE from 'three'
+import { createStage } from './stage.js'
+import { toonMaterial } from './toon.js'
+
+const params = new URLSearchParams(location.search)
+let paused = params.has('paused')
+let time = Number(params.get('t') || 0)
+let frame, previous
+const resources = []
+
+function makeScene(stage) {
+  const { scene } = stage
+  const material = color => { const m = toonMaterial({ color }); resources.push(m); return m }
+  const palette = Object.fromEntries(Object.entries({ grass: '#81a967', path: '#d9bb80', stone: '#e3d5ad',
+    roof: '#c87754', shade: '#43775a', leaf: '#739850', lightLeaf: '#94ae58', trunk: '#875f43',
+    water: '#468c8a', dark: '#53664d', flower: '#edc777', pink: '#d99387', white: '#fff0cb' })
+    .map(([key, color]) => [key, material(color)]))
+  const boxGeometry = new THREE.BoxGeometry(1, 1, 1)
+  const sphereGeometry = new THREE.SphereGeometry(1, 24, 16)
+  resources.push(boxGeometry, sphereGeometry)
+  function mesh(geometry, mat, x, y, z, sx = 1, sy = sx, sz = sx) {
+    const object = new THREE.Mesh(geometry, mat)
+    object.position.set(x, y, z); object.scale.set(sx, sy, sz)
+    object.castShadow = object.receiveShadow = true
+    scene.add(object)
+    return object
+  }
+  function box(mat, x, y, z, sx, sy, sz) { return mesh(boxGeometry, mat, x, y, z, sx, sy, sz) }
+  box(palette.grass, 0, -.2, 0, 64, .4, 40).castShadow = false
+  box(palette.path, 0, .008, 1.5, 64, .015, 2).castShadow = false
+  box(palette.path, .5, .006, -1, 1.6, .014, 10).castShadow = false
+  box(palette.water, 4.1, .018, 2.9, 2.9, .02, 1.3).castShadow = false
+  box(palette.stone, -2.9, .64, 0, 1.65, 1.25, 1.5)
+  const smallBox = box(palette.roof, -2.5, 1.6, .05, 1.1, .7, 1)
+  smallBox.rotation.y = -.23
+  box(palette.white, -2.52, 2.03, .05, 1.24, .14, 1.15)
+  box(palette.trunk, -2.87, .52, .765, .62, .92, .025)
+  box(palette.flower, -2.62, .53, .8, .08, .08, .05)
+  mesh(sphereGeometry, palette.roof, -.4, .67, .1, .67)
+  mesh(sphereGeometry, palette.water, 1.25, .86, -.5, .84)
+  box(palette.stone, 1.2, .12, -.5, 2, .24, 1.85)
+  box(palette.trunk, 3.35, 1.05, -1.25, .37, 2.1, .38)
+  const foliage = new THREE.IcosahedronGeometry(1, 1)
+  resources.push(foliage)
+  for (const [x, y, z, scale, mat] of [[3.35, 2.7, -1.25, 1.35, palette.leaf], [2.55, 2.4, -1.14, .88, palette.shade],
+    [4.18, 2.55, -1.38, .92, palette.lightLeaf], [3.36, 3.52, -1.4, .8, palette.lightLeaf]]) {
+    mesh(foliage, mat, x, y, z, scale, scale * .78, scale)
+  }
+  for (let i = 0; i < 6; i++) {
+    box(palette.trunk, -5.1 + i * .65, .44, -2.2, .12, .88, .12)
+  }
+  box(palette.stone, -3.5, .38, -2.2, 3.4, .12, .12)
+  box(palette.stone, -3.5, .67, -2.2, 3.4, .12, .12)
+  // Repeated set dressing costs one draw per material, including its normal pass.
+  let seed = 491
+  function random() { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296 }
+  const matrix = new THREE.Matrix4()
+  const batch = (mat, count, arrange) => {
+    const instances = new THREE.InstancedMesh(boxGeometry, mat, count)
+    for (let i = 0; i < count; i++) {
+      const [x, y, z, sx, sy, sz] = arrange(i)
+      matrix.makeScale(sx, sy, sz); matrix.setPosition(x, y, z); instances.setMatrixAt(i, matrix)
+    }
+    instances.receiveShadow = true
+    scene.add(instances)
+  }
+  batch(palette.shade, 130, () => {
+    const x = random() * 17 - 8.5, z = random() * 7 - 3.5
+    return [x, .09, z > .3 && z < 2.7 ? z + 2.6 : z, .06, .12 + random() * .14, .08]
+  })
+  batch(palette.stone, 65, () => [random() * 17 - 8.5, .026, .7 + random() * 1.5, .08 + random() * .18, .04, .07])
+  batch(palette.flower, 35, () => [random() * 12 - 6, .15, 3.1 + random() * 1.2, .12, .1, .12])
+  batch(palette.pink, 25, () => [random() * 12 - 6, .16, -2.7 - random() * 1.5, .13, .1, .12])
+  batch(palette.white, 12, () => [3 + random() * 2.2, .04, 2.4 + random() * 1, .11 + random() * .18, .014, .045])
+}
+
+const stages = [createStage(document.querySelector('#pane'), { pixelScale: 2 }),
+  createStage(document.querySelector('#large'), { pixelScale: Number(params.get('px')) || 3 })]
+for (const stage of stages) makeScene(stage)
+const observers = stages.map(stage => {
+  const observer = new ResizeObserver(([entry]) => stage.resize(entry.contentRect.width, entry.contentRect.height))
+  observer.observe(stage.renderer.domElement.parentElement)
+  return observer
+})
+function tick(now) {
+  const dt = previous === undefined ? 0 : Math.min((now - previous) / 1000, .1)
+  previous = now
+  if (!paused) time += dt
+  for (const stage of stages) {
+    stage.focus(Math.sin(time * .14) * 1.8, -.9 + Math.cos(time * .11) * .4,
+      { span: stage === stages[0] ? 12 : 15 })
+    stage.update(paused ? 0 : dt, time)
+    stage.render()
+  }
+  frame = requestAnimationFrame(tick)
+}
+for (const stage of stages) {
+  stage.focus(Math.sin(time * .14) * 1.8, -.9 + Math.cos(time * .11) * .4,
+    { span: stage === stages[0] ? 12 : 15 })
+  for (let i = 0; i < 120; i++) stage.update(1 / 30, time)
+}
+frame = requestAnimationFrame(tick)
+window.renderStudy = {
+  stages,
+  pause() { paused = true },
+  play() { paused = false },
+  stop() { paused = true; cancelAnimationFrame(frame) },
+  dispose() {
+    cancelAnimationFrame(frame)
+    observers.forEach(observer => observer.disconnect())
+    stages.forEach(stage => stage.dispose())
+    resources.forEach(resource => resource.dispose())
+  },
+}
+</script>
+</body>
+</html>

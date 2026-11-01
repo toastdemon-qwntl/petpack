@@ -1,118 +1,103 @@
 import { createWorld } from './index.js'
-import { sampleStory, storyEvents, arrivalElevation, DURATION } from './story.js'
+import { createStory, DURATION } from './story.js'
 
 const params = new URLSearchParams(location.search)
-const solo = params.has('solo')
 const testPet = params.get('pet') === 'test'
-const requestedSeat = Number(params.get('seat') || 0)
-const seat = Number.isFinite(requestedSeat) ? Math.floor(requestedSeat) : 0
-const table = document.querySelector('.table')
-const template = document.querySelector('#laptop-template')
-document.body.classList.toggle('solo', solo)
-if (solo) table.setAttribute('aria-label', `Petpack world, seat ${seat + 1}`)
-
+const pixelScale = Math.max(1, Math.min(4, Number(params.get('px')) || 2))
+document.body.classList.toggle('solo', params.has('solo'))
 let time = Math.max(0, Number(params.get('t')) || 0)
 let paused = params.has('paused') || matchMedia('(prefers-reduced-motion: reduce)').matches
 let origin = performance.now() / 1000 - time
-let lastSample = -Infinity
 let previousEventTime = time
 let frameId
 let disposed = false
-let testAtlas
-const worlds = []
+let testAtlas = null
+let ids = new Set()
+let world
+let story
 
-// Register the shared clock before any renderer's animation callback.
+// Register the director before the world's draw callback: both see the same clock.
 function tick(now) {
   if (disposed) return
   if (!paused) time = now / 1000 - origin
-  if (time - lastSample >= 0.095 || time < lastSample) {
+  if (story) {
     applyState(time)
-    lastSample = time
+    for (const event of story.events(previousEventTime, time)) dispatch(event)
+    previousEventTime = time
   }
-  // Walking exercises network-rate interpolation; the scripted drop is continuous.
-  for (const { world, ids } of worlds) {
-    if (ids.has('nova')) world.updatePet('nova', { elevation: arrivalElevation(time) })
-  }
-  for (const event of storyEvents(previousEventTime, time)) dispatch(event)
-  previousEventTime = time
   frameId = requestAnimationFrame(tick)
 }
 frameId = requestAnimationFrame(tick)
+world = createWorld(document.querySelector('.world-viewport'), { pixelScale, clock: () => time })
+story = createStory(world.map, { testPet })
 
-for (const currentSeat of solo ? [seat] : [0, 1, 2]) {
-  const element = template.content.firstElementChild.cloneNode(true)
-  element.setAttribute('aria-label', `Laptop ${currentSeat + 1}`)
-  table.append(element)
-  const canvas = element.querySelector('canvas')
-  const world = createWorld(canvas, { seat: currentSeat, clock: () => time })
-  const record = { world, ids: new Set(), seat: currentSeat, element }
-  worlds.push(record)
-  canvas.addEventListener('pointerup', event => {
-    const id = world.pick(event.clientX, event.clientY)
-    if (id) for (const item of worlds) item.world.say(id, 'hello!')
-  })
-}
-
-function applyState(at, snap = false) {
-  const state = sampleStory(at, { testPet })
-  const ids = new Set(state.map(pet => pet.id))
-  for (const record of worlds) {
-    for (const id of record.ids) if (!ids.has(id)) record.world.removePet(id)
-    for (const pet of state) {
-      record.world.upsertPet(pet.id, {
-        displayName: pet.displayName, color: pet.color, skillCount: pet.skillCount,
-        isMe: pet.seat === record.seat && ['pip', 'mochi', 'fern'].includes(pet.id),
-        spriteUrl: pet.id === 'test' ? testAtlas || null : null,
-      })
-      record.world.updatePet(pet.id, { x: pet.x, facing: pet.facing, anim: pet.anim, status: pet.status, elevation: pet.elevation, snap })
-    }
-    record.ids = new Set(ids)
+function applyState(at) {
+  const state = story.sample(at)
+  const nextIds = new Set(state.map(pet => pet.id))
+  for (const id of ids) if (!nextIds.has(id)) world.removePet(id)
+  for (const pet of state) {
+    world.upsertPet(pet.id, {
+      displayName: pet.displayName, color: pet.color, kind: pet.kind,
+      skillCount: pet.skillCount, isMe: pet.isMe,
+      spriteUrl: pet.id === 'test' ? testAtlas : null,
+    })
+    // The pure story has already sampled the map's routes. Network callers omit
+    // snap and the World API walks those routes with acceleration and braking.
+    world.updatePet(pet.id, { x: pet.x, z: pet.z, anim: pet.anim, status: pet.status, facing: pet.facing, snap: true })
   }
+  ids = nextIds
+  world.follow(story.focus(at))
 }
-
 function dispatch(event) {
-  for (const { world } of worlds) {
-    if (event.type === 'gift') world.giftFx(event.from, event.to, { color: event.color, label: event.label })
-    else if (event.type === 'say') world.say(event.id, event.text)
-  }
+  if (event.type === 'gift') world.gift(event.from, event.to, { color: event.color, label: event.label })
+  else if (event.type === 'collab') world.collab(event.from, event.to, { kind: event.kind, label: event.label })
+  else if (event.type === 'say') world.say(event.id, event.text)
 }
-applyState(time, true)
+applyState(time)
 
 if (testPet) {
-  // The namespace import keeps this page compatible with the original cast stub.
+  // Both atlas export locations have existed; keep them loadable during cast work.
   const cast = await import('./sprite-pet.js')
   const makeTestAtlas = cast.makeTestAtlas || (await import('./atlas.js').catch(() => ({}))).makeTestAtlas
   if (typeof makeTestAtlas === 'function') {
-    const atlas = await makeTestAtlas()
-    testAtlas = typeof atlas === 'string' ? atlas : atlas.spriteUrl || atlas.url || atlas.toDataURL?.()
-    applyState(time)
+    try {
+      const atlas = await makeTestAtlas()
+      if (!disposed) {
+        testAtlas = typeof atlas === 'string' ? atlas : atlas.spriteUrl || atlas.url || atlas.toDataURL?.()
+        applyState(time)
+      }
+    } catch { /* A procedural companion remains visible if the test atlas fails. */ }
   }
 }
 
-// A small capture surface: no controls or production copy over the world.
+function visibility() {
+  if (!document.hidden) previousEventTime = time
+}
+function pagehide(event) { if (!event.persisted) window.petpackDemo.dispose() }
+document.addEventListener('visibilitychange', visibility)
+window.addEventListener('pagehide', pagehide)
+
+// Capture controls are deliberately absent from the product surface.
 window.petpackDemo = {
-  worlds: worlds.map(record => record.world),
+  world, worlds: [world], duration: DURATION,
   get time() { return time },
   get paused() { return paused },
-  duration: DURATION,
   seek(at) {
     time = Math.max(0, Number(at) || 0)
     origin = performance.now() / 1000 - time
     previousEventTime = time
-    lastSample = time
-    applyState(time, true)
+    applyState(time)
   },
   pause() { paused = true },
   play() { origin = performance.now() / 1000 - time; paused = false },
-  sample: at => sampleStory(at, { testPet }),
+  sample: at => story.sample(at),
+  focus: at => story.focus(at),
   dispose() {
     if (disposed) return
     disposed = true
     cancelAnimationFrame(frameId)
-    for (const { world } of worlds) world.dispose()
+    world.dispose()
+    document.removeEventListener('visibilitychange', visibility)
+    window.removeEventListener('pagehide', pagehide)
   },
 }
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) { lastSample = -Infinity; previousEventTime = time }
-})
-window.addEventListener('pagehide', event => { if (!event.persisted) window.petpackDemo.dispose() })
