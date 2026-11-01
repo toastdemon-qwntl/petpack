@@ -131,20 +131,24 @@ async function endpointLive(endpoint) {
  * onCall({ id, tool, args }) -> result (or Promise). Throwing/rejecting sends { ok:false, error: message }.
  * A stale socket (left by a crashed overlay) is removed; a live one means another overlay owns it -> throws EADDRINUSE.
  */
-export async function startIpcServer({ onCall, profile, userData, endpoint, version = '0', log = () => {} } = {}) {
+export async function startIpcServer({ onCall, onClient, profile, userData, endpoint, version = '0', log = () => {} } = {}) {
   if (typeof onCall !== 'function') throw new TypeError('startIpcServer: onCall is required')
   userData = userData || userDataDir(profile)
   endpoint = endpoint || endpointFor(profile)
   const token = crypto.randomBytes(32).toString('hex')
   fs.mkdirSync(userData, { recursive: true })
+  // onClient(event, client): 'connect' | 'call' | 'disconnect', client = the hello's `client` + { conn }.
+  const notify = (event, client, extra) => { try { onClient?.(event, client, extra) } catch {} }
+  let connSeq = 0
 
   const sockets = new Set()
   const server = net.createServer((sock) => {
     sockets.add(sock)
     let authed = false
+    let client = null
     const authTimer = setTimeout(() => { if (!authed) { send(sock, { t: 'denied', error: 'hello required' }); sock.end() } }, 5000)
     authTimer.unref()
-    sock.on('close', () => { sockets.delete(sock); clearTimeout(authTimer) })
+    sock.on('close', () => { sockets.delete(sock); clearTimeout(authTimer); if (client) notify('disconnect', client) })
     sock.on('error', () => {})
     frames(sock, async (msg) => {
       if (!authed) {
@@ -152,6 +156,8 @@ export async function startIpcServer({ onCall, profile, userData, endpoint, vers
           authed = true
           clearTimeout(authTimer)
           send(sock, { t: 'welcome', pid: process.pid, version })
+          client = { ...(msg.client && typeof msg.client === 'object' ? msg.client : {}), conn: ++connSeq }
+          notify('connect', client)
         } else {
           clearTimeout(authTimer)
           send(sock, { t: 'denied', error: 'bad token' })
@@ -163,6 +169,7 @@ export async function startIpcServer({ onCall, profile, userData, endpoint, vers
       if (msg.t === 'ping') { send(sock, { t: 'pong', id: msg.id }); return }
       if (msg.t !== 'call') return
       const { id, tool, args } = msg
+      notify('call', client, String(tool))
       try {
         const result = await onCall({ id, tool: String(tool), args: args && typeof args === 'object' ? args : {} })
         send(sock, { t: 'result', id, ok: true, result: result === undefined ? null : result })
@@ -216,7 +223,7 @@ export async function startIpcServer({ onCall, profile, userData, endpoint, vers
  *   'ENOOVERLAY' no ipc.json / overlay not running (stale file or dead socket), 'EDENIED' token refused.
  * Returns { call(tool, args, { timeoutMs }), close(), onClose(cb), info }.
  */
-export async function connectIpc({ profile, userData } = {}) {
+export async function connectIpc({ profile, userData, client } = {}) {
   userData = userData || userDataDir(profile)
   const info = readIpcInfo(userData)
   if (!info) throw Object.assign(new Error('petpack is not running'), { code: 'ENOOVERLAY' })
@@ -256,7 +263,7 @@ export async function connectIpc({ profile, userData } = {}) {
       else p.reject(Object.assign(new Error(msg.error || 'call failed'), { code: 'ECALL' }))
     }
   })
-  send(sock, { t: 'hello', token: info.token })
+  send(sock, { t: 'hello', token: info.token, client: client || { kind: 'probe' } })
   const helloTimer = setTimeout(() => finish(Object.assign(new Error('petpack did not answer hello'), { code: 'ENOOVERLAY' })), 3000)
   try { await welcome } finally { clearTimeout(helloTimer) }
 

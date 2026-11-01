@@ -12,7 +12,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { connectIpc, userDataDir } from './ipc.js'
 
@@ -21,7 +21,7 @@ const LAUNCH_WAIT_MS = 20000
 const CALL_BUDGET_MS = 56000
 const ONLINE_WAIT_MS = 12000
 const ONLINE_POLL_MS = 500
-const TEAM_TOOLS = new Set(['petpack_search', 'petpack_get', 'petpack_install', 'petpack_ask'])
+const TEAM_TOOLS = new Set(['petpack_search', 'petpack_get', 'petpack_install', 'petpack_ask', 'petpack_find'])
 const OFFLINE_MESSAGE = 'The team is offline right now; try again in a moment. Carry on solo meanwhile.'
 
 function pkgVersion() {
@@ -115,6 +115,50 @@ export const TOOLS = [
     timeoutMs: 30000,
   },
   {
+    name: 'petpack_find',
+    title: 'Send your pet to find out',
+    description:
+      'Send your pet out to find something out from your team while you keep working. It walks to whichever ' +
+      'teammate\'s agent knows most about it, asks, and brings back the answer and any skill or note. Returns at ' +
+      'once with {errand_id, message}: carry on with your task and check back with petpack_errand at your next ' +
+      'pause. Use this for team questions that may take a while; petpack_ask waits for the answer, petpack_find doesn\'t.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'What to find out, with the context a teammate needs.' },
+        kind: { type: 'string', enum: KINDS, description: 'The kind of help you want back (optional).' },
+      },
+      required: ['question'],
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+    timeoutMs: 20000,
+  },
+  {
+    name: 'petpack_errand',
+    title: 'Check on your pet\'s errand',
+    description:
+      'Check on an errand started with petpack_find: where your pet is, whether it is done, what it found (the ' +
+      'answer) and any skills or notes it brought home and installed. Check before you would otherwise solve the ' +
+      'question from scratch.',
+    inputSchema: {
+      type: 'object',
+      properties: { errand_id: { type: 'string', description: 'The errand_id petpack_find returned.' } },
+      required: ['errand_id'],
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    timeoutMs: 15000,
+  },
+  {
+    name: 'petpack_recall',
+    title: 'Call your pet home',
+    description:
+      'Call your pet home from wherever it is on the map. Says whether it is coming home now or is busy helping a ' +
+      'teammate and will be back soon.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    timeoutMs: 15000,
+  },
+  {
     name: 'petpack_inbox',
     title: 'Questions for you',
     description: 'Questions your teammates\' agents have asked you that are still open: [{id, from, question}]. Answer with petpack_answer.',
@@ -151,6 +195,31 @@ function textResult(value, isError = false) {
 }
 
 function pkgRoot() { return fileURLToPath(new URL('../../', import.meta.url)) }
+
+/** 'app' (Codex desktop app / app-server), 'cli' (the codex CLI) or 'codex' (can't tell, e.g. on Windows). */
+export async function detectCodexApp() {
+  if (process.platform === 'win32') return 'codex'
+  let sawCodex = false
+  try {
+    // One `ps` for the whole table, then walk our ancestors in memory.
+    const stdout = await new Promise((resolve) => {
+      execFile('ps', ['-A', '-o', 'pid=,ppid=,command='], { timeout: 1500, maxBuffer: 8 * 1024 * 1024 }, (err, out) => resolve(err ? '' : String(out)))
+    })
+    const procs = new Map()
+    for (const line of stdout.split('\n')) {
+      const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)
+      if (m) procs.set(Number(m[1]), { ppid: Number(m[2]), cmd: m[3] })
+    }
+    let pid = process.ppid
+    for (let i = 0; i < 6 && pid > 1 && procs.has(pid); i++) {
+      const { ppid, cmd } = procs.get(pid)
+      if (/Codex\.app\/|\/Applications\/Codex|Codex Helper|app-server/i.test(cmd)) return 'app'
+      if (/(^|[\\/\s])codex(\s|$)|codex-cli|@openai[\\/]codex/i.test(cmd)) sawCodex = true
+      pid = ppid
+    }
+  } catch {}
+  return sawCodex ? 'cli' : 'codex'
+}
 
 /** Start the overlay detached. PETPACK_MCP_LAUNCH (JSON argv) overrides; default `node bin/petpack.js --from-mcp --detach`. */
 export function defaultLaunch({ profile, log = () => {} } = {}) {
@@ -193,13 +262,42 @@ export function createMcpServer({
 
   const write = (msg) => { if (output.writable !== false) output.write(JSON.stringify(msg) + '\n') }
 
-  async function tryConnect() {
-    try { return await connectIpc({ userData }) } catch (e) { return null }
+  // Who we are, for the overlay's Codex link (hello.client): the Codex client and whether the app or the CLI runs us.
+  let clientInfo = null
+  const appKind = detectCodexApp()
+  async function hello() {
+    const app = await Promise.race([appKind, new Promise((r) => setTimeout(() => r('codex'), 600))])
+    return { kind: 'codex-mcp', app, name: clientInfo?.name || null, title: clientInfo?.title || null,
+      version: clientInfo?.version || null, pid: process.pid, cwd: process.cwd() }
   }
 
-  function getClient() {
-    if (client && !client.closed) return Promise.resolve(client)
-    if (connecting) return connecting
+  async function tryConnect() {
+    try { return await connectIpc({ userData, client: await hello() }) } catch (e) { return null }
+  }
+
+  function adopt(c) {
+    client = c
+    c.onClose(() => { if (client === c) client = null })
+    return c
+  }
+
+  // After initialize, and every 5 s while unconnected, join an overlay that is already running (never launch one):
+  // the overlay sees each Codex session as soon as it starts, or as soon as the overlay itself starts.
+  function connectQuietly() {
+    if ((client && !client.closed) || connecting) return
+    const p = tryConnect().then((c) => (c ? adopt(c) : null)).finally(() => { if (connecting === p) connecting = null })
+    connecting = p
+  }
+  const retry = setInterval(connectQuietly, 5000)
+  retry.unref?.()
+
+  async function getClient() {
+    if (client && !client.closed) return client
+    if (connecting) {
+      const c = await connecting.catch(() => null)
+      if (c && !c.closed) return c
+      if (connecting) return getClient()
+    }
     connecting = (async () => {
       let c = await tryConnect()
       if (c) return c
@@ -218,11 +316,7 @@ export function createMcpServer({
       throw Object.assign(
         new Error('petpack is starting (the first run downloads Electron, about 120 MB). Call this tool again in a minute.'),
         { code: 'ESTARTING' })
-    })().then((c) => {
-      client = c
-      c.onClose(() => { if (client === c) client = null })
-      return c
-    }).finally(() => { connecting = null })
+    })().then(adopt).finally(() => { connecting = null })
     return connecting
   }
 
@@ -308,6 +402,8 @@ export function createMcpServer({
     switch (method) {
       case 'initialize': {
         const asked = params.protocolVersion
+        clientInfo = params.clientInfo && typeof params.clientInfo === 'object' ? params.clientInfo : null
+        setImmediate(connectQuietly)
         return reply({
           protocolVersion: PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0],
           capabilities: { tools: { listChanged: false } },
@@ -365,7 +461,7 @@ export function createMcpServer({
 
   return {
     done,
-    close() { if (client) client.close() },
+    close() { clearInterval(retry); if (client) client.close() },
   }
 }
 

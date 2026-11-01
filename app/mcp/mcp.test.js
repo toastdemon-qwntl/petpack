@@ -9,6 +9,9 @@ import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { startIpcServer, connectIpc, endpointFor, readIpcInfo, ipcInfoPath, pidAlive } from './ipc.js'
 import { createMcpServer, installIntoCodex, TOOLS, PKG_NAME } from './server.js'
+import { ensureCodexRegistration, registrationStatus, hasPetpackServer, codexOnPath } from './register.js'
+import { createCodexLink, lastCodexConnection } from './link.js'
+import { runDoctor } from './doctor.js'
 import { PassThrough } from 'node:stream'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -347,6 +350,160 @@ test('solo with demo bots (online:false, not offline) still forwards after the w
   assert.deepEqual(parse(search), { forwarded: 'petpack_search' })
 })
 
+test('ensureCodexRegistration: appends byte for byte, idempotent, a removal sticks, force re-adds, upgrades its own block', async () => {
+  const { dir } = fixture()
+  const a = path.join(dir, 'codexA')
+  const b = path.join(dir, 'codexB')
+  fs.mkdirSync(a)
+  fs.mkdirSync(b)
+  const original = '# my settings\r\nmodel = "x"\r\n\r\n[mcp_servers.other]\r\ncommand = "y"' // CRLF, no final newline
+  fs.writeFileSync(path.join(a, 'config.toml'), original)
+  const targets = [{ home: a, file: path.join(a, 'config.toml') }, { home: b, file: path.join(b, 'config.toml') }]
+  const userData = path.join(dir, 'ud')
+  const cmd = ['npx', '-y', '@qwntllabs/petpack', 'mcp']
+  const r1 = ensureCodexRegistration({ command: cmd, userData, targets, useCli: false })
+  assert.equal(r1.state, 'registered')
+  assert.deepEqual(r1.results.map((r) => r.status), ['added', 'added'])
+  const textA = fs.readFileSync(targets[0].file, 'utf8')
+  assert.ok(textA.startsWith(original), 'existing bytes untouched')
+  assert.match(textA, /\r\n\[mcp_servers\.petpack\]\r\n/)
+  assert.match(textA, /default_tools_approval_mode = "approve"\r\nstartup_timeout_sec = 30\r\n/)
+  assert.ok(hasPetpackServer(fs.readFileSync(targets[1].file, 'utf8')))
+
+  // Every launch re-checks; nothing changes when it is there.
+  const r2 = ensureCodexRegistration({ command: cmd, userData, targets, useCli: false })
+  assert.deepEqual(r2.results.map((r) => r.status), ['present', 'present'])
+  assert.equal(fs.readFileSync(targets[0].file, 'utf8'), textA)
+
+  // `codex mcp remove petpack` (simulated) sticks; force re-adds.
+  fs.writeFileSync(targets[1].file, '')
+  const r3 = ensureCodexRegistration({ command: cmd, userData, targets, useCli: false })
+  assert.deepEqual(r3.results.map((r) => r.status), ['present', 'removed-by-user'])
+  assert.equal(fs.readFileSync(targets[1].file, 'utf8'), '')
+  assert.deepEqual(registrationStatus({ userData, targets }).map((r) => r.status), ['registered', 'removed-by-user'])
+  const r4 = ensureCodexRegistration({ command: cmd, userData, targets, useCli: false, force: true })
+  assert.equal(r4.results[1].status, 'added')
+
+  // A new command upgrades petpack's own untouched block in place, keeping the rest.
+  const r5 = ensureCodexRegistration({ command: ['npx', '-y', '@qwntllabs/petpack@0.3.0', 'mcp'], userData, targets, useCli: false })
+  assert.equal(r5.results[0].status, 'updated')
+  const upgraded = fs.readFileSync(targets[0].file, 'utf8')
+  assert.ok(upgraded.startsWith(original))
+  assert.match(upgraded, /petpack@0\.3\.0/)
+  assert.equal(upgraded.match(/\[mcp_servers\.petpack\]/g).length, 1)
+
+  // A missing secondary Codex home is left alone; the primary is created.
+  const fresh = path.join(dir, 'fresh')
+  const r6 = ensureCodexRegistration({ command: cmd, userData: path.join(dir, 'ud2'), useCli: false,
+    targets: [{ home: fresh, file: path.join(fresh, 'config.toml') }, { home: path.join(dir, 'nope'), file: path.join(dir, 'nope', 'config.toml') }] })
+  assert.deepEqual(r6.results.map((r) => r.status), ['added', 'skipped'])
+
+  // With the codex CLI on PATH, Codex itself reads what petpack wrote (approval mode, timeout, PATH env).
+  if (!codexOnPath()) return
+  const c = path.join(dir, 'codexC')
+  fs.mkdirSync(c)
+  fs.writeFileSync(path.join(c, 'config.toml'), 'model = "x"\n')
+  const r7 = ensureCodexRegistration({ command: cmd, userData: path.join(dir, 'ud3'), targets: [{ home: c, file: path.join(c, 'config.toml') }] })
+  assert.equal(r7.results[0].via, 'config.toml')
+  const got = spawnSync('codex', ['mcp', 'get', 'petpack', '--json'], { env: { ...process.env, CODEX_HOME: c }, encoding: 'utf8', shell: process.platform === 'win32' })
+  assert.equal(got.status, 0, got.stderr)
+  const cfg = JSON.parse(got.stdout)
+  assert.equal(cfg.startup_timeout_sec, 30)
+  assert.deepEqual(cfg.transport.args, ['-y', '@qwntllabs/petpack', 'mcp'])
+  if (process.platform !== 'win32') assert.ok(cfg.transport.env.PATH.includes('/usr/bin'))
+})
+
+test('Codex link: a hint until a Codex session connects, then one "Codex connected"', async () => {
+  const { userData, profile } = fixture()
+  const events = []
+  const link = createCodexLink({ userData, hintAfterMs: 250, onEvent: (ev) => events.push(ev),
+    targets: [{ home: path.join(userData, 'nohome'), file: path.join(userData, 'nohome', 'config.toml') }] })
+  cleanups.push(() => link.close())
+  const ipc = await startIpcServer({ userData, profile, onCall: () => ({ me: { online: true } }), onClient: link.onClient })
+  cleanups.push(() => ipc.close())
+  await new Promise((r) => setTimeout(r, 350))
+  assert.deepEqual(events.map((e) => e.type), ['hint'])
+  assert.equal(events[0].text, 'restart Codex to connect me')
+  assert.equal(link.state().status, 'unregistered')
+
+  // A probe (doctor) doesn't count; a Codex session connects right after initialize, before any tool call.
+  const probe = await connectIpc({ userData })
+  probe.close()
+  assert.equal(link.state().sessions, 0)
+  const a = mcpChild({ userData, profile })
+  await init(a)
+  for (let i = 0; i < 40 && link.state().sessions < 1; i++) await new Promise((r) => setTimeout(r, 50))
+  assert.equal(link.state().status, 'connected')
+  const b = mcpChild({ userData, profile })
+  await init(b)
+  for (let i = 0; i < 40 && link.state().sessions < 2; i++) await new Promise((r) => setTimeout(r, 50))
+  assert.equal(link.state().sessions, 2)
+  assert.deepEqual(events.map((e) => e.type), ['hint', 'connected'])
+  assert.equal(events[1].text, 'Codex connected')
+  assert.equal(events[1].dismissHint, true)
+  assert.equal(events[1].client.name, 'test')
+  a.child.kill()
+  for (let i = 0; i < 40 && link.state().sessions > 1; i++) await new Promise((r) => setTimeout(r, 50))
+  assert.equal(link.state().sessions, 1)
+  await new Promise((r) => setTimeout(r, 300))
+  assert.ok(lastCodexConnection(userData).lastSeen)
+})
+
+test('an MCP started before the overlay joins it once the overlay is up (no tool call needed)', async () => {
+  const { userData, profile } = fixture()
+  const c = mcpChild({ userData, profile, env: { PETPACK_MCP_LAUNCH: JSON.stringify(['false']) } })
+  await init(c)
+  await new Promise((r) => setTimeout(r, 400)) // the first quiet connect after initialize has already missed
+  let sessions = 0
+  const ipc = await startIpcServer({ userData, profile, onCall: () => null,
+    onClient: (ev, client) => { if (client.kind === 'codex-mcp') sessions += ev === 'connect' ? 1 : ev === 'disconnect' ? -1 : 0 } })
+  cleanups.push(() => ipc.close())
+  for (let i = 0; i < 160 && sessions < 1; i++) await new Promise((r) => setTimeout(r, 50))
+  assert.equal(sessions, 1)
+})
+
+test('doctor prints a PASS/FIX line per item', async () => {
+  const { userData, dir } = fixture()
+  const lines = []
+  const prev = { ud: process.env.PETPACK_USER_DATA, ch: process.env.CODEX_HOME }
+  process.env.PETPACK_USER_DATA = userData
+  process.env.CODEX_HOME = path.join(dir, 'codex-home')
+  try {
+    const r = await runDoctor(['doctor', '--no-network'], { print: (l) => lines.push(l) })
+    const text = lines.join('\n')
+    assert.match(text, /^PASS {2}Node/m)
+    assert.match(text, /^(PASS|FIX ) {2}Codex config +.*codex-home/m)
+    assert.match(text, /^FIX {3}Codex link/m)
+    assert.match(text, /^(PASS|FIX ) {2}Pet/m)
+    assert.equal(r.ok, false)
+  } finally {
+    if (prev.ud === undefined) delete process.env.PETPACK_USER_DATA; else process.env.PETPACK_USER_DATA = prev.ud
+    if (prev.ch === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = prev.ch
+  }
+})
+
+test('petpack_find returns at once; petpack_errand reports findings; petpack_recall (fake overlay)', async () => {
+  const { userData, profile } = fixture()
+  const c = mcpChild({ userData, profile, env: { PETPACK_MCP_LAUNCH: JSON.stringify([process.execPath, FAKE, '--profile', profile]) } })
+  await init(c)
+  const names = (await c.request('tools/list', {})).result.tools.map((t) => t.name)
+  for (const t of ['petpack_find', 'petpack_errand', 'petpack_recall']) assert.ok(names.includes(t), t)
+  const find = await c.callTool('petpack_find', { question: 'how do we deploy the relay?' })
+  cleanups.push(() => { const info = readIpcInfo(userData); if (info && pidAlive(info.pid)) process.kill(info.pid) })
+  assert.equal(find.isError, undefined, find.content[0].text)
+  const { errand_id: id, message } = parse(find)
+  assert.ok(id)
+  assert.match(message, /off to find out/)
+  assert.equal(parse(await c.callTool('petpack_errand', { errand_id: id })).status, 'walking')
+  await new Promise((r) => setTimeout(r, 350))
+  const done = parse(await c.callTool('petpack_errand', { errand_id: id }))
+  assert.equal(done.status, 'done')
+  assert.equal(done.findings[0].from, 'Rex')
+  assert.equal(done.installed.length, 1)
+  assert.equal((await c.callTool('petpack_errand', {})).isError, true)
+  assert.match(parse(await c.callTool('petpack_recall')).message, /coming home/)
+})
+
 test('TOOLS carry R4 names and required args', () => {
   const req = Object.fromEntries(TOOLS.map((t) => [t.name, t.inputSchema.required || []]))
   assert.deepEqual(req.petpack_search, ['query'])
@@ -354,4 +511,7 @@ test('TOOLS carry R4 names and required args', () => {
   assert.deepEqual(req.petpack_install, ['id'])
   assert.deepEqual(req.petpack_ask, ['question'])
   assert.deepEqual(req.petpack_answer, ['id', 'text'])
+  assert.deepEqual(req.petpack_find, ['question'])
+  assert.deepEqual(req.petpack_errand, ['errand_id'])
+  assert.deepEqual(req.petpack_recall, [])
 })

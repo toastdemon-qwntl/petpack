@@ -9,6 +9,8 @@
 import { startIpcServer } from './ipc.js'
 
 const now = Date.now()
+const errands = new Map()
+let errandSeq = 0
 const ITEMS = [
   { id: 'rex-7f3a/skill:azure-app-service-deploy', kind: 'skill', title: 'azure-app-service-deploy',
     summary: 'Zip-deploy a Node app to Azure App Service Linux with WebSockets on; health check at /healthz.', owner: 'Rex', online: true, age: '2h' },
@@ -58,6 +60,21 @@ export function fakeOnCall({ tool, args }) {
       return [{ id: 'q1', from: 'Mia', question: 'How do you slice the pet atlas?' }]
     case 'petpack_answer':
       return { ok: true, id: args.id, first: true }
+    case 'petpack_find': {
+      const id = `e${++errandSeq}`
+      errands.set(id, { question: args.question, startedAt: Date.now() })
+      return { errand_id: id, message: `Dot is off to find out: ${args.question}` }
+    }
+    case 'petpack_errand': {
+      const e = errands.get(args.errand_id)
+      if (!e) throw new Error(`No errand ${args.errand_id}`)
+      const done = Date.now() - e.startedAt > 300
+      return done
+        ? { errand_id: args.errand_id, status: 'done', where: 'home', findings: [{ from: 'Rex', answer: 'Zip-deploy, then turn WebSockets on.' }], installed: [ITEMS[0].id] }
+        : { errand_id: args.errand_id, status: 'walking', where: 'right', findings: [], installed: [] }
+    }
+    case 'petpack_recall':
+      return { coming_home: true, message: 'Dot is coming home.' }
     default:
       throw new Error(`Unknown tool ${tool}`)
   }
@@ -69,6 +86,7 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith
   const ipc = await startIpcServer({
     profile,
     version: 'fake',
+    onClient: (ev, client) => process.stderr.write(`fake-overlay client ${ev} ${JSON.stringify(client)}\n`),
     onCall: async (call) => {
       process.stderr.write(`fake-overlay call ${call.tool} ${JSON.stringify(call.args)}\n`)
       return fakeOnCall(call)
