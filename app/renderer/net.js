@@ -5,7 +5,7 @@
 //   each round starts at urls[0]; a connect that doesn't reach welcome within openTimeoutMs, or closes first, moves
 //   straight on to the next relay; after the last one the round backs off and starts again at urls[0]. While on a
 //   later relay, urls[0]/healthz is probed every probeMs and the client moves back as soon as it answers 200.
-import { RELAYS, OPEN_TIMEOUT_MS, PRIMARY_PROBE_MS, healthUrl } from '../../shared/protocol.js'
+import { RELAYS, OPEN_TIMEOUT_MS, PRIMARY_PROBE_MS, CLOSE, healthUrl } from '../../shared/protocol.js'
 
 export const DEFAULT_RELAY = RELAYS[0]
 const BACKOFF = [1, 2, 4, 8, 15]
@@ -15,7 +15,7 @@ export function createNet({
   urls = url ? [url] : RELAYS,
   hello, // () => hello frame, rebuilt on every (re)connect so it carries the last seat
   onMessage = () => {},
-  onStatus = () => {}, // 'connecting' | 'online' | 'solo' | 'offline'
+  onStatus = () => {}, // 'connecting' | 'online' | 'solo' | 'offline' | 'replaced' (another pane took this id over; stopped)
   WebSocketImpl = globalThis.WebSocket,
   fetchImpl = globalThis.fetch,
   setTimer = (fn, ms) => setTimeout(fn, ms),
@@ -69,11 +69,18 @@ export function createNet({
       try { onMessage(msg) } catch (error) { console.warn('petpack net message', msg?.t, error) }
     }
     ws.onerror = () => { /* onclose follows; stay quiet (no error UI) */ }
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (socket !== ws) return
       socket = null
       clearTimer(openTimer); openTimer = null
       stopProbe()
+      if (event?.code === CLOSE.replaced) {
+        // another pane or overlay with this id took the agent over: this one stops for good (no reconnect fight)
+        closed = true; welcomed = false
+        clearTimer(retryTimer); clearTimer(soloTimer)
+        setStatus('replaced')
+        return
+      }
       if (closed) return
       if (welcomed) {
         // an established connection dropped: start a new round at the primary after a short pause
