@@ -146,12 +146,14 @@ export function attachZoom({ world, root, seat } = {}) {
     const r = root.getBoundingClientRect()
     return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
   }
+  // The pane's own controls (pip, chat, permission card, mic) keep their clicks.
+  const control = event => event.target !== root && !!event.target?.closest?.('button, input, textarea, select, a, .pp-chat, .pp-perm, .pp-mic, .pp-zoom-pip')
   function onWheel(event) {
-    if (disposed || !inside(event.clientX, event.clientY)) return
+    if (disposed || !inside(event.clientX, event.clientY) || control(event)) return
     event.preventDefault()
     // Trackpad pinch arrives as ctrl+wheel with small deltas; a mouse wheel as larger steps.
     let dy = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 240 : 1)
-    const k = event.ctrlKey ? 0.012 : 0.0022
+    const k = event.ctrlKey ? 0.008 : 0.0022
     dy = Math.max(-240, Math.min(240, dy))
     if (!event.ctrlKey && Math.abs(event.deltaX) > Math.abs(event.deltaY) && level > 1) {
       // Two-finger sideways scroll pans when zoomed out.
@@ -163,11 +165,11 @@ export function attachZoom({ world, root, seat } = {}) {
     zoomTo(level * Math.exp(dy * k), { anchorX: event.clientX })
   }
   function onDown(event) {
-    if (disposed || level <= 1 || event.button !== 0 || event.target === pip) return
+    if (disposed || level <= 1 || event.button !== 0 || !inside(event.clientX, event.clientY) || control(event)) return
     if (world.pick?.(event.clientX, event.clientY)) return // pets keep their own clicks and throws
     drag = { x: event.clientX, pan, id: event.pointerId }
     root.classList.add('pp-zoom-dragging')
-    try { root.setPointerCapture(event.pointerId) } catch { /* synthetic */ }
+    // Window-level listeners: decorators (play.js) set the viewport itself to pointer-events: none.
   }
   function onMove(event) {
     if (!drag || event.pointerId !== drag.id) return
@@ -182,7 +184,7 @@ export function attachZoom({ world, root, seat } = {}) {
     root.classList.remove('pp-zoom-dragging')
   }
   function onDouble(event) {
-    if (disposed || level <= 1) return
+    if (disposed || level <= 1 || !inside(event.clientX, event.clientY) || control(event)) return
     if (world.pick?.(event.clientX, event.clientY)) return
     home()
   }
@@ -209,12 +211,12 @@ export function attachZoom({ world, root, seat } = {}) {
     raf = requestAnimationFrame(tick)
   }
 
-  root.addEventListener('wheel', onWheel, { passive: false })
-  root.addEventListener('pointerdown', onDown)
-  root.addEventListener('pointermove', onMove)
-  root.addEventListener('pointerup', onUp)
-  root.addEventListener('pointercancel', onUp)
-  root.addEventListener('dblclick', onDouble)
+  window.addEventListener('wheel', onWheel, { passive: false })
+  window.addEventListener('pointerdown', onDown)
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+  window.addEventListener('pointercancel', onUp)
+  window.addEventListener('dblclick', onDouble)
   document.addEventListener('mousemove', onHover)
   pip.addEventListener('click', onPip)
   pip.addEventListener('dblclick', e => e.stopPropagation())
@@ -240,12 +242,12 @@ export function attachZoom({ world, root, seat } = {}) {
       disposed = true
       cancelAnimationFrame(raf)
       stream.dispose()
-      root.removeEventListener('wheel', onWheel)
-      root.removeEventListener('pointerdown', onDown)
-      root.removeEventListener('pointermove', onMove)
-      root.removeEventListener('pointerup', onUp)
-      root.removeEventListener('pointercancel', onUp)
-      root.removeEventListener('dblclick', onDouble)
+      window.removeEventListener('wheel', onWheel)
+      window.removeEventListener('pointerdown', onDown)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      window.removeEventListener('dblclick', onDouble)
       document.removeEventListener('mousemove', onHover)
       window.removeEventListener('keydown', onKey)
       pip.remove()

@@ -60,7 +60,12 @@ function upsertPeer(p, isOnline) {
   if (p.lastSeen) peer.lastSeen = p.lastSeen
   peer.online = isOnline
   if (isOnline && Number.isFinite(p.x) && Number.isFinite(p.z)) pushSample(peer, p)
+  // Away agents stay in the world, napping where they stopped (relay registry); older relays send no position.
+  if (!isOnline) nap(peer, p)
   return peer
+}
+function nap(peer, p) {
+  if (Number.isFinite(p?.x) && Number.isFinite(p?.z)) { peer.napX = p.x; peer.napZ = p.z; peer.napFacing = p.facing }
 }
 function pushSample(peer, s, ts = Date.now() - 150) {
   if (s.status) peer.status = s.status
@@ -116,7 +121,9 @@ function handle(msg) {
     }
     case 'leave': {
       const peer = peers.get(msg.id)
-      if (peer) { peer.online = false; peer.lastSeen = msg.lastSeen || Date.now(); peer.samples = []; peer.posed = false }
+      // away: true = it naps at x/z for 24 h; no away flag from a registry relay = gone (a probe).
+      if (peer && msg.away !== true) peers.delete(msg.id)
+      else if (peer) { peer.online = false; peer.lastSeen = msg.lastSeen || Date.now(); peer.samples = []; peer.posed = false; nap(peer, msg) }
       break
     }
     case 'state': {
@@ -124,6 +131,7 @@ function handle(msg) {
         if (s.id === myId) continue
         const peer = peers.get(s.id) || upsertPeer({ id: s.id }, true)
         if (!peer) continue
+        if (s.away) { peer.online = false; peer.samples = []; peer.posed = false; nap(peer, s); continue }
         peer.online = true
         if (peer.posed) { if (s.status) peer.status = s.status } else pushSample(peer, s)
       }
@@ -252,6 +260,10 @@ function napSpots(occupied) {
     const n = perChunk.get(chunk) || 0
     perChunk.set(chunk, n + 1)
     if (n >= offsets.length) return
+    if (Number.isFinite(p.napX) && Number.isFinite(p.napZ)) {
+      out.push({ peer: p, chunk: Math.round(p.napX / CHUNK_W), x: p.napX, z: p.napZ, facing: p.napFacing === -1 ? -1 : 1 })
+      return
+    }
     out.push({ peer: p, chunk, x: chunk * CHUNK_W + offsets[n] + (mod(hash(p.id), 7) - 3) * .08, z: 4.3 + (n % 2) * .5, facing: n % 2 ? -1 : 1 })
   })
   return out
@@ -290,7 +302,7 @@ function syncPets(now) {
 }
 const statusOf = s => ['idle', 'working', 'waiting', 'done', 'failed'].includes(s) ? s : 'idle'
 function show(peer, away) {
-  const spriteUrl = !away && peer.sprite ? relayAsset(net?.url || relays[0], peer.sprite) : null
+  const spriteUrl = peer.sprite ? relayAsset(net?.url || relays[0], peer.sprite) : null
   const info = { displayName: peer.name, color: peer.color, kind: 'cat', spriteUrl, skillCount: 0, isMe: false }
   const key = JSON.stringify(info)
   if (shown.get(peer.id) === key) return
