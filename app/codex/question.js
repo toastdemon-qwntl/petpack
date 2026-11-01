@@ -196,6 +196,11 @@ async function newestRollout (codexHome, fsp, path) {
 // currentNeed(codexHome, {now, file, workingMs}) -> need | null. Never throws.
 export async function currentNeed (codexHome, opts = {}) {
   try {
+    if (typeof codexHome !== 'string') { // called with main's ctx object: resolve the home like the catalog does
+      const { resolveCodexHome } = await import('./catalog.js')
+      opts = { ...(codexHome || {}), ...opts }
+      codexHome = resolveCodexHome(codexHome || {})
+    }
     const fsp = await import('node:fs/promises')
     const path = await import('node:path')
     const now = opts.now ?? Date.now()
