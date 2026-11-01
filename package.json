@@ -1,6 +1,6 @@
 {
-  "name": "petpack",
-  "version": "0.1.0",
+  "name": "@qwntllabs/petpack",
+  "version": "0.2.0",
   "description": "Your Codex pet, docked at the edge of your screen in one shared world. Pets walk onto each other's laptops and trade skills, memories and answers.",
   "type": "module",
   "license": "MIT",
@@ -23,11 +23,18 @@
   "engines": {
     "node": ">=22.12"
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "petpack": {
+    "electron": "45.2.1"
+  },
   "scripts": {
     "start": "electron .",
     "demo": "electron . --demo",
     "relay": "node server/relay.js",
-    "test": "node --test"
+    "test": "node --test",
+    "build:platform": "node scripts/build-platform.mjs"
   },
   "keywords": [
     "codex",
@@ -37,10 +44,16 @@
     "electron"
   ],
   "dependencies": {
-    "electron": "^45.2.1",
     "three": "^0.187.0"
   },
+  "optionalDependencies": {
+    "@qwntllabs/petpack-darwin-arm64": "0.2.0",
+    "@qwntllabs/petpack-darwin-x64": "0.2.0",
+    "@qwntllabs/petpack-linux-x64": "0.2.0",
+    "@qwntllabs/petpack-win32-x64": "0.2.0"
+  },
   "devDependencies": {
+    "electron": "45.2.1",
     "ws": "^8.22.1"
   }
 }
