@@ -195,6 +195,18 @@ export function attachChat({ world, brain, bridge = window.petpack, root } = {})
         ? await bridge.chat.ask({ id, question, petName: petName(), userName: userName() })
         : { ok: false, error: 'offline', text: '' }
     } catch (error) { result = { ok: false, error: String(error?.message || error) } }
+    // Last resort: local Codex couldn't answer, so fetch the team's best match and bring it to this machine.
+    if (!result?.ok) try {
+      const found = await brain.call?.('petpack_search', { query: question })
+      const hits = (Array.isArray(found) ? found : found?.results || []).filter(h => h && h.id)
+      if (hits.length) {
+        const got = await brain.call?.('petpack_get', { id: hits[0].id })
+        const names = hits.slice(0, 3).map(h => `${h.title} (${h.owner})`).join(', ')
+        result = { ok: true, text: `Here's what your team has: ${names}. I brought ${hits[0].title} from ${hits[0].owner} to your machine.` }
+        line('pet', `[received] ${hits[0].kind} "${hits[0].title}" from ${hits[0].owner}` + (got?.path ? ` -> ${got.path}` : ''), 'pp-transfer')
+        if (got?.text || got?.content) line('pet', `${hits[0].owner}: ${String(got.content || got.text).replace(/\s+/g, ' ').slice(0, 220)}…`, 'pp-transfer')
+      }
+    } catch (error) { console.warn('petpack chat (search fallback):', error) }
     pending.delete(id)
     thinking(false)
     think.row.classList.remove('pp-thinking')

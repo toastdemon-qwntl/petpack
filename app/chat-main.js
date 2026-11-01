@@ -324,10 +324,16 @@ export async function setupChat({ ipcMain, session = null, win = () => null, roo
     const controller = new AbortController()
     running = controller
     const id = request.id || `c${Date.now().toString(36)}`
-    const result = await runCodex({ question, history, petName: request.petName || 'Pip', userName: request.userName || '',
-      cwd, mcp: await mcpPromise, signal: controller.signal, env,
-      timeoutMs: Number(request.timeoutMs) > 0 ? Number(request.timeoutMs) : DEFAULT_TIMEOUT_MS,
-      onEvent: event => send({ id, ...event }) })
+    let result
+    try {
+      result = await runCodex({ question, history, petName: request.petName || 'Pip', userName: request.userName || '',
+        cwd, mcp: await mcpPromise.catch(() => null), signal: controller.signal, env,
+        timeoutMs: Number(request.timeoutMs) > 0 ? Number(request.timeoutMs) : DEFAULT_TIMEOUT_MS,
+        onEvent: event => { try { send({ id, ...event }) } catch {} } })
+    } catch (error) {
+      // Never throw back into the pane: a failed local Codex is an answer the pet can explain.
+      result = { ok: false, text: '', ms: 0, tools: [], error: String(error?.message || error) }
+    }
     if (running === controller) running = null
     if (result.ok) {
       history.push({ role: 'you', text: question }, { role: 'pet', text: result.text })
