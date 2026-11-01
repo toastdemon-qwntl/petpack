@@ -6,10 +6,14 @@
 //   GET /s/<sha>.webp               sprite bytes by sha256 (immutable, CORS open)
 //   WS  /ws                         the protocol
 //
-// Env: PORT, PETPACK_SALT (auto-room HMAC salt; random per process when unset), PETPACK_PUBLIC_URL (sprite URL base).
+// Env: PORT, PETPACK_SALT (auto-room HMAC salt; random per process when unset), PETPACK_PUBLIC_URL (sprite URL base),
+//      PETPACK_DATA (snapshot dir; defaults to /home/data/petpack on App Service, none elsewhere),
+//      PETPACK_RELAY_NAME (shown in /healthz). Rooms are per relay: clients fail over in the order of P.RELAYS.
 
 import http from 'node:http'
 import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import * as P from '../shared/protocol.js'
@@ -17,7 +21,7 @@ import * as P from '../shared/protocol.js'
 const HARD_MAX = P.MAX_FRAME * 4 // ws itself closes (1009) above this; between MAX_FRAME and this we close 4413
 
 class Lru {
-  constructor (maxBytes, ttlMs, now) { this.max = maxBytes; this.ttl = ttlMs; this.now = now; this.bytes = 0; this.map = new Map() }
+  constructor (maxBytes, ttlMs, now, onDrop = null) { this.max = maxBytes; this.ttl = ttlMs; this.now = now; this.onDrop = onDrop; this.bytes = 0; this.map = new Map() }
   get (k) {
     const v = this.map.get(k)
     if (!v) return undefined
@@ -25,13 +29,33 @@ class Lru {
     this.map.delete(k); this.map.set(k, v)
     return v
   }
-  delete (k) { const v = this.map.get(k); if (v) { this.bytes -= v.size; this.map.delete(k) } }
+  delete (k, replacing = false) {
+    const v = this.map.get(k)
+    if (v) { this.bytes -= v.size; this.map.delete(k); if (!replacing) this.onDrop?.(k, v) }
+  }
   set (k, v, size) {
-    this.delete(k)
-    v.size = size; v.at = this.now()
+    this.delete(k, true)
+    v.size = size; v.at = v.at ?? this.now()
     this.map.set(k, v); this.bytes += size
     while (this.bytes > this.max && this.map.size > 1) this.delete(this.map.keys().next().value)
   }
+  get size () { return this.map.size }
+}
+
+// ---- persistence: catalogs, seats, fetched content and sprites survive a restart (App Service /home is durable) ----
+
+const keyFile = (k) => crypto.createHash('sha1').update(k).digest('hex') + '.json'
+
+function writeAtomic (file, data) {
+  const tmp = `${file}.${process.pid}.tmp`
+  fs.writeFileSync(tmp, data)
+  fs.renameSync(tmp, file)
+}
+
+function defaultDataDir () {
+  if (process.env.PETPACK_DATA) return process.env.PETPACK_DATA
+  if (process.env.WEBSITE_SITE_NAME) return '/home/data/petpack' // App Service: /home is persistent storage
+  return null
 }
 
 const str = (v, max = 200, dflt = '') => (typeof v === 'string' ? v.slice(0, max) : dflt)
@@ -81,15 +105,106 @@ export function createRelay (opts = {}) {
     pingMs: opts.pingMs ?? P.PING_MS,
     maxFrame: opts.maxFrame ?? P.MAX_FRAME,
     chunkFilterAbove: opts.chunkFilterAbove ?? P.CHUNK_FILTER_ABOVE,
-    log: opts.log ?? ((...a) => console.log(new Date().toISOString(), ...a))
+    log: opts.log ?? ((...a) => console.log(new Date().toISOString(), ...a)),
+    dataDir: opts.dataDir !== undefined ? opts.dataDir : defaultDataDir(),
+    saveMs: opts.saveMs ?? 1000,
+    name: opts.name ?? process.env.PETPACK_RELAY_NAME ?? process.env.WEBSITE_SITE_NAME ?? process.env.CONTAINER_APP_NAME ?? 'local',
+    region: opts.region ?? process.env.PETPACK_REGION ?? process.env.REGION_NAME ?? null
   }
   const now = cfg.now
   const startedAt = now()
   const rooms = new Map() // name -> room
   const byId = new Map() // member id -> room name (one live record per id)
-  const sprites = new Lru(200 * 1024 * 1024, 0, now)
-  const fetchCache = new Lru(P.FETCH_CACHE_BYTES, P.AWAY_TTL_MS, now)
+  const dirs = cfg.dataDir
+    ? { root: cfg.dataDir, cache: path.join(cfg.dataDir, 'cache'), sprites: path.join(cfg.dataDir, 'sprites') }
+    : null
+  const unlinkQuiet = (file) => fs.unlink(file, () => {})
+  const sprites = new Lru(200 * 1024 * 1024, 0, now, dirs && ((k) => unlinkQuiet(path.join(dirs.sprites, k))))
+  const fetchCache = new Lru(P.FETCH_CACHE_BYTES, P.AWAY_TTL_MS, now, dirs && ((k) => unlinkQuiet(path.join(dirs.cache, keyFile(k)))))
   const timers = []
+  let saveTimer = null
+  let closing = false
+
+  function persistSprite (sha, buf) {
+    if (!dirs) return
+    fs.writeFile(path.join(dirs.sprites, sha), buf, (e) => e && cfg.log('sprite save failed', e.message))
+  }
+  function persistFetched (key, v) {
+    if (!dirs) return
+    const body = JSON.stringify({ key, sha: v.sha, text: v.text, pkg: v.pkg, at: v.at })
+    fs.writeFile(path.join(dirs.cache, keyFile(key)), body, (e) => e && cfg.log('cache save failed', e.message))
+  }
+  function markDirty () {
+    if (!dirs || saveTimer || closing) return
+    saveTimer = setTimeout(() => { saveTimer = null; saveRooms() }, cfg.saveMs)
+    saveTimer.unref?.()
+  }
+  function saveRooms () {
+    if (!dirs) return
+    clearTimeout(saveTimer); saveTimer = null
+    try {
+      const data = {
+        v: 1, savedAt: now(),
+        rooms: [...rooms.values()].map((r) => ({
+          name: r.name, links: r.links,
+          members: [...r.members.values()].map((m) => ({
+            id: m.id, name: m.name, color: m.color, dock: m.dock, skills: m.skills, catalog: m.catalog,
+            sprite: m.sprite, seat: m.seat, lastSeen: m.online ? now() : m.lastSeen
+          }))
+        }))
+      }
+      writeAtomic(path.join(dirs.root, 'rooms.json'), JSON.stringify(data))
+    } catch (e) { cfg.log('rooms save failed', e.message) }
+  }
+  function load () {
+    if (!dirs) return
+    try {
+      for (const d of Object.values(dirs)) fs.mkdirSync(d, { recursive: true })
+    } catch (e) { cfg.log('data dir unavailable', e.message); return }
+    const t = now()
+    let nRooms = 0; let nCache = 0; let nSprites = 0
+    try {
+      const file = path.join(dirs.root, 'rooms.json')
+      if (fs.existsSync(file)) {
+        const data = JSON.parse(fs.readFileSync(file, 'utf8'))
+        for (const r of arr(data.rooms)) {
+          const room = getRoom(r.name)
+          for (const s of arr(r.members)) {
+            if (!s || typeof s.id !== 'string' || t - (s.lastSeen || 0) > cfg.awayTtlMs) continue
+            room.members.set(s.id, {
+              id: s.id, name: str(s.name, 64, 'pet'), color: str(s.color, 32, '#7c5cff'), dock: s.dock === 'left' ? 'left' : 'right',
+              skills: arr(s.skills), catalog: arr(s.catalog), sprite: typeof s.sprite === 'string' ? s.sprite : null,
+              seat: Number.isInteger(s.seat) ? s.seat : null, lastSeen: s.lastSeen || t,
+              heldUntil: t + cfg.seatHoldMs, // a restart is not their fault: everyone gets a fresh hold
+              online: false, ws: null, dirty: false, answers: true, status: 'idle', anim: 'idle', facing: 1,
+              x: P.seatCenterX(Number.isInteger(s.seat) ? s.seat : 0), z: 0
+            })
+            byId.set(s.id, r.name)
+          }
+          room.links = arr(r.links).filter((l) => Array.isArray(l) && room.members.has(l[0]) && room.members.has(l[1]))
+          if (!room.members.size) rooms.delete(r.name); else nRooms++
+        }
+      }
+    } catch (e) { cfg.log('rooms load failed', e.message) }
+    try {
+      for (const f of fs.readdirSync(dirs.cache)) {
+        try {
+          const v = JSON.parse(fs.readFileSync(path.join(dirs.cache, f), 'utf8'))
+          if (!v.key || t - (v.at || 0) > cfg.awayTtlMs) { unlinkQuiet(path.join(dirs.cache, f)); continue }
+          const size = (typeof v.text === 'string' ? v.text.length : 0) + (v.pkg ? JSON.stringify(v.pkg).length : 0) + 64
+          fetchCache.set(v.key, { sha: v.sha ?? null, text: v.text, pkg: v.pkg, at: v.at }, size)
+          nCache++
+        } catch { unlinkQuiet(path.join(dirs.cache, f)) }
+      }
+      for (const f of fs.readdirSync(dirs.sprites)) {
+        if (!/^[a-f0-9]{64}$/.test(f)) continue
+        const buf = fs.readFileSync(path.join(dirs.sprites, f))
+        sprites.set(f, { buf, mime: sniffMime(buf) }, buf.length)
+        nSprites++
+      }
+    } catch (e) { cfg.log('cache load failed', e.message) }
+    cfg.log(`loaded ${nRooms} rooms, ${nCache} cached items, ${nSprites} sprites from ${dirs.root}`)
+  }
 
   // ---- rooms and members -----------------------------------------------------------------------------------------
 
@@ -242,7 +357,7 @@ export function createRelay (opts = {}) {
       const buf = Buffer.from(sprite.b64.replace(/^data:[^,]*,/, ''), 'base64')
       if (!buf.length) return null
       sha = crypto.createHash('sha256').update(buf).digest('hex')
-      if (!sprites.get(sha)) sprites.set(sha, { buf, mime: sniffMime(buf) }, buf.length)
+      if (!sprites.get(sha)) { sprites.set(sha, { buf, mime: sniffMime(buf) }, buf.length); persistSprite(sha, buf) }
     } else if (typeof sprite.sha === 'string' && /^[a-f0-9]{64}$/.test(sprite.sha) && sprites.get(sprite.sha)) {
       sha = sprite.sha
     }
@@ -315,6 +430,7 @@ export function createRelay (opts = {}) {
     if (!wasOnline) broadcast(room, { t: 'join', peer: peerView(m) }, id)
     if (docked || snapshot(room) !== before || !wasOnline) broadcast(room, seatMsg(room, docked ? 'dock' : 'join'))
     cfg.log('hello', roomName, id, 'seat', m.seat, docked ? 'dock-linked' : '')
+    markDirty()
   }
 
   function onClose (ws) {
@@ -334,6 +450,7 @@ export function createRelay (opts = {}) {
     broadcast(room, { t: 'leave', id: m.id, lastSeen: m.lastSeen })
     broadcast(room, seatMsg(room, 'leave'))
     cfg.log('leave', room.name, m.id)
+    markDirty()
   }
 
   function onMessage (ws, req, data, isBinary) {
@@ -407,6 +524,7 @@ export function createRelay (opts = {}) {
       case 'hello': break // one hello per socket
       default: break // forward-compatible: unknown types are ignored
     }
+    if (msg.t === 'catalog' || msg.t === 'seat' || (msg.t === 'fx' && msg.kind === 'learned')) markDirty()
   }
 
   function move (room, m, to) {
@@ -448,7 +566,10 @@ export function createRelay (opts = {}) {
     const ok = msg.ok !== false
     if (ok) {
       const size = (typeof msg.text === 'string' ? msg.text.length : 0) + (msg.pkg ? JSON.stringify(msg.pkg).length : 0) + 64
-      fetchCache.set(`${m.id}|${f.ref}|${f.as}`, { sha: msg.sha ?? null, text: msg.text, pkg: msg.pkg }, size)
+      const key = `${m.id}|${f.ref}|${f.as}`
+      const v = { sha: msg.sha ?? null, text: msg.text, pkg: msg.pkg }
+      fetchCache.set(key, v, size)
+      persistFetched(key, v)
     }
     send(room.members.get(f.requester), { t: 'fetched', from: m.id, fid: f.fid, ok, sha: msg.sha ?? null, text: msg.text, pkg: msg.pkg, reason: msg.reason })
   }
@@ -484,7 +605,7 @@ export function createRelay (opts = {}) {
       }
       for (const [k, a] of room.asks) if (t - a.at > cfg.answerTtlMs) room.asks.delete(k)
       for (const [k, f] of room.fetches) if (t - f.at > cfg.answerTtlMs) room.fetches.delete(k)
-      if (seatsChanged) broadcast(room, seatMsg(room, 'leave'))
+      if (seatsChanged) { broadcast(room, seatMsg(room, 'leave')); markDirty() }
       if (!room.members.size) rooms.delete(name)
     }
   }
@@ -499,7 +620,12 @@ export function createRelay (opts = {}) {
       let members = 0
       for (const r of rooms.values()) members += online(r).length
       res.writeHead(200, { ...cors, 'content-type': 'application/json', 'cache-control': 'no-store' })
-      res.end(JSON.stringify({ ok: true, v: P.PROTOCOL_VERSION, rooms: rooms.size, online: members, uptimeS: Math.round((now() - startedAt) / 1000) }))
+      let away = 0
+      for (const r of rooms.values()) for (const m of r.members.values()) if (!m.online) away++
+      res.end(JSON.stringify({
+        ok: true, v: P.PROTOCOL_VERSION, name: cfg.name, region: cfg.region, rooms: rooms.size, online: members, away,
+        cached: fetchCache.size, sprites: sprites.size, persisted: !!dirs, uptimeS: Math.round((now() - startedAt) / 1000)
+      }))
       return
     }
     const sm = url.pathname.match(/^\/s\/([a-f0-9]{64})(?:\.\w+)?$/)
@@ -519,8 +645,8 @@ export function createRelay (opts = {}) {
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: HARD_MAX })
   server.on('upgrade', (req, socket, head) => {
-    const path = new URL(req.url, 'http://x').pathname
-    if (path !== P.WS_PATH && path !== '/') { socket.destroy(); return }
+    const pathname = new URL(req.url, 'http://x').pathname
+    if (pathname !== P.WS_PATH && pathname !== '/') { socket.destroy(); return }
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
   })
   wss.on('connection', (ws, req) => {
@@ -545,8 +671,11 @@ export function createRelay (opts = {}) {
     }, cfg.pingMs))
   }
 
+  load()
+
   return {
     server, wss, rooms, cfg,
+    save: saveRooms,
     listen () {
       return new Promise((resolve) => {
         server.listen(cfg.port, cfg.host, () => {
@@ -557,6 +686,8 @@ export function createRelay (opts = {}) {
       })
     },
     close () {
+      if (!closing) saveRooms() // online members are written with lastSeen = now
+      closing = true
       for (const t of timers) clearInterval(t)
       for (const ws of wss.clients) ws.terminate()
       return new Promise((resolve) => { wss.close(); server.close(() => resolve()) })
@@ -568,5 +699,5 @@ export function createRelay (opts = {}) {
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const relay = createRelay()
   relay.listen().then(({ port }) => relay.cfg.log(`petpack relay v${P.PROTOCOL_VERSION} listening on ${port}`))
-  process.on('SIGTERM', () => relay.close().then(() => process.exit(0)))
+  for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => relay.close().then(() => process.exit(0)))
 }

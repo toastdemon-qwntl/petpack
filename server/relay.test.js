@@ -1,6 +1,7 @@
 // T1 relay (SCOPE-backend.md). node --test server/relay.test.js
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import WebSocket from 'ws'
 import { createRelay } from './relay.js'
 
@@ -256,6 +257,79 @@ test('fx goes to the room except the sender; learned adds the skill', async () =
   const c = await client({ id: 'fx-c', room: 'fx' })
   assert.deepEqual(c.welcome.peers.find((p) => p.id === 'fx-a').skills, [{ id: 'pdf', name: 'pdf', description: 'read pdfs' }])
   await Promise.all([a.close(), b.close(), c.close()])
+})
+
+test('catalogs, seats, fetched content and sprites survive a restart', async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'petpack-relay-'))
+  const item = { ref: 'skill:deploy', kind: 'skill', title: 'deploy', summary: 'ship it', bytes: 5, sha: 'd1', mtime: 1 }
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex')
+  const r1 = createRelay({ port: 0, host: '127.0.0.1', salt: 'test', log: () => {}, dataDir, saveMs: 20 })
+  const u1 = (await r1.listen()).url
+  const a = await client({ id: 'ps-a', room: 'persist', catalog: [item], sprite: { b64: png.toString('base64') } }, u1)
+  const b = await client({ id: 'ps-b', room: 'persist', dock: 'left' }, u1)
+  b.send({ t: 'fetch', fid: 'f1', owner: 'ps-a', ref: 'skill:deploy', as: 'pkg' })
+  const f = await a.next((m) => m.t === 'fetch')
+  a.send({ t: 'fetched', fid: f.fid, to: f.from, ok: true, sha: 'd1', pkg: { files: [{ path: 'SKILL.md', b64: 'eA==' }] } })
+  await b.next((m) => m.t === 'fetched')
+  const seatA = (await b.next((m) => m.t === 'seat' && m.why === 'dock')).seats['ps-a']
+  await sleep(50)
+  await r1.close()
+  assert.ok(fs.existsSync(path.join(dataDir, 'rooms.json')))
+
+  const r2 = createRelay({ port: 0, host: '127.0.0.1', salt: 'test', log: () => {}, dataDir, saveMs: 20 })
+  const u2 = (await r2.listen()).url
+  const c = await client({ id: 'ps-c', room: 'persist' }, u2)
+  const away = c.welcome.away.find((x) => x.id === 'ps-a')
+  assert.deepEqual(away?.catalog, [item])
+  assert.deepEqual(c.welcome.links, [['ps-a', 'ps-b']], 'links held across the restart')
+  c.send({ t: 'fetch', fid: 'f2', owner: 'ps-a', ref: 'skill:deploy', as: 'pkg' })
+  const hit = await c.next((m) => m.t === 'fetched')
+  assert.equal(hit.ok, true); assert.equal(hit.cached, true); assert.deepEqual(hit.pkg.files[0].path, 'SKILL.md')
+  const a2 = await client({ id: 'ps-a', room: 'persist', sprite: null }, u2)
+  assert.equal(a2.welcome.you.seat, seatA, 'seat held across the restart')
+  const sha = crypto.createHash('sha256').update(png).digest('hex')
+  const res = await fetch(u2.replace('ws:', 'http:').replace('/ws', `/s/${sha}.webp`))
+  assert.equal(res.status, 200)
+  await Promise.all([a.closed(), b.closed(), c.close(), a2.close()])
+  await r2.close()
+  fs.rmSync(dataDir, { recursive: true, force: true })
+})
+
+test('clients fail over to the next relay together and move back when the primary returns', async () => {
+  const { createNet } = await import('./net-failover.js')
+  const quiet = { host: '127.0.0.1', salt: 'test', log: () => {}, dataDir: null }
+  let r1 = createRelay({ port: 0, ...quiet })
+  const { port: p1, url: u1 } = await r1.listen()
+  const r2 = createRelay({ port: 0, ...quiet })
+  const { url: u2 } = await r2.listen()
+  const mk = (id) => {
+    const seen = []
+    const net = createNet({
+      urls: [u1, u2], hello: () => ({ t: 'hello', v: 2, id, room: 'fo', dock: 'right' }), onMessage: (m) => seen.push(m),
+      probeMs: 200, openTimeoutMs: 1000, random: () => 0
+    })
+    net.connect()
+    return { net, seen }
+  }
+  const until = async (fn, ms = 8000) => { const t = Date.now(); while (!fn()) { if (Date.now() - t > ms) throw new Error('timed out'); await sleep(25) } }
+  const a = mk('fo-a'); const b = mk('fo-b')
+  await until(() => a.net.connected && b.net.connected)
+  assert.equal(a.net.index, 0); assert.equal(b.net.index, 0)
+
+  await r1.close() // primary goes away
+  await until(() => a.net.connected && b.net.connected && a.net.index === 1 && b.net.index === 1)
+  assert.equal(a.net.url, u2)
+  await until(() => [...r2.rooms.get('fo')?.members.values() ?? []].filter((m) => m.online).length === 2)
+
+  r1 = createRelay({ port: p1, ...quiet }) // primary is back: both probe it and move home
+  await r1.listen()
+  await until(() => a.net.connected && b.net.connected && a.net.index === 0 && b.net.index === 0)
+  await until(() => [...r1.rooms.get('fo')?.members.values() ?? []].filter((m) => m.online).length === 2)
+  a.net.close(); b.net.close()
+  await r1.close(); await r2.close()
 })
 
 test('auto room groups clients by network', async () => {

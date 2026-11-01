@@ -66,8 +66,32 @@
 export const PROTOCOL_VERSION = 2
 export const V = PROTOCOL_VERSION
 
-export const DEFAULT_RELAY = 'wss://petpack-relay.azurewebsites.net/ws'
+// Relays in failover order. Rooms are per relay, so every client must walk this list in the same order:
+// start at RELAYS[0] on every (re)connect round, move to the next one only when a connect fails (no open within
+// OPEN_TIMEOUT_MS, or closed before welcome), and while on a later relay probe RELAYS[0]/healthz every
+// PRIMARY_PROBE_MS and move back when it answers. Two laptops on the same list therefore land on the same relay.
+// PETPACK_RELAY / --relay replaces the list (a comma-separated value is a list).
+export const RELAYS = Object.freeze([
+  'wss://petpack-relay.azurewebsites.net/ws', // primary: App Service, centralus
+  'wss://petpack-relay-2.jollystone-fb76cb03.eastus2.azurecontainerapps.io/ws' // secondary: Container Apps, eastus2
+])
+export const DEFAULT_RELAY = RELAYS[0]
 export const WS_PATH = '/ws'
+export const OPEN_TIMEOUT_MS = 4000
+export const PRIMARY_PROBE_MS = 15000
+
+/** The relay list for an override (string, comma-separated string or array); no override = RELAYS. */
+export function relayList (override) {
+  const list = Array.isArray(override) ? override : String(override ?? '').split(',')
+  const out = list.map((s) => String(s).trim()).filter(Boolean)
+  return out.length ? out : [...RELAYS]
+}
+
+/** http(s) health URL of a relay ws URL. */
+export function healthUrl (wsUrl) {
+  const base = relayHttpBase(wsUrl)
+  return base ? `${base}/healthz` : null
+}
 
 export const CHUNK_W = 14
 
