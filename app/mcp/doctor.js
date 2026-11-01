@@ -106,14 +106,15 @@ export async function runDoctor(argv = [], { print = (l) => console.log(l), rela
   }
 
   // Pet
+  // Same lookup as `petpack pets` (app/codex/pets-cli.js): tray choice, Codex selection, custom pets, app default.
   try {
-    const pets = await import(new URL('app/codex/pets.js', ROOT).href)
-    const list = pets.listPets ? pets.listPets() : []
-    const selected = pets.selectedPetIds ? pets.selectedPetIds() : []
-    const names = list.map((p) => p.displayName || p.petName || p.id).filter(Boolean)
-    const sel = selected[0]?.id
-    if (names.length || sel) add(true, 'Pet', `${names.length} custom pet${names.length === 1 ? '' : 's'}${names.length ? ` (${names.slice(0, 4).join(', ')})` : ''}${sel ? `; selected in Codex: ${sel}` : ''}`)
-    else add(false, 'Pet', 'no Codex pet found (petpack uses its built-in pixel pet)', 'pick or hatch a pet in Codex; petpack picks it up on the next launch')
+    const codex = await import(new URL('app/codex/index.js', ROOT).href)
+    const cacheDir = path.join(userData, 'pets')
+    const choiceFile = codex.petChoiceFile ? codex.petChoiceFile(cacheDir) : null
+    const choice = choiceFile && codex.readPetChoice ? codex.readPetChoice(choiceFile) : null
+    const pet = await codex.getPet({ homes: codex.codexHomes(), choice, cacheDir, fetch: false, trace: [] })
+    if (pet && pet.source !== 'none') add(true, 'Pet', `${pet.displayName} [${pet.source}]${pet.path ? ` ${pet.path}` : ''}`)
+    else add(false, 'Pet', 'no Codex pet found (petpack uses its built-in pixel pet)', `pick or hatch a pet in Codex, or \`${NPX} pets --choose <folder|name>\``)
   } catch (e) {
     add(true, 'Pet', `pet check unavailable (${e.message})`)
   }
