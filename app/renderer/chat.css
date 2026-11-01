@@ -1,0 +1,87 @@
+/* Ask your pet: the pixel chat field, its tiny transcript and the mic pip, inside the glass pane (app/renderer/chat.js). */
+.pp-chat, .pp-mic, .pp-mic-tip {
+  --pp-ink: #24323d;
+  --pp-paper: #fffdf5;
+  --pp-px: 2px;
+  font: 600 11px/14px ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  -webkit-font-smoothing: none;
+  font-smooth: never;
+  color: var(--pp-ink);
+}
+/* Pixel frame: four hard offsets leave the corners notched, like the speech bubbles. */
+.pp-px {
+  box-shadow: 0 calc(-1 * var(--pp-px)) 0 0 var(--pp-ink), 0 var(--pp-px) 0 0 var(--pp-ink),
+    calc(-1 * var(--pp-px)) 0 0 0 var(--pp-ink), var(--pp-px) 0 0 0 var(--pp-ink);
+}
+
+.pp-chat {
+  position: absolute; z-index: 9; bottom: 12px; left: 46px; right: 14px;
+  display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  transform: translateY(calc(100% + 18px)); opacity: 0;
+  transition: transform .26s steps(5, end), opacity .12s steps(2, end);
+}
+.petpack-pane[data-dock='left'] .pp-chat { left: 14px; right: 46px; }
+.pp-chat.on { transform: translateY(0); opacity: 1; pointer-events: auto; }
+
+.pp-chat-log {
+  display: none; max-height: 132px; overflow-y: auto; overscroll-behavior: contain; padding: 5px 7px;
+  background: color-mix(in srgb, var(--pp-paper) 92%, transparent);
+  box-shadow: 0 -2px 0 0 var(--pp-ink), 0 2px 0 0 var(--pp-ink), -2px 0 0 0 var(--pp-ink), 2px 0 0 0 var(--pp-ink), 0 5px 0 0 #0c1d3330;
+  scrollbar-width: thin; scrollbar-color: var(--pp-ink) transparent; user-select: text; -webkit-user-select: text;
+}
+.pp-chat-log.has { display: block; }
+.pp-chat-log::-webkit-scrollbar { width: 4px; }
+.pp-chat-log::-webkit-scrollbar-thumb { background: var(--pp-ink); }
+.pp-line { margin: 0 0 4px; word-wrap: break-word; overflow-wrap: anywhere; font-weight: 500; }
+.pp-line:last-child { margin-bottom: 0; }
+.pp-who { font-weight: 800; margin-right: 5px; text-transform: lowercase; }
+.pp-you .pp-who { color: #3a6ea5; }
+.pp-pet .pp-who { color: #c0533f; }
+.pp-line.pp-err .pp-text { color: #8a4a3c; }
+.pp-line.pp-thinking .pp-text { display: inline-block; min-width: 3ch; animation: pp-dots 1s steps(4, end) infinite; }
+@keyframes pp-dots { 0% { opacity: .35 } 50% { opacity: 1 } 100% { opacity: .35 } }
+
+.pp-chat-form { display: flex; gap: 8px; margin: 0; }
+.pp-chat-input {
+  flex: 1; min-width: 0; height: 24px; padding: 0 8px; border: 0; border-radius: 0; outline: none;
+  font: inherit; color: var(--pp-ink); background: var(--pp-paper);
+  box-shadow: 0 -2px 0 0 var(--pp-ink), 0 2px 0 0 var(--pp-ink), -2px 0 0 0 var(--pp-ink), 2px 0 0 0 var(--pp-ink), 0 5px 0 0 #0c1d3330;
+  caret-color: #c0533f; user-select: text; -webkit-user-select: text;
+}
+.pp-chat-input::placeholder { color: #24323d80; }
+.pp-chat-input:focus { background: #fff; }
+.pp-chat-send {
+  width: 26px; height: 24px; padding: 0; border: 0; border-radius: 0; cursor: pointer;
+  font: 800 13px/24px ui-monospace, Menlo, monospace; color: var(--pp-paper); background: var(--pp-ink);
+  box-shadow: 0 -2px 0 0 var(--pp-ink), 0 2px 0 0 var(--pp-ink), -2px 0 0 0 var(--pp-ink), 2px 0 0 0 var(--pp-ink), 0 5px 0 0 #0c1d3330;
+}
+.pp-chat-send:active { transform: translateY(2px); }
+.pp-chat.busy .pp-chat-send { background: #6c7a85; cursor: progress; }
+
+/* Mic pip: bottom corner on the pane's inner side; hold to talk. */
+.pp-mic {
+  position: absolute; z-index: 9; bottom: 12px; left: 14px; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 0;
+  cursor: pointer; background: color-mix(in srgb, var(--pp-paper) 86%, transparent); opacity: .72;
+  box-shadow: 0 -2px 0 0 var(--pp-ink), 0 2px 0 0 var(--pp-ink), -2px 0 0 0 var(--pp-ink), 2px 0 0 0 var(--pp-ink), 0 4px 0 0 #0c1d3330;
+  transition: opacity .15s steps(2, end);
+}
+.petpack-pane[data-dock='left'] .pp-mic { left: auto; right: 14px; }
+.pp-mic:hover, .pp-chatting .pp-mic, .pp-mic.live { opacity: 1; }
+.pp-mic-icon {
+  position: absolute; inset: 0; image-rendering: pixelated; background-repeat: no-repeat; background-position: center; background-size: 16px 16px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8' shape-rendering='crispEdges'%3E%3Cpath fill='%2324323d' d='M3 0h2v1h1v3h-1v1h-2v-1h-1v-3h1zM1 3h1v1h1v1h2v-1h1v-1h1v1h-1v1h-1v1h-1v1h1v1h-3v-1h1v-1h-1v-1h-1z'/%3E%3C/svg%3E");
+}
+.pp-mic.talking { background: #f4c1b4; transform: translateY(2px); }
+.pp-mic.talking .pp-mic-icon, .pp-mic.speaking .pp-mic-icon { animation: pp-hop .3s steps(2, end) infinite; }
+.pp-mic.live::after { content: ''; position: absolute; top: -5px; right: -5px; width: 4px; height: 4px; background: #5fae6e; box-shadow: 0 0 0 1px var(--pp-ink); }
+.pp-mic.connecting::after { content: ''; position: absolute; top: -5px; right: -5px; width: 4px; height: 4px; background: #e3a857; animation: pp-dots .6s steps(2, end) infinite; }
+.pp-mic.nokey { opacity: .45; }
+@keyframes pp-hop { 0% { transform: translateY(0) } 50% { transform: translateY(-2px) } 100% { transform: translateY(0) } }
+
+.pp-mic-tip {
+  position: absolute; z-index: 10; bottom: 44px; left: 12px; max-width: 70%; padding: 3px 7px; pointer-events: none;
+  background: var(--pp-paper); opacity: 0; transform: translateY(4px); transition: opacity .2s steps(3, end), transform .2s steps(3, end);
+  box-shadow: 0 -2px 0 0 var(--pp-ink), 0 2px 0 0 var(--pp-ink), -2px 0 0 0 var(--pp-ink), 2px 0 0 0 var(--pp-ink), 0 4px 0 0 #0c1d3330;
+}
+.petpack-pane[data-dock='left'] .pp-mic-tip { left: auto; right: 12px; }
+.pp-mic-tip.on { opacity: 1; transform: translateY(0); }
