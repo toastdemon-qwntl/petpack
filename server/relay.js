@@ -132,7 +132,7 @@ export function createRelay (opts = {}) {
           members: [...r.members.values()].map((m) => ({
             id: m.id, name: m.name, color: m.color, dock: m.dock, skills: m.skills, catalog: m.catalog,
             sprite: m.sprite, spriteSha: m.spriteSha ?? null, device: m.device ?? null, seat: m.seat, lastSeen: m.online ? now() : m.lastSeen,
-            x: m.x, z: m.z, facing: m.facing, status: m.status
+            x: m.x, z: m.z, facing: m.facing, status: m.status, sit: m.sit || 'side', shareWith: m.shareWith ?? null
           }))
         }))
       }
@@ -165,7 +165,8 @@ export function createRelay (opts = {}) {
               heldUntil: t + cfg.seatHoldMs, // a restart is not their fault: everyone gets a fresh hold
               online: false, ws: null, dirty: false, answers: true, status: P.STATUSES.includes(s.status) ? s.status : 'idle', anim: 'idle',
               facing: s.facing === -1 ? -1 : 1, spriteSha: typeof s.spriteSha === 'string' ? s.spriteSha : null, device: typeof s.device === 'string' ? s.device : null,
-              x: Number.isFinite(s.x) ? s.x : P.seatCenterX(Number.isInteger(s.seat) ? s.seat : 0), z: Number.isFinite(s.z) ? s.z : 0
+              x: Number.isFinite(s.x) ? s.x : P.seatCenterX(Number.isInteger(s.seat) ? s.seat : 0), z: Number.isFinite(s.z) ? s.z : 0,
+              sit: P.SITS.includes(s.sit) ? s.sit : 'side', shareWith: !fold && typeof s.shareWith === 'string' ? s.shareWith : null, flipped: !fold && typeof s.shareWith === 'string'
             })
             byId.set(s.id, name)
           }
@@ -206,12 +207,16 @@ export function createRelay (opts = {}) {
   }
 
   const online = (room) => [...room.members.values()].filter((m) => m.online)
-  const seated = (room) => [...room.members.values()].filter((m) => m.seat != null)
+  // seated = seat owners (side strip); an 'across' guest shares its host's seat, flipped, and follows it
+  const seated = (room) => [...room.members.values()].filter((m) => m.seat != null && !m.shareWith)
+  const hosting = (room, m) => [...room.members.values()].some((x) => x.shareWith === m.id)
+  const freeSeat = (room) => { const s = seated(room); return s.length ? Math.max(...s.map((x) => x.seat)) + 2 : 0 }
 
   function peerView (m) {
     return {
       id: m.id, name: m.name, color: m.color, seat: m.seat, dock: m.dock, skills: m.skills, catalog: m.catalog,
       sprite: m.sprite, x: m.x, z: m.z, facing: m.facing, anim: m.anim, status: m.status, answers: m.answers,
+      sit: m.sit || 'side', flipped: !!m.flipped,
       ...(m.online ? {} : { away: true, lastSeen: m.lastSeen })
     }
   }
@@ -273,6 +278,47 @@ export function createRelay (opts = {}) {
       c.forEach((m, i) => { m.seat = start + i })
       next = start + c.length + 1
     }
+    syncGuests(room)
+  }
+
+  // 'across' (battleships, back to back): a guest shares its host's seat facing the other way
+  function syncGuests (room) {
+    for (const g of room.members.values()) {
+      if (!g.shareWith) continue
+      const h = room.members.get(g.shareWith)
+      if (h && h.seat != null && !h.shareWith) { g.seat = h.seat; g.flipped = true; continue }
+      g.shareWith = null; g.flipped = false // host gone: the guest gets its own seat at the end
+      g.seat = g.online ? freeSeat(room) : null
+    }
+  }
+
+  function makeGuest (room, g, h) {
+    if (!g || !h || g.id === h.id || h.shareWith || h.seat == null || hosting(room, h) || hosting(room, g)) return false
+    unlinkAll(room, g.id)
+    g.shareWith = h.id; g.flipped = true; g.seat = h.seat; h.flipped = false
+    layout(room)
+    return true
+  }
+
+  function unpair (room, m) {
+    let changed = false
+    for (const g of room.members.values()) {
+      if (g.shareWith && (g.id === m.id || g.shareWith === m.id)) {
+        g.shareWith = null; g.flipped = false; g.seat = g.online ? freeSeat(room) : null; changed = true
+      }
+    }
+    if (changed) layout(room)
+    return changed
+  }
+
+  // two 'across' panes that joined (or switched to across) within the pair window share one seat, the later one flipped
+  function acrossPair (room, m) {
+    const free = (x) => x.online && x.seat != null && x.sit === 'across' && !x.shareWith && !hosting(room, x)
+    if (!m || !free(m)) return false
+    const partner = online(room)
+      .filter((x) => x.id !== m.id && free(x) && Math.abs((m.sitAt ?? 0) - (x.sitAt ?? 0)) <= cfg.dockPairWindowMs)
+      .sort((a, b) => (b.sitAt ?? 0) - (a.sitAt ?? 0))[0]
+    return partner ? makeGuest(room, m, partner) : false
   }
 
   function link (room, l, r) {
@@ -303,17 +349,26 @@ export function createRelay (opts = {}) {
   function seatMsg (room, why, extra = {}) {
     const seats = {}
     const held = {}
-    for (const m of seated(room)) (m.online ? seats : held)[m.id] = m.seat
-    return { t: 'seat', seats, held, links: room.links.map((l) => [...l]), why, ...extra }
+    const flipped = {}
+    const across = []
+    for (const m of room.members.values()) {
+      if (m.seat == null) continue
+      ;(m.online ? seats : held)[m.id] = m.seat
+      if (m.shareWith) { flipped[m.id] = true; across.push([m.shareWith, m.id]) }
+    }
+    return { t: 'seat', seats, held, flipped, across, links: room.links.map((l) => [...l]), why, ...extra }
   }
 
-  function snapshot (room) { return JSON.stringify([seated(room).map((m) => [m.id, m.seat]), room.links]) }
+  function snapshot (room) {
+    return JSON.stringify([[...room.members.values()].filter((m) => m.seat != null).map((m) => [m.id, m.seat, m.shareWith ?? null]), room.links])
+  }
 
   // One busy room: a laptop that just joined (or re-docked) pairs with the most recent unlinked laptop docked to the
   // opposite edge that joined within dockPairWindowMs of it; the right-docked one sits on the left. Anyone else keeps
   // a free seat at the end of the strip and can move with arrows or bump.
   function dockAutoLink (room, m) {
-    const loose = (x) => x.online && x.seat != null && !room.links.some(([a, b]) => a === x.id || b === x.id)
+    const loose = (x) => x.online && x.seat != null && x.sit !== 'across' && !x.shareWith &&
+      !room.links.some(([a, b]) => a === x.id || b === x.id)
     if (!m || !loose(m) || (m.dock !== 'left' && m.dock !== 'right')) return false
     const want = m.dock === 'right' ? 'left' : 'right'
     const partner = online(room)
@@ -323,13 +378,13 @@ export function createRelay (opts = {}) {
     return m.dock === 'right' ? link(room, m.id, partner.id) : link(room, partner.id, m.id)
   }
 
-  function bump (room, m, side) {
+  function bump (room, m, side, share = false) {
     const t = now()
     room.bumps = room.bumps.filter((b) => t - b.at <= cfg.bumpWindowMs && b.id !== m.id && room.members.get(b.id)?.online)
     const want = side === 'right' ? 'left' : 'right'
     const cands = room.bumps.filter((b) => b.side === want).sort((a, b) => (t - a.at) - (t - b.at))
     if (!cands.length) {
-      const entry = { id: m.id, side, at: t }
+      const entry = { id: m.id, side, at: t, share }
       room.bumps.push(entry)
       const timer = setTimeout(() => {
         const i = room.bumps.indexOf(entry)
@@ -347,6 +402,13 @@ export function createRelay (opts = {}) {
     }
     const partner = cands[0]
     room.bumps = room.bumps.filter((b) => b !== partner)
+    const pm = room.members.get(partner.id)
+    if (share || partner.share || (m.sit === 'across' && pm?.sit === 'across')) {
+      // bump fallback for battleships: the later bumper shares the earlier one's seat, facing the other way
+      const ok = makeGuest(room, m, pm)
+      broadcast(room, seatMsg(room, 'bump', ok ? { ids: [pm.id, m.id] } : { ids: [pm.id, m.id], shrug: true }))
+      return
+    }
     const [l, r] = side === 'right' ? [m.id, partner.id] : [partner.id, m.id]
     const ok = link(room, l, r)
     broadcast(room, seatMsg(room, 'bump', ok ? { ids: [l, r] } : { ids: [l, r], shrug: true }))
@@ -383,8 +445,7 @@ export function createRelay (opts = {}) {
       away: all.filter((x) => !x.online).map(awayView),
       agents: all.map(agentView),
       links: room.links.map((l) => [...l]),
-      seats: seatMsg(room, 'join').seats,
-      held: seatMsg(room, 'join').held
+      ...(({ seats, held, flipped, across }) => ({ seats, held, flipped, across }))(seatMsg(room, 'join')),
     }
   }
 
@@ -446,13 +507,18 @@ export function createRelay (opts = {}) {
         adjLink(room, m)
         layout(room)
       } else {
-        const s = seated(room)
-        m.seat = s.length ? Math.max(...s.map((x) => x.seat)) + 2 : 0
+        m.seat = freeSeat(room)
       }
     }
     ws._petpack = { room, m }
     if (!wasOnline || m.dockAt == null || prevDock !== m.dock) m.dockAt = now() // joined or re-docked
-    const docked = dockAutoLink(room, m)
+    const sit = P.SITS.includes(h.sit) ? h.sit : (m.sit || 'side')
+    if (!wasOnline || m.sitAt == null || sit !== m.sit) m.sitAt = now()
+    if (sit === 'side' && m.sit === 'across') unpair(room, m)
+    m.sit = sit
+    syncGuests(room) // a returning guest follows its host's seat
+    const across = m.sit === 'across' ? acrossPair(room, m) : false
+    const docked = across || (m.sit === 'side' ? dockAutoLink(room, m) : false)
     if (!known) { // a new agent starts where its client says, else at its seat's home
       m.x = num(h.x, P.seatCenterX(m.seat))
       m.z = num(h.z, 0)
@@ -463,14 +529,14 @@ export function createRelay (opts = {}) {
     const views = registryViews(room)
     send(m, {
       t: 'welcome', room: roomName,
-      you: { id, seat: m.seat, x: m.x, z: m.z, facing: m.facing, resumed: known, takeover: wasOnline },
+      you: { id, seat: m.seat, flipped: !!m.flipped, sit: m.sit, x: m.x, z: m.z, facing: m.facing, resumed: known, takeover: wasOnline },
       ...views,
       peers: views.peers.filter((p) => p.id !== id),
       agents: views.agents.filter((a) => a.id !== id)
     })
     if (!wasOnline) broadcast(room, { t: 'join', peer: peerView(m) }, id)
     else m.dirty = true // a takeover: no join/leave churn, just a fresh state for everyone
-    if (docked || snapshot(room) !== before || !wasOnline) broadcast(room, seatMsg(room, docked ? 'dock' : 'join'))
+    if (docked || snapshot(room) !== before || !wasOnline) broadcast(room, seatMsg(room, across ? 'across' : docked ? 'dock' : 'join'))
     cfg.log('hello', roomName, id, 'seat', m.seat, docked ? 'dock-linked' : '')
     markDirty()
   }
@@ -529,10 +595,27 @@ export function createRelay (opts = {}) {
       }
       case 'seat': {
         const before = snapshot(room)
-        if (msg.op === 'bump' && (msg.side === 'left' || msg.side === 'right')) { bump(room, m, msg.side); break }
+        if (msg.op === 'bump' && (msg.side === 'left' || msg.side === 'right')) { bump(room, m, msg.side, msg.share === true); break }
         let why = null
-        if (msg.op === 'move' && Number.isFinite(msg.to)) { move(room, m, msg.to); why = 'move' } else if (msg.op === 'unlink') { unlinkAll(room, m.id); layout(room); why = 'unlink' }
+        if ((msg.op === 'share' || (msg.op === 'move' && msg.flip === true)) && Number.isFinite(msg.to)) {
+          // "share seat N facing the other way": become the flipped guest of whoever owns seat N
+          const host = seated(room).find((x) => x.id !== m.id && x.seat === Math.floor(msg.to))
+          if (host && host.id !== m.shareWith) { if (m.shareWith) unpair(room, m); makeGuest(room, m, host) }
+          why = 'move'
+        } else if (msg.op === 'move' && Number.isFinite(msg.to)) {
+          if (m.shareWith) unpair(room, m)
+          move(room, m, msg.to); why = 'move'
+        } else if (msg.op === 'unlink') { unpair(room, m); unlinkAll(room, m.id); layout(room); why = 'unlink' }
         if (why) broadcast(room, seatMsg(room, why, snapshot(room) === before ? { ids: [m.id] } : {}))
+        break
+      }
+      case 'sit': { // { t:'sit', sit:'side'|'across' }: change how this pane sits with its neighbour
+        if (!P.SITS.includes(msg.sit)) break
+        const before = snapshot(room)
+        if (msg.sit !== m.sit) { m.sit = msg.sit; m.sitAt = now() }
+        let paired = false
+        if (m.sit === 'across') { unlinkAll(room, m.id); layout(room); paired = acrossPair(room, m) } else unpair(room, m)
+        if (paired || snapshot(room) !== before) broadcast(room, seatMsg(room, paired ? 'across' : 'sit'))
         break
       }
       case 'catalog': {
@@ -576,7 +659,7 @@ export function createRelay (opts = {}) {
       case 'hello': break // one hello per socket
       default: break // forward-compatible: unknown types are ignored
     }
-    if (msg.t === 'catalog' || msg.t === 'seat' || (msg.t === 'fx' && msg.kind === 'learned')) markDirty()
+    if (msg.t === 'catalog' || msg.t === 'seat' || msg.t === 'sit' || (msg.t === 'fx' && msg.kind === 'learned')) markDirty()
   }
 
   function move (room, m, to) {
@@ -656,12 +739,12 @@ export function createRelay (opts = {}) {
       let seatsChanged = false
       for (const m of [...room.members.values()]) {
         if (m.online) continue
-        if (m.seat != null && t >= m.heldUntil) { m.seat = null; unlinkAll(room, m.id); seatsChanged = true }
+        if (m.seat != null && t >= m.heldUntil) { m.seat = null; m.shareWith = null; m.flipped = false; unlinkAll(room, m.id); seatsChanged = true }
         if (t - m.lastSeen > cfg.awayTtlMs) { room.members.delete(m.id); if (byId.get(m.id) === name) byId.delete(m.id) }
       }
       for (const [k, a] of room.asks) if (t - a.at > cfg.answerTtlMs) room.asks.delete(k)
       for (const [k, f] of room.fetches) if (t - f.at > cfg.answerTtlMs) room.fetches.delete(k)
-      if (seatsChanged) { broadcast(room, seatMsg(room, 'leave')); markDirty() }
+      if (seatsChanged) { syncGuests(room); broadcast(room, seatMsg(room, 'leave')); markDirty() }
       if (!room.members.size && !room.spectators.size) rooms.delete(name)
     }
   }

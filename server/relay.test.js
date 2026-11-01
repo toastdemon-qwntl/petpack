@@ -460,6 +460,41 @@ test('a spectator sees every agent on every seat, read-only, with no seat', asyn
   await r.close()
 })
 
+test("battleships: two 'across' panes share one seat, the later one flipped; side panes are unaffected", async () => {
+  const r = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: null, dockPairWindowMs: 300 })
+  const u = (await r.listen()).url
+  const side = await client({ id: 'ac-side', room: 'across', dock: 'left' }, u)
+  const a = await client({ id: 'ac-a', room: 'across', sit: 'across', dock: 'right' }, u)
+  const b = await client({ id: 'ac-b', room: 'across', sit: 'across', dock: 'left' }, u)
+  const s = await a.next((m) => m.t === 'seat' && m.why === 'across')
+  assert.equal(s.seats['ac-a'], s.seats['ac-b'], 'one seat for the pair')
+  assert.deepEqual(s.flipped, { 'ac-b': true })
+  assert.deepEqual(s.across, [['ac-a', 'ac-b']])
+  assert.equal(b.welcome.you.flipped, true); assert.equal(b.welcome.you.seat, s.seats['ac-a'])
+  assert.deepEqual(s.links, [], 'across panes never dock-link with the side pane')
+  assert.notEqual(s.seats['ac-side'], s.seats['ac-a'])
+
+  // a third across pane outside the window gets its own seat; "share seat N facing the other way" via arrows fails
+  // on a seat that already has a pair, and works on a lone seat
+  await sleep(400)
+  const c = await client({ id: 'ac-c', room: 'across', sit: 'across' }, u)
+  assert.equal(c.welcome.you.flipped, false)
+  c.send({ t: 'seat', op: 'move', to: s.seats['ac-a'], flip: true })
+  const shrug = await c.next((m) => m.t === 'seat' && m.why === 'move')
+  assert.ok(!shrug.flipped['ac-c'], 'a full pair takes no third pane')
+  c.send({ t: 'seat', op: 'share', to: s.seats['ac-side'] })
+  const shared = await c.next((m) => m.t === 'seat' && m.why === 'move' && m.flipped['ac-c'])
+  assert.equal(shared.seats['ac-c'], shared.seats['ac-side'])
+
+  // switching back to side unpairs: the flipped pane gets its own seat at the end
+  b.send({ t: 'sit', sit: 'side' })
+  const back = await a.next((m) => m.t === 'seat' && m.why === 'sit')
+  assert.ok(!back.flipped['ac-b']); assert.notEqual(back.seats['ac-b'], back.seats['ac-a'])
+  assert.deepEqual(back.across, [['ac-side', 'ac-c']])
+  await Promise.all([side.close(), a.close(), b.close(), c.close()])
+  await r.close()
+})
+
 test('a legacy per-network room on disk folds into the one room as away members', async () => {
   const fs = await import('node:fs')
   const os = await import('node:os')

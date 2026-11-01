@@ -28,7 +28,9 @@
 //
 // Client -> server
 //   hello   { t, v, id, room|null, seat|null, dock, name, color, status, skills, catalog,
-//             sprite: { sha, b64 } | { sha } | null, answers, x?, z?, facing?, anim?, device?, spectator? }
+//             sprite: { sha, b64 } | { sha } | null, answers, x?, z?, facing?, anim?, device?, spectator?, sit? }
+//           sit: 'side' (default, dock-linked strip) | 'across' (battleships: two 'across' panes that join or switch
+//           within DOCK_PAIR_WINDOW_MS share ONE seat; the later one gets flipped: true). Agents are unaffected.
 //           id = the device's stable agent id (persisted per profile). device = optional fingerprint string (<= 128,
 //           e.g. sha256(machine id + profile)); used to derive the id ('d-' + 24 hex) only when id is missing.
 //           One live agent per id: a second hello with the same id (reconnect, second pane, MCP overlay, restart)
@@ -42,7 +44,10 @@
 //   state   { t, x, z, facing, anim, status }      <= 10 Hz while moving, 1 Hz heartbeat otherwise
 //   seat    { t, op: 'bump', side: 'left'|'right' } pet dragged onto that edge of its own pane
 //           { t, op: 'move', to }                   arrows / tray Seat: swap with whoever holds seat `to`
-//           { t, op: 'unlink' }                     tray Unlink: drop this laptop's links
+//           { t, op: 'share', to } or { t, op: 'move', to, flip: true }   share seat `to` facing the other way
+//           { t, op: 'bump', side, share: true }    bump fallback for 'across': the later bumper shares the seat
+//           { t, op: 'unlink' }                     tray Unlink: drop this laptop's links and any across pairing
+//   sit     { t, sit: 'side'|'across' }             change how this pane sits (pairs/unpairs as above)
 //   catalog { t, items: Item[] }                    on change, at most every 5 s
 //   fetch   { t, fid, owner, ref, as: 'text'|'pkg' }
 //   fetched { t, fid, to, ok, sha, text?, pkg?, reason? }    owner's reply to a forwarded fetch
@@ -61,7 +66,9 @@
 //           (catalog stays searchable) for 24 h; it never moves until its owner is back. No away = gone (a probe).
 //   state   { t, v, pets: [{ id, x, z, facing, anim, status, away? }] }   room batch every 100 ms, changed pets only,
 //                                                 never your own; above 16 members only pets in your chunk +-1
-//   seat    { t, v, seats, held, links, why: SEAT_WHY[number], ids? }
+//   seat    { t, v, seats, held, flipped: { [id]: true }, across: [[hostId, flippedId]], links, why, ids? }
+//           two panes may hold the same seat only as an across pair (exactly one flipped). welcome carries the
+//           same seats/held/flipped/across, and you.flipped / you.sit.
 //           why 'bump' with nothing changed = shrug (ids = the pets that shrug). After any seat message every pane
 //           flashes its seat number for 2 s.
 //   catalog { t, v, id, items }
@@ -116,20 +123,23 @@ export const T = Object.freeze({
   hello: 'hello', welcome: 'welcome', join: 'join', leave: 'leave',
   state: 'state', seat: 'seat', catalog: 'catalog',
   fetch: 'fetch', fetched: 'fetched', ask: 'ask', answer: 'answer',
-  gift: 'gift', fx: 'fx'
+  gift: 'gift', fx: 'fx', sit: 'sit'
 })
 
-export const CLIENT_TYPES = Object.freeze(['hello', 'state', 'seat', 'catalog', 'fetch', 'fetched', 'ask', 'answer', 'gift', 'fx'])
+export const CLIENT_TYPES = Object.freeze(['hello', 'state', 'seat', 'catalog', 'fetch', 'fetched', 'ask', 'answer', 'gift', 'fx', 'sit'])
 export const SERVER_TYPES = Object.freeze(['welcome', 'join', 'leave', 'state', 'seat', 'catalog', 'fetch', 'fetched', 'ask', 'answer', 'gift', 'fx'])
 
 export const FX_KINDS = Object.freeze(['seek', 'gift', 'learned', 'ask', 'think', 'answer', 'fetch', 'pulse', 'bump', 'wave', 'say'])
-export const SEAT_OPS = Object.freeze(['bump', 'move', 'unlink'])
-export const SEAT_WHY = Object.freeze(['dock', 'bump', 'move', 'join', 'leave', 'unlink'])
+export const SEAT_OPS = Object.freeze(['bump', 'move', 'share', 'unlink'])
+export const SEAT_WHY = Object.freeze(['dock', 'across', 'bump', 'move', 'join', 'leave', 'unlink', 'sit'])
 export const ITEM_KINDS = Object.freeze(['skill', 'memory', 'technique', 'resource'])
 export const LANDMARK_OF = Object.freeze({ skill: 'workshop', memory: 'library', technique: 'dojo', resource: 'campfire' })
 export const STATUSES = Object.freeze(['idle', 'working', 'waiting', 'done', 'failed'])
 export const ANIMS = Object.freeze(['idle', 'run', 'wave', 'jump', 'failed', 'waiting', 'review'])
 export const DOCKS = Object.freeze(['left', 'right', 'none'])
+// How a pane sits with its neighbour: 'side' = the dock-linked strip (one seat each, side by side); 'across' =
+// battleships, back to back: two panes share ONE seat/chunk, the later one flipped: true (sees it mirrored).
+export const SITS = Object.freeze(['side', 'across'])
 export const DOCK_PAIR_WINDOW_MS = 60 * 1000 // dock auto-link pairs right+left docked laptops that joined this close
 
 export const CLOSE = Object.freeze({

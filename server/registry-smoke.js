@@ -83,7 +83,13 @@ async function main () {
   check(lv.away === true && lv.x === 7.5, 'A naps in place when its owner leaves')
   const a4 = await client({ id: aid, x: 0, z: 0, dock: 'right' })
   check(a4.welcome.you.resumed && a4.welcome.you.x === 7.5 && a4.welcome.you.facing === -1, 'next session resumes at the registry position')
-  for (const c of [a4, b, spec, spec2]) c.ws.close()
+  // battleships: two 'across' panes that join together share one seat, the later one flipped
+  const p1 = await client({ id: rid('across-'), sit: 'across' })
+  const p2 = await client({ id: rid('across-'), sit: 'across' })
+  check(p2.welcome.you.flipped === true && p2.welcome.you.seat === p1.welcome.you.seat, `across panes share seat ${p1.welcome.you.seat}, the second flipped`)
+  const sm = await spec.next((m) => m.t === 'seat' && m.why === 'across', 8000, 'across seat at spectator')
+  check(Object.keys(sm.flipped).length === 1 && sm.across.length === 1, 'spectator sees the across pair')
+  for (const c of [a4, b, spec, spec2, p1, p2]) c.ws.close()
   console.log(`PASS registry smoke in ${ms()}`)
 }
 
