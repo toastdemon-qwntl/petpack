@@ -17,7 +17,7 @@ import { analyzeRollout } from './question.js'
 
 const STOP = new Set(('a an and are as at be but by can could do does did for from get got has have how i if in into is it ' +
   'its me my of on or our so that the their them then there these this to too was we what when where which who why will ' +
-  'with would you your out up just also any some way about here now again still should must make made need please use ' +
+  'with would you your out up just never after before always first last next same other both onto over under also any some way about here now again still should must make made need please use ' +
   'using used run ran then than more most very only each every one two all not no yes done ready okay ok sure').split(' '))
 
 export function defaultCardsDir (opts = {}) {
@@ -41,12 +41,28 @@ function plain (s) {
 function firstSentence (s, max = 170) {
   const t = plain(s).split('\n').map(l => l.replace(/^\s*[-+]\s+|^\s*\d+[.)]\s+/, '').trim()).filter(l => l.length > 3)
   const joined = t.join(' ')
-  const m = /^(.{12,}?[.!?])(\s|$)/.exec(joined)
-  return clip(m ? m[1] : joined, max)
+  const sentences = joined.split(/(?<=[.!?])\s+/).filter(x => x.length > 3)
+  let out = sentences[0] || joined
+  if (out.length < 70 && sentences[1]) out = `${out.replace(/[.!?]$/, ';')} ${sentences[1]}` // a verdict alone says little
+  return clip(out, max)
 }
 
+// The ask in a prompt: the first paragraph that isn't a preamble (rules, instructions, bullet lists, tags).
+const BULLET = /^\s*(?:[-*+]|\d+[.)])\s/
 function gist (prompt) {
-  const lines = String(prompt || '').split('\n').map(l => l.replace(/^#+\s*|^[-*]\s+/, '').trim()).filter(Boolean)
+  const text = String(prompt || '')
+  for (const para of text.split(/\n\s*\n/)) {
+    const lines = para.split('\n').map(l => l.trim()).filter(Boolean)
+    if (!lines.length) continue
+    const first = lines[0].replace(/^#+\s*/, '')
+    if (BULLET.test(lines[0]) || /^[[<]/.test(first)) continue
+    if (/\b(?:rulings?|instructions|guidelines|house rules|AGENTS\.md)\b/i.test(first)) continue
+    if (lines.filter(l => BULLET.test(l)).length / lines.length > 0.6) continue
+    const s = first.replace(/\s*\([^)]*\/[^)]*\)/g, '') // drop "(/some/path)" asides
+    const m = /^(.{12,}?[.!?])(\s|$)/.exec(s)
+    return clip(m ? m[1] : s, 200)
+  }
+  const lines = text.split('\n').map(l => l.replace(/^#+\s*|^[-*]\s+/, '').trim()).filter(Boolean)
   return lines[0] || ''
 }
 
@@ -58,7 +74,8 @@ function textOf (content) {
 
 const CMD_RE = /\bcmd\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/g
 const FILE_RE = /\*\*\* (?:Update|Add) File: (.+)/g
-const NOISE_CMD = /^(?:pwd|ls|cat|sed -n|head|tail|wc|rg|grep|find|git (?:status|log|diff|show|rev-parse)|echo|date|which|node --version)\b/
+const NOISE_CMD = /^(?:pwd|ls|cat|nl|cd|sed|awk|head|tail|wc|rg|grep|find|sort|uniq|jq|git (?:status|log|diff|show|rev-parse|remote|branch|fetch)|echo|printf|date|which|true|node --version|stat|file|du|df)\b/
+const NOTABLE_CMD = /\b(?:test|tests|install|build|deploy|publish|npm|pnpm|yarn|npx|node --test|pytest|cargo|make|docker|az|gcloud|kubectl|terraform|vitest|jest|tsc|eslint|prettier|codex|electron|git (?:commit|push|rebase|merge|cherry-pick|tag))\b/
 
 function commandsAndFiles (lines) {
   const cmds = []
@@ -91,13 +108,14 @@ function commandsAndFiles (lines) {
     while ((m = FILE_RE.exec(body))) files.push(m[1].replace(/\\n.*$/, '').trim())
   }
   const uniq = a => [...new Set(a)]
-  return { commands: uniq(cmds).slice(-6), files: uniq(files).slice(-8) }
+  const notable = uniq(cmds).filter(c => NOTABLE_CMD.test(c))
+  return { commands: notable.slice(-6), files: uniq(files).slice(-8) }
 }
 
 function tagsOf (...texts) {
   const counts = new Map()
   for (const t of texts) {
-    for (const w of String(t || '').toLowerCase().split(/[^a-z0-9+#.-]+/)) {
+    for (const w of String(t || '').replace(/\S*[\\/]\S*/g, ' ').toLowerCase().split(/[^a-z0-9+#.-]+/)) {
       const k = w.replace(/^[.-]+|[.-]+$/g, '')
       if (k.length < 3 || k.length > 24 || STOP.has(k) || /^\d+$/.test(k) || /^[0-9a-f]{7,}$/.test(k)) continue
       counts.set(k, (counts.get(k) || 0) + 1)
@@ -189,5 +207,5 @@ export async function lessonFromSession (codexHome, session, opts = {}) {
     await fsp.writeFile(out, cardMarkdown(card))
     invalidateCatalog()
     return base
-  } catch { return null }
+  } catch (err) { if (process.env.PETPACK_DEBUG) console.error(err); return null }
 }
