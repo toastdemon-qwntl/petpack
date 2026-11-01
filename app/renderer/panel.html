@@ -12,6 +12,7 @@
     <div class="who">
       <div class="name" id="pet-name">Your pet</div>
       <div class="status"><span class="dot" id="status-dot"></span><span id="status-text">idle</span></div>
+      <div class="task-line" id="task-line" hidden></div>
     </div>
     <button id="recall" class="btn primary" title="Call your pet home">Come home</button>
     <div id="reply" class="reply" aria-live="polite"></div>
@@ -71,6 +72,13 @@
         <span class="label">Align</span>
         <button class="btn small icon" id="align-up" title="Move the pane up">▲</button>
         <button class="btn small icon" id="align-down" title="Move the pane down">▼</button>
+      </div>
+      <div class="row sit-row">
+        <span class="label">Sitting</span>
+        <div class="seg small" id="sit" role="radiogroup" aria-label="Sitting">
+          <button data-sit="side" role="radio">Side by side</button>
+          <button data-sit="across" role="radio"><span class="flip" aria-hidden="true"></span>Across the table</button>
+        </div>
       </div>
       <h3 class="sub-h" id="sit-next">Sit next to…</h3>
       <div class="cowork-note" id="cowork-note" aria-live="polite" hidden></div>

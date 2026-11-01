@@ -71,6 +71,11 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
   const stopTail = tailRollouts(addLine, { intervalMs: 1000 })
 
   function sharing () { return readSharing(userData) }
+  // "Sitting": main's state() may carry `sit`; else settings.json, which main's setSit writes before returning.
+  function currentSit (s = {}) {
+    if (s.sit === 'across' || s.sit === 'side') return s.sit
+    try { return JSON.parse(fs.readFileSync(path.join(userData, 'settings.json'), 'utf8'))?.sit === 'across' ? 'across' : 'side' } catch { return 'side' }
+  }
   // First run with a settings.json `share` block (L3b's) but no sharing.json yet: start from it.
   if (!fs.existsSync(sharingFile(userData))) {
     try {
@@ -85,7 +90,8 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
       room: s.room || DEFAULT_ROOM, seat: s.seat ?? null, dock: s.dock || 'right', align: s.align || 0, codex: s.codex ?? null,
       sharing: sh, dnd: sh.dnd, muted: report.muted ?? muted, online: Number.isFinite(report.online) ? report.online : null,
       status: statusLine({ ...report, dnd: sh.dnd }, codexStatus), codexStatus, errand: report.errand || null,
-      reply, platform: process.platform, canSetRoom: true,
+      reply, platform: process.platform, canSetRoom: true, sit: currentSit(s),
+      task: typeof report.task === 'string' && report.task.trim() ? report.task.trim().slice(0, 80) : null,
     }
   }
   const refresh = () => push({ type: 'state', state: snapshot() })
@@ -134,12 +140,19 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
     push({ type: 'cowork', cowork: { text, ok: ok !== false, side: side || null } })
   }
   function onCoworkResult (res) {
-    const p = people.find(x => x.id === String(res.id ?? coworking?.id ?? ''))
+    // brain.coworkWith -> { ok, pending, message, target? } (WIRE adds name); ok:false + pending:true = "as soon as
+    // they're online", which is a wait, not a failure.
+    const id = String(res.id ?? res.target ?? coworking?.id ?? '')
+    const p = people.find(x => x.id === id)
     const name = res.name || p?.name || coworking?.name
     const side = res.side === 'left' || res.side === 'right' ? res.side : p?.side || null
-    if (res.ok === false) return confirmCowork({ name, ok: false, message: res.message || res.reason })
-    if (side) return confirmCowork({ name, side })
-    if (res.message) push({ type: 'cowork', cowork: { text: res.message, ok: true, side: null, pending: true } })
+    // The brain's words may name people by id; say their name.
+    const say = text => (id && name ? String(text).split(id).join(name) : String(text)).slice(0, 140)
+    if (res.ok === false && !res.pending) return confirmCowork({ name, ok: false, message: res.message || res.reason ? say(res.message || res.reason) : undefined })
+    if (side && res.ok !== false) return confirmCowork({ name, side })
+    // On the way: shown only while we're waiting (a late reply never covers a confirmation already shown); the arrow
+    // version follows when the people report puts them beside us.
+    if (res.message && coworking && coworking.id === id) push({ type: 'cowork', cowork: { text: say(res.message), ok: true, side: null, pending: true } })
   }
   function cowork (id) {
     const p = people.find(x => x.id === String(id))
@@ -309,6 +322,7 @@ export function createPanel ({ tray, state = () => ({}), actions = {}, pane, use
     copyRoom: () => { clipboard.writeText(snapshot().room); return true },
     setRoom: code => setRoom(code),
     setDock: side => { actions.setDock?.(side === 'left' ? 'left' : 'right'); return snapshot() },
+    setSit: sit => { actions.setSit?.(sit === 'across' ? 'across' : 'side'); return snapshot() },
     nudge: dy => { actions.nudge?.(dy === 'reset' ? 'reset' : Number(dy) || 0); return snapshot() },
     dnd: on => setDnd(on),
     mute: () => {
@@ -431,6 +445,49 @@ async function selfTest (panel, { dir, userData }) {
   checks.sectionsPresent = await js(`${JSON.stringify(sections)}.every(id => document.getElementById('sec-' + id))`)
   checks.petCount = await js('document.querySelectorAll(".pet-tile").length')
   checks.catalogCount = await js('document.querySelectorAll(".share-item").length')
+  // Header task line (the pane reports `task` while Codex works).
+  panel.simulateReport({ task: 'fixing tests' })
+  await js(`document.getElementById('sec-header').scrollIntoView(); true`)
+  await wait(300)
+  checks.taskLine = await js(`(() => { const t = document.getElementById('task-line'); return t.hidden ? null : getComputedStyle(t, '::before').content.replace(/"/g, '') + t.textContent })()`)
+  await shot('15-task-line')
+  // Sitting: across the table and back; main's setSit saves settings.json `sit`.
+  await js(`document.getElementById('sec-room').scrollIntoView({ block: 'start' }); document.querySelector('[data-sit="across"]').click(); true`)
+  await wait(500)
+  const readSit = () => { try { return JSON.parse(fs.readFileSync(path.join(userData, 'settings.json'), 'utf8')).sit || null } catch { return null } }
+  checks.sitSaved = readSit()
+  checks.sitUi = await js(`document.querySelector('[data-sit="across"]').getAttribute('aria-checked')`)
+  await shot('16-sit-across')
+  await js(`document.querySelector('[data-sit="side"]').click(); true`)
+  await wait(400)
+  checks.sitBack = readSit()
+  // The real room (WIRE's people report from the brain, demo bots included) and a real co-work through brain.coworkWith.
+  let real = await panel.commands.people()
+  // PETPACK_PANEL_SHOTS_PEERS=1: a second petpack is joining the same room; wait for it (up to 30 s).
+  for (let i = 0; process.env.PETPACK_PANEL_SHOTS_PEERS && i < 60 && !real.some(p => !p.bot && !p.side); i++) { await wait(500); real = await panel.commands.people() }
+  checks.realNames = real.map(p => p.name)
+  checks.realPeople = real.length
+  const target = real.find(p => !p.side && !p.bot) || real.find(p => !p.side)
+  if (target) {
+    await js(`document.querySelector('.person[data-id="${String(target.id).replace(/"/g, '\\"')}"]')?.click(); true`)
+    let note = ''
+    for (let i = 0; i < 40; i++) {
+      await wait(250)
+      note = await js(`document.getElementById('cowork-note').textContent`)
+      if (/Now next to|couldn't|not online/i.test(note)) break
+    }
+    checks.realCowork = note
+    // Then the relay seats them beside us: the neighbours row and the arrow confirmation follow (up to 12 s).
+    let nb = ''
+    for (let i = 0; i < 48; i++) {
+      nb = await js(`[...document.querySelectorAll('.nb.on .nb-name')].map(n => n.textContent).join(',')`)
+      if (nb) break
+      await wait(250)
+    }
+    checks.realNeighbour = nb || null
+    checks.realConfirm = await js(`document.getElementById('cowork-note').textContent`)
+    await shot('17-real-cowork')
+  }
   // Sit next to…: a room of teammates (the pane's people report, simulated here so it doesn't depend on WIRE), one
   // already on our left; ask to sit next to another, then the relay seats them on our right.
   const pool = (await panel.commands.pets()).list.filter(p => p.spriteUrl).slice(0, 4)
@@ -490,7 +547,7 @@ async function selfTest (panel, { dir, userData }) {
   checks.restored = saved.dnd === false && saved.mode === 'free' && (!firstRef || !saved.hidden.includes(firstRef))
   await shot('12-restored')
   const errors = panel.errors()
-  const ok = checks.sectionsPresent && checks.coworkConfirm === 'Now next to Bea →' && checks.neighbourLeft === 'Sam' && checks.sharingMode === 'ask' && checks.dndSaved === true && checks.dndUi === true &&
+  const ok = checks.sectionsPresent && checks.coworkConfirm === 'Now next to Bea →' && checks.taskLine === 'working on: fixing tests' && checks.sitSaved === 'across' && checks.sitUi === 'true' && checks.sitBack === 'side' && checks.sharingMode === 'ask' && checks.dndSaved === true && checks.dndUi === true &&
     checks.restored && checks.hiddenSaved !== false && checks.terminalLines > 0 && errors.length === 0
   fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify({ ok, checks, errors, at: new Date().toISOString() }, null, 2))
   console.log(`panel self-test: ${ok ? 'ok' : 'FAILED'} ${JSON.stringify(checks)} errors=${errors.length} -> ${dir}`)

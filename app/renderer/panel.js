@@ -28,6 +28,7 @@ const ICONS = {
   quit: ['...##...', '.#.##.#.', '#..##..#', '#......#', '#......#', '.#....#.', '..####..', '........'],
   moon: ['..###...', '.##.....', '##......', '##......', '##.....#', '.##...##', '..####..', '........'],
   check: ['........', '......#.', '.....##.', '#...##..', '##.##...', '.###....', '..#.....', '........'],
+  flip: ['..#.....', '.###....', '#.#.....', '..#..#..', '..#..#..', '.....#.#', '....###.', '.....#..'],
   skill: ['..##....', '.####...', '######..', '.####...', '..####..', '...####.', '....###.', '.....#..'],
   memory: ['.######.', '#......#', '#.####.#', '#......#', '#.###..#', '#......#', '.######.', '........'],
   technique: ['...##...', '..####..', '.##..##.', '##.##.##', '##.##.##', '.##..##.', '..####..', '...##...'],
@@ -40,6 +41,7 @@ function paintIcons () {
   set('.ico-party', icon('party')); set('.ico-collapse', icon('collapse')); set('.ico-quit', icon('quit'))
   document.documentElement.style.setProperty('--moon', icon('moon', '#fff'))
   document.documentElement.style.setProperty('--check', icon('check', '#fff'))
+  document.documentElement.style.setProperty('--flip', icon('flip', '#3f86a8'))
 }
 
 // The built-in pixel pet (no Codex pet found), drawn like the tray icon.
@@ -128,7 +130,10 @@ function renderHeader () {
   const st = $('status-text').parentElement
   st.dataset.key = state.status.key
   $('status-text').textContent = state.status.text
-  $('recall').textContent = state.errand ? 'Come home' : 'Come home'
+  // What Codex is on right now (the pane reports `task` only while it works).
+  $('task-line').hidden = !state.task
+  $('task-line').textContent = state.task || ''
+  $('task-line').title = state.task ? `working on: ${state.task}` : ''
   document.body.classList.toggle('dnd', Boolean(state.dnd))
 }
 function showReply (text) {
@@ -275,7 +280,12 @@ function renderRoom () {
   $('room-code').textContent = state.room
   $('online-n').textContent = state.online == null ? '–' : String(state.online)
   for (const b of $('dock').querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.dock === state.dock))
+  for (const b of $('sit').querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.sit === (state.sit || 'side')))
 }
+$('sit').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-sit]')
+  if (b) { state = await call('setSit', b.dataset.sit); renderRoom() }
+})
 $('room-copy').addEventListener('click', async () => { await call('copyRoom'); $('room-copy').textContent = 'Copied'; setTimeout(() => { $('room-copy').textContent = 'Copy' }, 1200) })
 $('room-change').addEventListener('click', () => { $('room-form').hidden = false; $('room-input').value = state?.room || ''; $('room-input').focus(); $('room-input').select() })
 $('room-cancel').addEventListener('click', () => { $('room-form').hidden = true })
@@ -377,7 +387,7 @@ bridge.on(msg => {
   if (msg.type === 'state') { state = msg.state; render() } else if (msg.type === 'line') addTermLine(msg.line)
   else if (msg.type === 'reply') showReply(msg.reply.text)
   else if (msg.type === 'people') { people = msg.people || []; renderPeople() }
-  else if (msg.type === 'cowork') showCowork(msg.cowork.text, msg.cowork.ok !== false, Boolean(msg.cowork.pending))
+  else if (msg.type === 'cowork') { showCowork(msg.cowork.text, msg.cowork.ok !== false, Boolean(msg.cowork.pending)); renderPeople() }
   else if (msg.type === 'ask') showAsk(msg.ask)
   else if (msg.type === 'ask-done') { if (asking?.id === msg.id) { asking = null; $('ask').hidden = true } }
   else if (msg.type === 'shown') { call('pets').then(p => { pets = p; renderAllPets() }).catch(() => {}); loadCatalog() }
