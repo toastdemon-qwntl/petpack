@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>petpack · stage</title>
+  <link rel="icon" href="data:,">
+  <script type="importmap">{ "imports": {
+    "three": "../../../node_modules/three/build/three.module.js",
+    "three/addons/": "../../../node_modules/three/examples/jsm/" } }</script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #4e5c54; background: #f7f8f4; font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    header { height: 76px; display: flex; align-items: center; justify-content: space-between; padding: 0 38px; }
+    .mark { display: flex; align-items: center; gap: 9px; font-size: 17px; font-weight: 650; letter-spacing: -.7px; }
+    .mark i { width: 12px; height: 12px; border-radius: 50%; background: #8aaf71; box-shadow: inset 0 1px 2px #ffffff80; }
+    nav { display: flex; align-items: center; gap: 8px; }
+    button { border: 1px solid #dfe4dc; color: inherit; background: #ffffffb8; border-radius: 100px; height: 34px; min-width: 36px; padding: 0 13px; font: inherit; cursor: pointer; }
+    button:hover { background: white; border-color: #afc1a7; }
+    button:focus-visible { outline: 2px solid #748c65; outline-offset: 3px; }
+    output { min-width: 65px; text-align: center; font-variant-numeric: tabular-nums; }
+    main { max-width: 1500px; margin: 0 auto; padding: 4px 38px 30px; }
+    .small-row { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+    .small { width: 600px; height: 300px; position: relative; border-radius: 24px; background: radial-gradient(ellipse at 50% 50%, #e6efed, #edf2f3 65%, #eff1f3); }
+    .small::after { content: "600 × 300"; position: absolute; bottom: 15px; right: 19px; font-size: 10px; color: #87928b; letter-spacing: .06em; }
+    canvas { display: block; width: 100%; height: 100%; }
+    .large { width: 100%; aspect-ratio: 2.8; min-height: 320px; position: relative; border-radius: 28px; background: radial-gradient(ellipse at 50% 40%, #f7f8f1, #eff2e9); }
+    .large::after { content: "STAGE"; position: absolute; left: 23px; bottom: 19px; font-size: 9px; letter-spacing: .16em; color: #8c9788; }
+    body.dark { background: #252d35; color: #d4ddd7; }
+    body.dark .small, body.dark .large { background: radial-gradient(ellipse at 50% 40%, #344350, #27333d); }
+    body.dark button { background: #ffffff0c; border-color: #ffffff25; }
+    @media (max-width: 720px) { header { padding: 0 18px; } main { padding: 0 12px 20px; } .small { width: 100%; height: auto; aspect-ratio: 2; } .large { min-height: 260px; aspect-ratio: 1.6; } }
+    @media (min-width: 1800px) { main { max-width: 2060px; } .small-row { margin-bottom: 60px; } .large { aspect-ratio: 2.4; } header { height: 110px; padding: 0 max(38px, calc((100vw - 1984px) / 2)); } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="mark"><i></i>petpack</div>
+    <nav aria-label="Stage controls">
+      <button id="previous" aria-label="Previous seat">←</button>
+      <output id="seat">Seat 0</output>
+      <button id="next" aria-label="Next seat">→</button>
+      <button id="background" aria-label="Toggle dark desktop">◐</button>
+    </nav>
+  </header>
+  <main>
+    <div class="small-row"><div class="small"><canvas id="overlay" aria-label="Stage at overlay size"></canvas></div></div>
+    <div class="large"><canvas id="large" aria-label="Large stage preview"></canvas></div>
+  </main>
+  <script type="module">
+    import { createStage } from './stage.js'
+    const stages = [...document.querySelectorAll('canvas')].map(canvas => createStage(canvas, { seat: 0 }))
+    window.stages = stages
+    let seat = 0
+    const switchSeat = delta => {
+      seat += delta
+      document.querySelector('#seat').textContent = `Seat ${seat}`
+      stages.forEach(stage => stage.setSeat(seat))
+    }
+    document.querySelector('#previous').onclick = () => switchSeat(-1)
+    document.querySelector('#next').onclick = () => switchSeat(1)
+    document.querySelector('#background').onclick = () => document.body.classList.toggle('dark')
+    const observer = new ResizeObserver(entries => {
+      entries.forEach(entry => {
+        const index = [...document.querySelectorAll('canvas')].indexOf(entry.target)
+        stages[index].resize(entry.contentRect.width, entry.contentRect.height)
+      })
+    })
+    document.querySelectorAll('canvas').forEach(canvas => observer.observe(canvas))
+    let previous = performance.now(), raf
+    function animate(now) {
+      const dt = Math.min((now - previous) / 1000, 0.05)
+      previous = now
+      stages.forEach(stage => { stage.update(dt, now / 1000); stage.render() })
+      raf = requestAnimationFrame(animate)
+    }
+    raf = requestAnimationFrame(animate)
+    window.addEventListener('pagehide', () => {
+      cancelAnimationFrame(raf)
+      observer.disconnect()
+      stages.forEach(stage => stage.dispose())
+    }, { once: true })
+  </script>
+</body>
+</html>

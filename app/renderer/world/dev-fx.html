@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <link rel="icon" href="data:,">
+  <title>petpack · effects</title>
+  <script type="importmap">{ "imports": {
+    "three": "../../../node_modules/three/build/three.module.js",
+    "three/addons/": "../../../node_modules/three/examples/jsm/" } }</script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-content: center;
+      background: radial-gradient(ellipse at 50% 35%, #fff 0%, #f3f6f9 55%, #e4ebf3 100%);
+      font: 12px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #677482; }
+    main { width: min(1160px, 96vw); display: grid; justify-items: center; }
+    #view { position: relative; width: 100%; aspect-ratio: 2; }
+    #view.compact { width: min(600px, 96vw); }
+    canvas, #overlay { display: block; position: absolute; inset: 0; width: 100%; height: 100%; }
+    #overlay { pointer-events: none; }
+    nav { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; max-width: 750px; padding: 15px 20px; }
+    button { border: 1px solid #dfe5ec; background: #ffffffc9; color: #566270; border-radius: 12px;
+      padding: 9px 13px; font: inherit; font-weight: 600; cursor: pointer;
+      box-shadow: 0 2px 5px #324b6604; transition: background .18s, transform .18s; }
+    button:hover { background: white; transform: translateY(-1px); }
+    button:active { transform: scale(.97); }
+    button:focus-visible { outline: 2px solid #0a84ff; outline-offset: 3px; }
+    button.primary { background: #0a84ff; border-color: #0a84ff; color: white; padding-inline: 20px; }
+    button[aria-pressed='true']:not(.primary) { background: #e8f2ff; color: #0876e4; border-color: #b9d8fa; }
+  </style>
+</head>
+<body>
+<main>
+  <div id="view"><canvas aria-label="Three pets sharing glowing skill dots"></canvas><div id="overlay"></div></div>
+  <nav aria-label="Effect controls">
+    <button class="primary" data-action="gift">Share a skill ↗</button>
+    <button data-action="reply">Send one back ↙</button>
+    <button data-status="working">Working</button><button data-status="waiting">Waiting</button>
+    <button data-status="done">Done</button><button data-status="failed">Failed</button>
+    <button data-action="say">Say hello</button><button data-action="skills">12 dots</button>
+    <button data-status="idle">Idle</button><button data-action="size" aria-pressed="false">600 × 300</button>
+    <button data-action="auto" aria-pressed="true">Autoplay</button>
+  </nav>
+</main>
+<script type="module">
+  import * as THREE from 'three'
+  import { createFx } from './fx.js'
+
+  const view = document.querySelector('#view')
+  const canvas = document.querySelector('canvas')
+  const overlay = document.querySelector('#overlay')
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true })
+  renderer.setClearColor(0, 0)
+  renderer.outputColorSpace = THREE.SRGBColorSpace
+  renderer.toneMapping = THREE.ACESFilmicToneMapping
+  renderer.toneMappingExposure = 1.12
+  renderer.shadowMap.enabled = true
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  const scene = new THREE.Scene()
+  const camera = new THREE.PerspectiveCamera(22, 2, .1, 100)
+  camera.position.set(8, 10, 26)
+  camera.lookAt(8, 1.3, 0)
+  scene.add(new THREE.HemisphereLight('#e7f1ff', '#9db28a', 2.6))
+  const sun = new THREE.DirectionalLight('#ffe2b8', 3.4)
+  sun.position.set(0, 12, 7); sun.castShadow = true
+  sun.shadow.mapSize.set(2048, 2048)
+  Object.assign(sun.shadow.camera, { left: -12, right: 12, top: 12, bottom: -12 })
+  sun.shadow.normalBias = .025
+  sun.shadow.blurSamples = 8
+  scene.add(sun)
+
+  // A deliberately quiet stand-in for the stage: everything above it is FX.
+  const island = new THREE.Mesh(new THREE.SphereGeometry(1, 64, 32),
+    new THREE.MeshStandardMaterial({ color: '#bedba4', roughness: .95 }))
+  island.scale.set(8.1, .58, 2.7); island.position.set(8, -.52, 0); island.receiveShadow = true
+  scene.add(island)
+  const path = new THREE.Mesh(new THREE.CircleGeometry(1, 80),
+    new THREE.MeshStandardMaterial({ color: '#f4e8cd', roughness: 1 }))
+  path.rotation.x = -Math.PI / 2; path.scale.set(7.7, 1.02, 1); path.position.set(8, .06, 0)
+  path.receiveShadow = true; scene.add(path)
+
+  const fx = createFx({ scene, camera, overlay })
+  const pets = []
+  const sphere = new THREE.SphereGeometry(.62, 40, 28)
+  const eyeGeometry = new THREE.SphereGeometry(1, 20, 16)
+  const white = new THREE.MeshStandardMaterial({ color: 'white', roughness: .3 })
+  const dark = new THREE.MeshStandardMaterial({ color: '#172f49', roughness: .25 })
+  for (const [i, color] of ['#0A84FF', '#BF5AF2', '#FF9F0A'].entries()) {
+    const anchor = new THREE.Group()
+    anchor.position.set(3.15 + i * 4.85, .08, 0)
+    const body = new THREE.Group(); anchor.add(body)
+    const orb = new THREE.Mesh(sphere, new THREE.MeshPhysicalMaterial({ color,
+      roughness: .24, metalness: .03, clearcoat: 1, clearcoatRoughness: .15 }))
+    orb.position.y = .67; orb.castShadow = true; body.add(orb)
+    for (const x of [-.18, .18]) {
+      const eye = new THREE.Mesh(eyeGeometry, white)
+      eye.scale.set(.13, .17, .085); eye.position.set(x, .84, .55); body.add(eye)
+      const pupil = new THREE.Mesh(eyeGeometry, dark)
+      pupil.scale.set(.057, .082, .032); pupil.position.set(x + .023, .85, .63); body.add(pupil)
+    }
+    scene.add(anchor)
+    const id = `pet-${i}`
+    fx.attach(id, { anchor, height: 1.32, color, name: ['Mochi', 'Pip', 'Sunny'][i], isMe: i === 0 })
+    fx.setSkills(id, [6, 4, 8][i])
+    pets.push({ id, anchor, body, pop: 0 })
+  }
+  fx.setStatus('pet-0', 'working')
+  fx.setStatus('pet-1', 'waiting')
+  fx.setStatus('pet-2', 'done')
+
+  let time = 0, last = performance.now(), paused = false, auto = true, nextGift = 2.6, direction = 0
+  async function send(reverse = false) {
+    const source = reverse ? 2 : 0
+    const target = reverse ? 0 : 2
+    const arrived = await fx.gift(pets[source].id, pets[target].id,
+      { color: reverse ? '#FF9F0A' : '#0A84FF', label: reverse ? 'imagegen' : 'pdf' })
+    if (arrived) {
+      pets[target].pop = 1
+      fx.say(pets[target].id, reverse ? 'Ooh, I know this now!' : 'A little more magic ✨')
+    }
+    return arrived
+  }
+  function tick(dt) {
+    time += dt
+    for (let i = 0; i < pets.length; i++) {
+      const pet = pets[i]
+      pet.pop = Math.max(0, pet.pop - dt * 2)
+      const pop = Math.sin((1 - pet.pop) * Math.PI * 3) * pet.pop
+      const breathe = Math.sin(time * 2.4 + i) * .015
+      pet.body.scale.set(1 - pop * .17 - breathe, 1 + pop * .25 + breathe, 1 - pop * .12)
+      pet.body.position.y = Math.max(0, pop * .45)
+    }
+    fx.update(dt, time)
+    renderer.render(scene, camera)
+    if (auto && time >= nextGift) { send(Boolean(direction++ % 2)); nextGift = time + 6 }
+  }
+  function resize() {
+    const { width, height } = view.getBoundingClientRect()
+    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2)); renderer.setSize(width, height, false)
+    camera.aspect = width / height; camera.updateProjectionMatrix()
+    fx.resize(width, height); renderer.render(scene, camera)
+  }
+  const observer = new ResizeObserver(resize); observer.observe(view); resize()
+  let frame
+  function loop(now) {
+    const dt = Math.min(.05, (now - last) / 1000); last = now
+    if (!paused) tick(dt)
+    frame = requestAnimationFrame(loop)
+  }
+  frame = requestAnimationFrame(loop)
+  document.querySelector('nav').addEventListener('click', (event) => {
+    const button = event.target.closest('button')
+    if (!button) return
+    if (button.dataset.status) for (const pet of pets) fx.setStatus(pet.id, button.dataset.status)
+    switch (button.dataset.action) {
+      case 'gift': send(); break
+      case 'reply': send(true); break
+      case 'say': fx.say('pet-1', 'Hello, neighbour.'); break
+      case 'skills': for (const pet of pets) fx.setSkills(pet.id, 12); break
+      case 'size': view.classList.toggle('compact'); button.setAttribute('aria-pressed', String(view.classList.contains('compact'))); break
+      case 'auto': auto = !auto; nextGift = time + 1; button.setAttribute('aria-pressed', String(auto)); break
+    }
+  })
+  window.fxDemo = { fx, pets, scene, camera, renderer, send, resize,
+    pause(value = true) { paused = value; auto = false },
+    advance(seconds) { const steps = Math.ceil(seconds * 120); for (let i = 0; i < steps; i++) tick(seconds / steps) },
+  }
+  window.addEventListener('pagehide', () => {
+    cancelAnimationFrame(frame); observer.disconnect(); fx.dispose()
+    scene.traverse((object) => { object.geometry?.dispose(); object.material?.dispose() })
+    renderer.dispose()
+  }, { once: true })
+</script>
+</body>
+</html>
