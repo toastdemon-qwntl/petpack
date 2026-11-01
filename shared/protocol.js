@@ -42,8 +42,14 @@
 //           seat = the last seat (reconnect) or --seat; welcome is authoritative.
 //           sprite: send b64 once; afterwards { sha } alone is enough if the relay still has it.
 //   state   { t, x, z, facing, anim, status }      <= 10 Hz while moving, 1 Hz heartbeat otherwise
-//   seat    { t, op: 'bump', side: 'left'|'right' } pet dragged onto that edge of its own pane
+//   seat    { t, op: 'bump', side: 'left'|'right' } pet dragged onto that edge of its own pane; a matched bump follows
+//                                                 the nextTo rule (the later bumper moves beside the other)
 //           { t, op: 'move', to }                   arrows / tray Seat: swap with whoever holds seat `to`
+//           { t, op: 'nextTo', target }             co-work: sit me right beside target (agent id or name); the
+//                                                 target stays. Docked right -> I sit on its LEFT, docked left ->
+//                                                 RIGHT, floating -> whichever side is free (right first). If my
+//                                                 side has a co-worker I take the other; both taken -> nearest free
+//                                                 seat, why 'full'. Unknown target: a seat to me only, shrug, reason.
 //           { t, op: 'share', to } or { t, op: 'move', to, flip: true }   share seat `to` facing the other way
 //           { t, op: 'bump', side, share: true }    bump fallback for 'across': the later bumper shares the seat
 //           { t, op: 'unlink' }                     tray Unlink: drop this laptop's links and any across pairing
@@ -66,7 +72,11 @@
 //           (catalog stays searchable) for 24 h; it never moves until its owner is back. No away = gone (a probe).
 //   state   { t, v, pets: [{ id, x, z, facing, anim, status, away? }] }   room batch every 100 ms, changed pets only,
 //                                                 never your own; above 16 members only pets in your chunk +-1
-//   seat    { t, v, seats, held, flipped: { [id]: true }, across: [[hostId, flippedId]], links, why, ids? }
+//   seat    { t, v, seats, held, flipped: { [id]: true }, across: [[hostId, flippedId]], links, why, ids?,
+//             neighbours: { [paneId]: { left: id|null, right: id|null, across: id|null } }, cowork?: [leftId, rightId],
+//             via?: 'bump', shrug?, reason? }
+//           why 'cowork' (nextTo or bump) / 'dock' (auto co-work) with cowork = the new pair: play the handshake.
+//           Auto co-work on join: opposite docks within DOCK_PAIR_WINDOW_MS, else the same public IP (venue NAT).
 //           two panes may hold the same seat only as an across pair (exactly one flipped). welcome carries the
 //           same seats/held/flipped/across, and you.flipped / you.sit.
 //           why 'bump' with nothing changed = shrug (ids = the pets that shrug). After any seat message every pane
@@ -101,6 +111,13 @@ export const WS_PATH = '/ws'
 // One unified room for the hackathon (operator, 14:4xZ): every client without an explicit --room lands here.
 export const DEFAULT_ROOM = 'dde-ldn'
 export const LEGACY_AUTO_ROOM = /^net-[a-f0-9]{8}$/
+// Test clients never land in (or persist into) the shared room: dock 'none' (headless probes), test: true, or a
+// --profile that looks like a test run go to SCRATCH_ROOM, which is never written to the relay's snapshot.
+export const SCRATCH_ROOM = 'dde-ldn-scratch'
+export const TEST_PROFILE = /^(it-|s1|rel|smoke|l2|pair)/i
+export function isTestHello (h) {
+  return !!h && (h.test === true || h.dock === 'none' || (typeof h.profile === 'string' && TEST_PROFILE.test(h.profile)))
+}
 export const OPEN_TIMEOUT_MS = 4000
 export const PRIMARY_PROBE_MS = 15000
 
@@ -130,8 +147,8 @@ export const CLIENT_TYPES = Object.freeze(['hello', 'state', 'seat', 'catalog', 
 export const SERVER_TYPES = Object.freeze(['welcome', 'join', 'leave', 'state', 'seat', 'catalog', 'fetch', 'fetched', 'ask', 'answer', 'gift', 'fx'])
 
 export const FX_KINDS = Object.freeze(['seek', 'gift', 'learned', 'ask', 'think', 'answer', 'fetch', 'pulse', 'bump', 'wave', 'say'])
-export const SEAT_OPS = Object.freeze(['bump', 'move', 'share', 'unlink'])
-export const SEAT_WHY = Object.freeze(['dock', 'across', 'bump', 'move', 'join', 'leave', 'unlink', 'sit'])
+export const SEAT_OPS = Object.freeze(['bump', 'move', 'share', 'nextTo', 'unlink'])
+export const SEAT_WHY = Object.freeze(['dock', 'cowork', 'full', 'across', 'bump', 'move', 'join', 'leave', 'unlink', 'sit'])
 export const ITEM_KINDS = Object.freeze(['skill', 'memory', 'technique', 'resource'])
 export const LANDMARK_OF = Object.freeze({ skill: 'workshop', memory: 'library', technique: 'dojo', resource: 'campfire' })
 export const STATUSES = Object.freeze(['idle', 'working', 'waiting', 'done', 'failed'])
@@ -250,6 +267,9 @@ export const msg = Object.freeze({
   bump: (side) => ({ t: 'seat', op: 'bump', side }),
   move: (to) => ({ t: 'seat', op: 'move', to }),
   unlink: () => ({ t: 'seat', op: 'unlink' }),
+  nextTo: (target) => ({ t: 'seat', op: 'nextTo', target }),
+  share: (to) => ({ t: 'seat', op: 'share', to }),
+  sit: (sit) => ({ t: 'sit', sit }),
   catalog: (items) => ({ t: 'catalog', items }),
   fetch: ({ fid, owner, ref, as = 'text' }) => ({ t: 'fetch', fid, owner, ref, as }),
   fetched: ({ fid, to, ok, sha, text, pkg, reason }) => ({ t: 'fetched', fid, to, ok, sha, text, pkg, reason }),

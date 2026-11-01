@@ -62,6 +62,35 @@ const str = (v, max = 200, dflt = '') => (typeof v === 'string' ? v.slice(0, max
 const num = (v, dflt) => (Number.isFinite(v) ? v : dflt)
 const arr = (v) => (Array.isArray(v) ? v : [])
 
+// One-off purge (conductor, 15:2xZ): napping agents in dde-ldn left by devbox test runs before the operator's first
+// real join (15:08Z): the 19 "Dot" fallbacks and 3 "Codex" test profiles. Dropped from the snapshot at load; if one
+// ever reconnects it simply registers again (test clients now go to SCRATCH_ROOM).
+const PURGED = new Set([
+  '4faf1f36-d56f-4101-aea9-7d475950daee', '44b8df68-504f-4350-8253-4a8618f9d9d2', '65ccfa60-128c-4121-a2be-adfb77ce68bb',
+  '1c871607-693d-462f-9f40-bf375846188d', '267d7ab1-3d0c-467a-b35f-481df78a0e53', '1897f812-0194-467d-9d44-a685bd8dcd9a',
+  'c20487f7-240f-4ba2-8946-fbf5686465f5', 'df4d672b-e356-474a-ad3a-69df56625bdb', 'ee107cda-0559-4a8b-9dc2-86e4358a932e',
+  '7c7ac1fc-426c-46b9-ac06-104923270124', 'dfdff2e9-ece9-43ec-a1f3-65eb25e993ff', 'ab0c5319-2d78-481d-ad9e-e5b1beed4883',
+  '310947df-223c-4b2f-b199-529161b71feb', 'bcaad74f-f4fe-4b54-af7b-2f94a3a3f56a', '0a84059c-be98-4bae-93c1-5a32cba0bee8',
+  '78b50b20-4a58-47ef-8edf-6bcee0cdb417', '4eda69eb-5582-4c02-9f12-fe5751440b9a', '51761670-9aeb-461a-ad7e-6fa303b99bf8',
+  '0fc0559f-8fc8-495a-b706-5015501ccf21',
+  'cbe4e8a7-e042-4cb7-bd6c-6b35bafc8ba6', '33027189-4663-404a-83ba-2cf4ae4f213b', 'a497d79f-3935-4ee9-993b-d267a3ecc2d7'
+])
+
+// short one-way tag of a client IP, kept per agent (<= 8) so a later purge can find devbox-only agents
+const ipTag = (ip) => (ip ? crypto.createHash('sha256').update(`petpack-ip:${ip}`).digest('hex').slice(0, 16) : null)
+
+// public client IP (first X-Forwarded-For hop on App Service / Container Apps); laptops behind one venue NAT share it
+function clientIp (req) {
+  const xff = req.headers['x-forwarded-for']
+  let ip = String(Array.isArray(xff) ? xff[0] : xff || '').split(',')[0].trim() || req.socket.remoteAddress || ''
+  let m
+  if ((m = ip.match(/^\[([^\]]+)\](?::\d+)?$/))) ip = m[1]
+  else if (/^\d+\.\d+\.\d+\.\d+:\d+$/.test(ip)) ip = ip.replace(/:\d+$/, '')
+  if (ip.startsWith('::ffff:')) ip = ip.slice(7)
+  if (ip.includes(':')) ip = ip.split(':').slice(0, 4).join(':') // IPv6: same /64
+  return ip || null
+}
+
 function sniffMime (buf) {
   if (buf.length > 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'image/webp'
   if (buf.length > 8 && buf[0] === 0x89 && buf.toString('ascii', 1, 4) === 'PNG') return 'image/png'
@@ -75,6 +104,7 @@ export function createRelay (opts = {}) {
     port: opts.port ?? Number(process.env.PORT || 8787),
     host: opts.host,
     dockPairWindowMs: opts.dockPairWindowMs ?? P.DOCK_PAIR_WINDOW_MS,
+    sameIpCowork: opts.sameIpCowork ?? true,
     publicUrl: opts.publicUrl ?? process.env.PETPACK_PUBLIC_URL ?? null,
     now: opts.now ?? Date.now,
     batchMs: opts.batchMs ?? P.STATE_BATCH_MS,
@@ -127,12 +157,12 @@ export function createRelay (opts = {}) {
     try {
       const data = {
         v: 1, savedAt: now(),
-        rooms: [...rooms.values()].map((r) => ({
+        rooms: [...rooms.values()].filter((r) => r.name !== P.SCRATCH_ROOM).map((r) => ({
           name: r.name, links: r.links,
-          members: [...r.members.values()].map((m) => ({
+          members: [...r.members.values()].filter((m) => !m.test).map((m) => ({
             id: m.id, name: m.name, color: m.color, dock: m.dock, skills: m.skills, catalog: m.catalog,
             sprite: m.sprite, spriteSha: m.spriteSha ?? null, device: m.device ?? null, seat: m.seat, lastSeen: m.online ? now() : m.lastSeen,
-            x: m.x, z: m.z, facing: m.facing, status: m.status, sit: m.sit || 'side', shareWith: m.shareWith ?? null
+            x: m.x, z: m.z, facing: m.facing, status: m.status, sit: m.sit || 'side', shareWith: m.shareWith ?? null, ips: m.ips || []
           }))
         }))
       }
@@ -145,7 +175,7 @@ export function createRelay (opts = {}) {
       for (const d of Object.values(dirs)) fs.mkdirSync(d, { recursive: true })
     } catch (e) { cfg.log('data dir unavailable', e.message); return }
     const t = now()
-    let nRooms = 0; let nCache = 0; let nSprites = 0
+    let nRooms = 0; let nCache = 0; let nSprites = 0; let nPurged = 0
     try {
       const file = path.join(dirs.root, 'rooms.json')
       if (fs.existsSync(file)) {
@@ -158,6 +188,7 @@ export function createRelay (opts = {}) {
           const room = getRoom(name)
           for (const s of arr(r.members)) {
             if (!s || typeof s.id !== 'string' || t - (s.lastSeen || 0) > cfg.awayTtlMs || (fold && room.members.has(s.id))) continue
+            if (name === P.DEFAULT_ROOM && PURGED.has(s.id)) { nPurged++; continue } // devbox test agents (15:2xZ purge)
             room.members.set(s.id, {
               id: s.id, name: str(s.name, 64, 'pet'), color: str(s.color, 32, '#7c5cff'), dock: P.DOCKS.includes(s.dock) ? s.dock : 'right',
               skills: arr(s.skills), catalog: arr(s.catalog), sprite: typeof s.sprite === 'string' ? s.sprite : null,
@@ -166,7 +197,8 @@ export function createRelay (opts = {}) {
               online: false, ws: null, dirty: false, answers: true, status: P.STATUSES.includes(s.status) ? s.status : 'idle', anim: 'idle',
               facing: s.facing === -1 ? -1 : 1, spriteSha: typeof s.spriteSha === 'string' ? s.spriteSha : null, device: typeof s.device === 'string' ? s.device : null,
               x: Number.isFinite(s.x) ? s.x : P.seatCenterX(Number.isInteger(s.seat) ? s.seat : 0), z: Number.isFinite(s.z) ? s.z : 0,
-              sit: P.SITS.includes(s.sit) ? s.sit : 'side', shareWith: !fold && typeof s.shareWith === 'string' ? s.shareWith : null, flipped: !fold && typeof s.shareWith === 'string'
+              sit: P.SITS.includes(s.sit) ? s.sit : 'side', shareWith: !fold && typeof s.shareWith === 'string' ? s.shareWith : null, flipped: !fold && typeof s.shareWith === 'string',
+              ips: arr(s.ips).filter((x) => typeof x === 'string').slice(0, 8)
             })
             byId.set(s.id, name)
           }
@@ -192,7 +224,7 @@ export function createRelay (opts = {}) {
         nSprites++
       }
     } catch (e) { cfg.log('cache load failed', e.message) }
-    cfg.log(`loaded ${nRooms} rooms, ${nCache} cached items, ${nSprites} sprites from ${dirs.root}`)
+    cfg.log(`loaded ${nRooms} rooms, ${nCache} cached items, ${nSprites} sprites from ${dirs.root}; purged ${nPurged} test agents`)
   }
 
   // ---- rooms and members -----------------------------------------------------------------------------------------
@@ -356,26 +388,85 @@ export function createRelay (opts = {}) {
       ;(m.online ? seats : held)[m.id] = m.seat
       if (m.shareWith) { flipped[m.id] = true; across.push([m.shareWith, m.id]) }
     }
-    return { t: 'seat', seats, held, flipped, across, links: room.links.map((l) => [...l]), why, ...extra }
+    return { t: 'seat', seats, held, flipped, across, neighbours: neighbours(room), links: room.links.map((l) => [...l]), why, ...extra }
   }
 
   function snapshot (room) {
     return JSON.stringify([[...room.members.values()].filter((m) => m.seat != null).map((m) => [m.id, m.seat, m.shareWith ?? null]), room.links])
   }
 
-  // One busy room: a laptop that just joined (or re-docked) pairs with the most recent unlinked laptop docked to the
-  // opposite edge that joined within dockPairWindowMs of it; the right-docked one sits on the left. Anyone else keeps
-  // a free seat at the end of the strip and can move with arrows or bump.
+  // ---- co-work: sit me right beside a target pane; the target stays where it is ----------------------------------
+
+  // the side of the target I sit on: docked right -> my pane is on the LEFT of theirs; docked left -> RIGHT
+  const sideFor = (dock) => (dock === 'right' ? 'left' : dock === 'left' ? 'right' : null)
+
+  // nearest seat to `s` with an empty chunk on both sides (so it touches no chain)
+  function nearestFree (room, s, exceptId) {
+    const taken = new Set(seated(room).filter((x) => x.id !== exceptId).map((x) => x.seat))
+    const ok = (x) => x >= 0 && !taken.has(x - 1) && !taken.has(x) && !taken.has(x + 1)
+    for (let d = 2; d < 10000; d++) { if (ok(s + d)) return s + d; if (ok(s - d)) return s - d }
+    return freeSeat(room)
+  }
+
+  // returns { ok, pair: [leftId, rightId] } | { full: true } | { ok: false, reason }
+  function coworkPlace (room, me, target, side) {
+    if (!me || !target || me.id === target.id || me.seat == null) return { ok: false, reason: 'not found' }
+    const anchor = target.shareWith ? room.members.get(target.shareWith) : target
+    if (!anchor || anchor.seat == null || anchor.id === me.id) return { ok: false, reason: 'no seat' }
+    if (leftOf(room, anchor.id) === me.id) return { ok: true, pair: [me.id, anchor.id], already: true }
+    if (rightOf(room, anchor.id) === me.id) return { ok: true, pair: [anchor.id, me.id], already: true }
+    if (me.shareWith || hosting(room, me)) unpair(room, me)
+    unlinkAll(room, me.id) // I leave my old spot; a guest across from me would follow me
+    for (const sd of side ? [side, side === 'left' ? 'right' : 'left'] : ['right', 'left']) {
+      if (sd === 'left' && !leftOf(room, anchor.id)) {
+        me.seat = anchor.seat - 1; room.links.push([me.id, anchor.id]); layout(room)
+        return { ok: true, pair: [me.id, anchor.id] }
+      }
+      if (sd === 'right' && !rightOf(room, anchor.id)) {
+        me.seat = anchor.seat + 1; room.links.push([anchor.id, me.id]); layout(room)
+        return { ok: true, pair: [anchor.id, me.id] }
+      }
+    }
+    me.seat = nearestFree(room, anchor.seat, me.id) // both sides taken by co-workers
+    layout(room)
+    return { full: true, ids: [me.id, anchor.id] }
+  }
+
+  function findAgent (room, target) {
+    if (typeof target !== 'string' || !target) return null
+    const byIdHit = room.members.get(target)
+    if (byIdHit) return byIdHit
+    const name = target.trim().toLowerCase()
+    return [...room.members.values()].filter((x) => String(x.name || '').toLowerCase() === name)
+      .sort((a, b) => (b.online - a.online) || (b.lastSeen - a.lastSeen))[0] ?? null
+  }
+
+  // Auto co-work on join (or re-dock): a docked laptop with a free facing side pairs with an opposite-docked laptop
+  // whose facing side is free: first the most recent one that joined within dockPairWindowMs; failing that, one on
+  // the same public IP (the venue NAT), nearest in time. The newcomer moves beside the partner, who stays put.
   function dockAutoLink (room, m) {
-    const loose = (x) => x.online && x.seat != null && x.sit !== 'across' && !x.shareWith &&
-      !room.links.some(([a, b]) => a === x.id || b === x.id)
-    if (!m || !loose(m) || (m.dock !== 'left' && m.dock !== 'right')) return false
+    const usable = (x) => x.online && x.seat != null && x.sit !== 'across' && !x.shareWith && !hosting(room, x)
+    if (!m || !usable(m) || (m.dock !== 'left' && m.dock !== 'right')) return null
+    if (room.links.some(([a, b]) => a === m.id || b === m.id)) return null
     const want = m.dock === 'right' ? 'left' : 'right'
-    const partner = online(room)
-      .filter((x) => x.id !== m.id && x.dock === want && loose(x) && Math.abs((m.dockAt ?? 0) - (x.dockAt ?? 0)) <= cfg.dockPairWindowMs)
-      .sort((a, b) => (b.dockAt ?? 0) - (a.dockAt ?? 0))[0]
-    if (!partner) return false
-    return m.dock === 'right' ? link(room, m.id, partner.id) : link(room, partner.id, m.id)
+    const facingFree = (x) => !(x.dock === 'left' ? leftOf(room, x.id) : rightOf(room, x.id))
+    const cands = online(room).filter((x) => x.id !== m.id && x.dock === want && usable(x) && facingFree(x))
+    const dt = (x) => Math.abs((m.dockAt ?? 0) - (x.dockAt ?? 0))
+    let partner = cands.filter((x) => dt(x) <= cfg.dockPairWindowMs).sort((a, b) => (b.dockAt ?? 0) - (a.dockAt ?? 0))[0]
+    if (!partner && cfg.sameIpCowork && m.ip) partner = cands.filter((x) => x.ip === m.ip).sort((a, b) => dt(a) - dt(b))[0]
+    if (!partner) return null
+    const r = coworkPlace(room, m, partner, sideFor(m.dock))
+    return r.ok ? r : null
+  }
+
+  function neighbours (room) {
+    const out = {}
+    for (const m of room.members.values()) {
+      if (m.seat == null) continue
+      const guest = [...room.members.values()].find((x) => x.shareWith === m.id)
+      out[m.id] = { left: leftOf(room, m.id), right: rightOf(room, m.id), across: m.shareWith ?? guest?.id ?? null }
+    }
+    return out
   }
 
   function bump (room, m, side, share = false) {
@@ -409,9 +500,11 @@ export function createRelay (opts = {}) {
       broadcast(room, seatMsg(room, 'bump', ok ? { ids: [pm.id, m.id] } : { ids: [pm.id, m.id], shrug: true }))
       return
     }
-    const [l, r] = side === 'right' ? [m.id, partner.id] : [partner.id, m.id]
-    const ok = link(room, l, r)
-    broadcast(room, seatMsg(room, 'bump', ok ? { ids: [l, r] } : { ids: [l, r], shrug: true }))
+    // same rule as nextTo: the later bumper sits beside the earlier one (who stays), on the edge it bumped
+    const r = coworkPlace(room, m, pm, side === 'right' ? 'left' : 'right')
+    if (r.ok) broadcast(room, seatMsg(room, 'cowork', { cowork: r.pair, ids: r.pair, via: 'bump' }))
+    else if (r.full) broadcast(room, seatMsg(room, 'full', { ids: r.ids, via: 'bump' }))
+    else broadcast(room, seatMsg(room, 'bump', { ids: [m.id, partner.id], shrug: true }))
   }
 
   // ---- connection lifecycle --------------------------------------------------------------------------------------
@@ -445,7 +538,7 @@ export function createRelay (opts = {}) {
       away: all.filter((x) => !x.online).map(awayView),
       agents: all.map(agentView),
       links: room.links.map((l) => [...l]),
-      ...(({ seats, held, flipped, across }) => ({ seats, held, flipped, across }))(seatMsg(room, 'join')),
+      ...(({ seats, held, flipped, across, neighbours }) => ({ seats, held, flipped, across, neighbours }))(seatMsg(room, 'join')),
     }
   }
 
@@ -463,7 +556,9 @@ export function createRelay (opts = {}) {
     const device = typeof h.device === 'string' && h.device ? h.device.slice(0, 128) : null
     const id = /^[\w.-]{1,64}$/.test(h.id || '') ? h.id
       : device ? 'd-' + crypto.createHash('sha256').update(device).digest('hex').slice(0, 24) : P.rid('p')
-    const roomName = P.roomFor(h.room) // no room or a legacy 'net-…' auto room: the one shared DEFAULT_ROOM
+    const test = P.isTestHello(h) // probes, test: true and test profiles never touch the shared room
+    const asked = P.roomFor(h.room) // no room or a legacy 'net-…' auto room: the one shared DEFAULT_ROOM
+    const roomName = test && asked === P.DEFAULT_ROOM ? P.SCRATCH_ROOM : asked
 
     // one live record per id: a reconnect replaces the old socket; another room drops the old record
     const prevRoomName = byId.get(id)
@@ -498,7 +593,9 @@ export function createRelay (opts = {}) {
       status: P.STATUSES.includes(h.status) ? h.status : 'idle',
       answers: h.answers !== false,
       sprite, spriteSha: sprite?.match(/\/s\/([a-f0-9]{64})/)?.[1] ?? null,
-      device: device ?? m.device ?? null
+      device: device ?? m.device ?? null,
+      ip: clientIp(req), test,
+      ips: [...new Set([ipTag(clientIp(req)), ...(m.ips || [])])].filter(Boolean).slice(0, 8)
     })
     if (m.seat == null) {
       const req = Number.isInteger(h.seat) && h.seat >= 0 ? h.seat : null
@@ -536,7 +633,7 @@ export function createRelay (opts = {}) {
     })
     if (!wasOnline) broadcast(room, { t: 'join', peer: peerView(m) }, id)
     else m.dirty = true // a takeover: no join/leave churn, just a fresh state for everyone
-    if (docked || snapshot(room) !== before || !wasOnline) broadcast(room, seatMsg(room, across ? 'across' : docked ? 'dock' : 'join'))
+    if (docked || snapshot(room) !== before || !wasOnline) broadcast(room, seatMsg(room, across ? 'across' : docked ? 'dock' : 'join', docked?.pair ? { cowork: docked.pair } : {}))
     cfg.log('hello', roomName, id, 'seat', m.seat, docked ? 'dock-linked' : '')
     markDirty()
   }
@@ -596,6 +693,14 @@ export function createRelay (opts = {}) {
       case 'seat': {
         const before = snapshot(room)
         if (msg.op === 'bump' && (msg.side === 'left' || msg.side === 'right')) { bump(room, m, msg.side, msg.share === true); break }
+        if (msg.op === 'nextTo') { // co-work: seat me beside target (agent id or name); the target stays put
+          const target = findAgent(room, msg.target)
+          const r = target ? coworkPlace(room, m, target, sideFor(m.dock)) : { ok: false, reason: 'not found' }
+          if (r.ok) broadcast(room, seatMsg(room, 'cowork', { cowork: r.pair, ids: r.pair }))
+          else if (r.full) broadcast(room, seatMsg(room, 'full', { ids: r.ids }))
+          else send(m, seatMsg(room, 'cowork', { ids: [m.id], shrug: true, reason: r.reason }))
+          break
+        }
         let why = null
         if ((msg.op === 'share' || (msg.op === 'move' && msg.flip === true)) && Number.isFinite(msg.to)) {
           // "share seat N facing the other way": become the flipped guest of whoever owns seat N

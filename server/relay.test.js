@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
 import WebSocket from 'ws'
 import { createRelay } from './relay.js'
-import { DEFAULT_ROOM } from '../shared/protocol.js'
+import { DEFAULT_ROOM, SCRATCH_ROOM } from '../shared/protocol.js'
 
 let relay, url
 before(async () => {
@@ -167,10 +167,11 @@ test('complementary bumps link; ambiguous bumps do not', async () => {
   q.send({ t: 'seat', op: 'bump', side: 'left' })
   await sleep(40)
   p.send({ t: 'seat', op: 'bump', side: 'right' })
-  const s = await p.next((m) => m.t === 'seat' && m.why === 'bump')
+  const s = await p.next((m) => m.t === 'seat' && m.why === 'cowork') // bump follows the nextTo rule
   assert.deepEqual(s.links, [['bp-p', 'bp-q']])
   assert.equal(s.seats['bp-q'], s.seats['bp-p'] + 1)
-  assert.ok(!s.shrug)
+  assert.ok(!s.shrug); assert.deepEqual(s.cowork, ['bp-p', 'bp-q']); assert.equal(s.via, 'bump')
+  assert.deepEqual(s.neighbours['bp-p'], { left: null, right: 'bp-q', across: null })
 
   const x = await client({ id: 'am-x', room: 'amb', dock: 'right' })
   const y = await client({ id: 'am-y', room: 'amb', dock: 'right' })
@@ -334,24 +335,32 @@ test('clients fail over to the next relay together and move back when the primar
 })
 
 test('no room, a legacy auto room and an explicit dde-ldn all land in the one room; an explicit code wins', async () => {
-  const a = await client({ id: 'ur-a', room: null, dock: 'none' })
-  const b = await client({ id: 'ur-b', room: 'net-3ba5f34a', dock: 'none' })
-  const c = await client({ id: 'ur-c', room: 'DDE-LDN', dock: 'none' })
+  const a = await client({ id: 'ur-a', room: null, dock: 'right' })
+  const b = await client({ id: 'ur-b', room: 'net-3ba5f34a', dock: 'right' })
+  const c = await client({ id: 'ur-c', room: 'DDE-LDN', dock: 'right' })
   const d = await client({ id: 'ur-d', room: 'team-rex', dock: 'none' })
   assert.equal(DEFAULT_ROOM, 'dde-ldn')
   for (const x of [a, b, c]) assert.equal(x.welcome.room, DEFAULT_ROOM)
   assert.ok(c.welcome.peers.some((p) => p.id === 'ur-a') && c.welcome.peers.some((p) => p.id === 'ur-b'))
   assert.equal(d.welcome.room, 'team-rex')
   assert.equal(d.welcome.peers.length, 0)
-  await a.close()
-  await b.next((m) => m.t === 'leave' && m.id === 'ur-a')
+  // test clients (a probe, test: true, a test --profile) never land in the shared room: they get the scratch room
+  const p = await client({ id: 'ur-p', room: null, dock: 'none' })
+  const q = await client({ id: 'ur-q', room: 'dde-ldn', dock: 'right', test: true })
+  const s1 = await client({ id: 'ur-s1', room: null, dock: 'left', profile: 's1-pack' })
+  for (const x of [p, q, s1]) assert.equal(x.welcome.room, SCRATCH_ROOM)
+  const real = await client({ id: 'ur-real', room: null, dock: 'right', profile: 'work' })
+  assert.equal(real.welcome.room, DEFAULT_ROOM)
+  assert.ok(!real.welcome.agents.some((x) => ['ur-p', 'ur-q', 'ur-s1'].includes(x.id)))
+  await p.close()
   const e = await client({ id: 'ur-e', room: null, dock: 'none' })
-  assert.ok(!e.welcome.away.some((x) => x.id === 'ur-a'), 'a headless probe leaves nothing behind')
+  assert.ok(!e.welcome.away.some((x) => x.id === 'ur-p'), 'a headless probe leaves nothing behind')
+  await Promise.all([a.close(), q.close(), s1.close(), real.close()])
   await Promise.all([b.close(), c.close(), d.close(), e.close()])
 })
 
 test('busy room: dock auto-link pairs the most recent opposite dock within the window', async () => {
-  const r = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: null, dockPairWindowMs: 300 })
+  const r = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: null, dockPairWindowMs: 300, sameIpCowork: false })
   const u = (await r.listen()).url
   const r1 = await client({ id: 'bz-r1', room: null, dock: 'right' }, u)
   await sleep(30)
@@ -495,6 +504,62 @@ test("battleships: two 'across' panes share one seat, the later one flipped; sid
   await r.close()
 })
 
+test('co-work: nextTo seats me beside the target on my dock side, the target stays; full when both sides are taken', async () => {
+  // joined far apart (window 50 ms, no same-IP fallback): no auto pairing, so they start far apart
+  const r = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: null, dockPairWindowMs: 50, sameIpCowork: false })
+  const u = (await r.listen()).url
+  const mac = await client({ id: 'cw-mac', room: 'cowork', dock: 'left', name: 'Rex' }, u)
+  await sleep(100)
+  const x1 = await client({ id: 'cw-x1', room: 'cowork', dock: 'right' }, u)
+  await sleep(100)
+  const win = await client({ id: 'cw-win', room: 'cowork', dock: 'right' }, u)
+  const macSeat = mac.welcome.you.seat
+  assert.ok(win.welcome.you.seat > macSeat + 1, 'far apart before co-working')
+  win.send({ t: 'seat', op: 'nextTo', target: 'rex' }) // by name; docked right -> I sit LEFT of Rex
+  const s = await mac.next((m) => m.t === 'seat' && m.why === 'cowork')
+  assert.deepEqual(s.cowork, ['cw-win', 'cw-mac'])
+  assert.equal(s.seats['cw-win'] + 1, s.seats['cw-mac'])
+  assert.deepEqual(s.neighbours['cw-win'], { left: null, right: 'cw-mac', across: null })
+  assert.deepEqual(s.neighbours['cw-mac'], { left: 'cw-win', right: null, across: null })
+  assert.ok(Math.abs(s.seats['cw-x1'] - s.seats['cw-mac']) >= 2 || s.seats['cw-x1'] < s.seats['cw-win'] - 1, 'others keep an empty chunk')
+
+  // x1 (docked right) wants Rex's left too: taken by win -> it takes Rex's right side instead
+  x1.send({ t: 'seat', op: 'nextTo', target: 'cw-mac' })
+  const s2 = await mac.next((m) => m.t === 'seat' && m.why === 'cowork' && m.cowork?.includes('cw-x1'))
+  assert.deepEqual(s2.cowork, ['cw-mac', 'cw-x1'])
+  assert.deepEqual(s2.neighbours['cw-mac'], { left: 'cw-win', right: 'cw-x1', across: null })
+  assert.equal(s2.seats['cw-x1'], s2.seats['cw-mac'] + 1)
+
+  // a floating fourth pane: both sides of Rex are taken by co-workers -> nearest free seat, why 'full'
+  const f = await client({ id: 'cw-f', room: 'cowork', dock: 'none' }, u)
+  f.send({ t: 'seat', op: 'nextTo', target: 'cw-mac' })
+  const full = await mac.next((m) => m.t === 'seat' && m.why === 'full')
+  assert.deepEqual(full.ids, ['cw-f', 'cw-mac'])
+  assert.equal(full.neighbours['cw-f'].left, null); assert.equal(full.neighbours['cw-f'].right, null)
+  const taken = Object.entries(full.seats).filter(([id]) => id !== 'cw-f').map(([, v]) => v)
+  assert.ok(taken.every((v) => Math.abs(v - full.seats['cw-f']) >= 2), 'an empty chunk around the full fallback')
+  f.send({ t: 'seat', op: 'nextTo', target: 'nobody-here' })
+  const miss = await f.next((m) => m.t === 'seat' && m.shrug)
+  assert.equal(miss.reason, 'not found')
+  await Promise.all([mac.close(), x1.close(), win.close(), f.close()])
+  await r.close()
+})
+
+test('auto co-work: opposite docks on the same public IP pair even outside the window', async () => {
+  const r = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: null, dockPairWindowMs: 50 })
+  const u = (await r.listen()).url
+  const a = await client({ id: 'ip-a', room: 'nat', dock: 'right' }, u)
+  await sleep(150) // outside the window; same IP (127.0.0.1) as the venue NAT
+  const b = await client({ id: 'ip-b', room: 'nat', dock: 'left' }, u)
+  const s = await a.next((m) => m.t === 'seat' && m.why === 'dock')
+  assert.deepEqual(s.cowork, ['ip-a', 'ip-b'])
+  assert.equal(s.seats['ip-b'], s.seats['ip-a'] + 1)
+  assert.equal(s.seats['ip-a'], a.welcome.you.seat, 'the earlier laptop stays put')
+  assert.deepEqual(b.welcome.neighbours['ip-b'], { left: 'ip-a', right: null, across: null })
+  await Promise.all([a.close(), b.close()])
+  await r.close()
+})
+
 test('a legacy per-network room on disk folds into the one room as away members', async () => {
   const fs = await import('node:fs')
   const os = await import('node:os')
@@ -502,13 +567,15 @@ test('a legacy per-network room on disk folds into the one room as away members'
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'petpack-legacy-'))
   const item = { ref: 'skill:pdf', kind: 'skill', title: 'pdf', summary: 'read pdfs', bytes: 1, sha: 'p1', mtime: 1 }
   fs.writeFileSync(path.join(dataDir, 'rooms.json'), JSON.stringify({
-    v: 1, rooms: [{ name: 'net-0123abcd', links: [], members: [{ id: 'lg-a', name: 'Rex', color: '#fff', dock: 'right', skills: [], catalog: [item], seat: 0, lastSeen: Date.now() }] }]
+    v: 1, rooms: [{ name: 'net-0123abcd', links: [], members: [{ id: 'lg-a', name: 'Rex', color: '#fff', dock: 'right', skills: [], catalog: [item], seat: 0, lastSeen: Date.now() }] },
+      { name: 'dde-ldn', links: [], members: [{ id: '4faf1f36-d56f-4101-aea9-7d475950daee', name: 'Dot', dock: 'right', catalog: [], seat: null, lastSeen: Date.now() }] }]
   }))
   const r = createRelay({ port: 0, host: '127.0.0.1', log: () => {}, dataDir })
   const u = (await r.listen()).url
-  const c = await client({ id: 'lg-c', room: null, dock: 'none' }, u)
+  const c = await client({ id: 'lg-c', room: null, dock: 'right' }, u)
   assert.deepEqual(c.welcome.away.find((x) => x.id === 'lg-a')?.catalog, [item])
   assert.ok(!r.rooms.has('net-0123abcd'))
+  assert.ok(!c.welcome.agents.some((x) => x.name === 'Dot'), 'purged devbox test agents stay gone')
   await c.close(); await r.close()
   fs.rmSync(dataDir, { recursive: true, force: true })
 })

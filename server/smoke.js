@@ -4,10 +4,10 @@
 // Two ws clients join one fresh room, see each other (welcome/join), exchange state both ways, send a gift
 // (target only), and do one ask/answer and one fetch/fetched round trip. Exit 0 on success.
 import WebSocket from 'ws'
-import { DEFAULT_RELAY, DEFAULT_ROOM, encode, decode, rid } from '../shared/protocol.js'
+import { DEFAULT_RELAY, DEFAULT_ROOM, SCRATCH_ROOM, encode, decode, rid } from '../shared/protocol.js'
 
-// --default-room: both clients send no room (like an installed 0.1.0) and must land in DEFAULT_ROOM; they join as
-// headless probes (dock 'none', no catalog), so the shared room keeps no trace of them and no laptop pairs with them.
+// --default-room: both clients send no room (like an installed 0.1.0) as headless probes; probes are test clients,
+// so they must land in SCRATCH_ROOM, never in DEFAULT_ROOM (dock 'none', no catalog: they leave no trace).
 const shared = process.argv.includes('--default-room')
 const url = process.argv.slice(2).find((a) => !a.startsWith('--')) || process.env.PETPACK_RELAY || DEFAULT_RELAY
 const room = shared ? null : rid('smoke-')
@@ -40,7 +40,7 @@ function client (id, extra = {}) {
     })
     ws.on('error', reject)
     ws.on('open', () => {
-      c.send({ t: 'hello', id, room, seat: null, dock: 'right', name: id, color: '#33aaff', status: 'idle', skills: [], catalog: [], sprite: null, answers: true, ...extra })
+      c.send({ t: 'hello', id, room, seat: null, dock: 'right', name: id, color: '#33aaff', status: 'idle', skills: [], catalog: [], sprite: null, answers: true, test: true, ...extra })
       c.next((m) => m.t === 'welcome', 8000, 'welcome').then((w) => { c.welcome = w; resolve(c) }, reject)
     })
   })
@@ -55,9 +55,9 @@ async function main () {
   console.log(`relay ${url} room ${room}`)
   const item = { ref: 'memory:smoke', kind: 'memory', title: 'smoke', summary: 'smoke note', bytes: 5, sha: 'smoke1', mtime: Date.now() }
   const mac = await client(rid('mac-'), shared ? { dock: 'none' } : { dock: 'right', catalog: [item] })
-  check(shared ? mac.welcome.room === DEFAULT_ROOM : mac.welcome.room === room && mac.welcome.peers.length === 0, `mac welcome in ${mac.welcome.room}`)
+  check(shared ? mac.welcome.room === SCRATCH_ROOM : mac.welcome.room === room && mac.welcome.peers.length === 0, `mac welcome in ${mac.welcome.room}`)
   const win = await client(rid('win-'), { dock: shared ? 'none' : 'left' })
-  if (shared) check(win.welcome.room === DEFAULT_ROOM, `win welcome in ${win.welcome.room}`)
+  if (shared) check(win.welcome.room === SCRATCH_ROOM, `win welcome in ${win.welcome.room} (test clients never enter ${DEFAULT_ROOM})`)
   check(win.welcome.peers.some((p) => p.id === mac.id), 'win sees mac in welcome')
   const j = await mac.next((m) => m.t === 'join' && m.peer.id === win.id, 8000, 'join')
   check(!!j, 'mac sees win join')

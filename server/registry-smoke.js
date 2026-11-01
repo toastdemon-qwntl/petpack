@@ -42,7 +42,7 @@ function client (hello) {
     ws.on('close', (code) => { c.closeCode = code })
     ws.on('error', reject)
     ws.on('open', () => {
-      c.send({ t: 'hello', room, dock: 'none', name: 'registry-smoke', color: '#33aaff', status: 'idle', catalog: [], ...hello })
+      c.send({ t: 'hello', room, dock: 'none', name: 'registry-smoke', color: '#33aaff', status: 'idle', catalog: [], test: true, ...hello })
       c.next((m) => m.t === 'welcome', 8000, 'welcome').then((w) => { c.welcome = w; resolve(c) }, reject)
     })
   })
