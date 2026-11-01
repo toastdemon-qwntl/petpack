@@ -58,7 +58,7 @@ async function runMcp(args) {
   const serverFile = path.join(ROOT, 'app', 'mcp', 'server.js')
   if (fs.existsSync(serverFile)) {
     const mod = await import(pathToFileURL(serverFile).href)
-    await mod.main(profile ? ['--profile', profile] : [])
+    await mod.runMcpServer({ argv: args, profile: profile || undefined })
     return
   }
   // S5's server isn't in this build: answer the handshake so Codex starts cleanly, with no tools.
