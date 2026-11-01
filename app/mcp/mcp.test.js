@@ -12,6 +12,7 @@ import { createMcpServer, installIntoCodex, TOOLS, PKG_NAME } from './server.js'
 import { ensureCodexRegistration, registrationStatus, hasPetpackServer, codexOnPath } from './register.js'
 import { createCodexLink, lastCodexConnection } from './link.js'
 import { runDoctor } from './doctor.js'
+import { codexPromptUrl, openCodexWithPrompt } from './open-prompt.js'
 import { PassThrough } from 'node:stream'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -35,6 +36,7 @@ function mcpChild({ userData, profile, env = {}, argv = [SERVER] }) {
   })
   cleanups.push(() => child.kill())
   const waiting = new Map()
+  const notes = []
   let buf = ''
   let id = 0
   child.stdout.setEncoding('utf8')
@@ -44,6 +46,7 @@ function mcpChild({ userData, profile, env = {}, argv = [SERVER] }) {
     while ((i = buf.indexOf('\n')) >= 0) {
       const msg = JSON.parse(buf.slice(0, i))
       buf = buf.slice(i + 1)
+      if (msg.id === undefined) notes.push(msg)
       waiting.get(msg.id)?.(msg)
       waiting.delete(msg.id)
     }
@@ -57,7 +60,7 @@ function mcpChild({ userData, profile, env = {}, argv = [SERVER] }) {
   })
   const notify = (method, params) => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n')
   const callTool = async (name, args = {}) => (await request('tools/call', { name, arguments: args })).result
-  return { child, request, notify, callTool, stderr: () => stderr }
+  return { child, request, notify, callTool, notes, stderr: () => stderr }
 }
 
 async function init(c) {
@@ -502,6 +505,48 @@ test('petpack_find returns at once; petpack_errand reports findings; petpack_rec
   assert.equal(done.installed.length, 1)
   assert.equal((await c.callTool('petpack_errand', {})).isError, true)
   assert.match(parse(await c.callTool('petpack_recall')).message, /coming home/)
+})
+
+test('live steps: the overlay streams progress over IPC and Codex gets notifications/progress', async () => {
+  const { userData, profile } = fixture()
+  const ipc = await startIpcServer({
+    userData, profile,
+    onCall: async ({ tool, progress }) => {
+      if (tool === 'petpack_status') return { me: { online: true } }
+      progress('Pip is walking to Bea\'s screen')
+      await new Promise((r) => setTimeout(r, 30))
+      progress('Bea is thinking')
+      return { answered_by: 'Bea', answer: 'zip deploy' }
+    },
+  })
+  cleanups.push(() => ipc.close())
+  const c = mcpChild({ userData, profile })
+  await init(c)
+  const res = await c.request('tools/call', { name: 'petpack_ask', arguments: { question: 'deploy?' }, _meta: { progressToken: 'tok-1' } })
+  assert.equal(res.result.isError, undefined)
+  const steps = c.notes.filter((n) => n.method === 'notifications/progress' && n.params.progressToken === 'tok-1')
+  const messages = steps.map((n) => n.params.message)
+  assert.ok(messages.includes('Pip is walking to Bea\'s screen'), messages.join(' | '))
+  assert.ok(messages.includes('Bea is thinking'))
+  const nums = steps.map((n) => n.params.progress)
+  assert.deepEqual(nums, [...nums].sort((a, b) => a - b))
+  // No token, no notifications.
+  const before = c.notes.length
+  await c.callTool('petpack_ask', { question: 'again?' })
+  assert.equal(c.notes.length, before)
+})
+
+test('codex://new?prompt= deep link for a teammate\'s question', async () => {
+  const url = codexPromptUrl('Bea asks: how do we ship to Azure? & why', { path: '/tmp/proj' })
+  const u = new URL(url)
+  assert.equal(u.protocol, 'codex:')
+  assert.equal(u.host, 'new')
+  assert.equal(u.searchParams.get('prompt'), 'Bea asks: how do we ship to Azure? & why')
+  assert.equal(u.searchParams.get('path'), '/tmp/proj')
+  assert.ok(!url.includes('+'))
+  const plan = await openCodexWithPrompt('hi', { platform: 'win32', dryRun: true })
+  assert.deepEqual([plan.cmd, plan.args[0]], ['rundll32.exe', 'url.dll,FileProtocolHandler'])
+  assert.equal((await openCodexWithPrompt('hi', { platform: 'darwin', dryRun: true })).cmd, 'open')
 })
 
 test('TOOLS carry R4 names and required args', () => {

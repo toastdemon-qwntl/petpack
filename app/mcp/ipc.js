@@ -171,7 +171,9 @@ export async function startIpcServer({ onCall, onClient, profile, userData, endp
       const { id, tool, args } = msg
       notify('call', client, String(tool))
       try {
-        const result = await onCall({ id, tool: String(tool), args: args && typeof args === 'object' ? args : {} })
+        // progress(message, extra?) streams a live step to the MCP (Codex shows it on the running tool call).
+        const progress = (message, extra = {}) => send(sock, { t: 'progress', id, message: String(message), ...extra })
+        const result = await onCall({ id, tool: String(tool), args: args && typeof args === 'object' ? args : {}, progress })
         send(sock, { t: 'result', id, ok: true, result: result === undefined ? null : result })
       } catch (e) {
         send(sock, { t: 'result', id, ok: false, error: String((e && e.message) || e) })
@@ -254,7 +256,10 @@ export async function connectIpc({ profile, userData, client } = {}) {
   frames(sock, (msg) => {
     if (msg.t === 'welcome') welcomed.res(msg)
     else if (msg.t === 'denied') { finish(Object.assign(new Error(`petpack refused the connection: ${msg.error}`), { code: 'EDENIED' })); sock.destroy() }
-    else if (msg.t === 'result' || msg.t === 'pong') {
+    else if (msg.t === 'progress') {
+      const p = pending.get(msg.id)
+      if (p && p.onProgress) { try { p.onProgress(msg) } catch {} }
+    } else if (msg.t === 'result' || msg.t === 'pong') {
       const p = pending.get(msg.id)
       if (!p) return
       pending.delete(msg.id)
@@ -267,21 +272,22 @@ export async function connectIpc({ profile, userData, client } = {}) {
   const helloTimer = setTimeout(() => finish(Object.assign(new Error('petpack did not answer hello'), { code: 'ENOOVERLAY' })), 3000)
   try { await welcome } finally { clearTimeout(helloTimer) }
 
-  const request = (frame, timeoutMs) => new Promise((resolve, reject) => {
+  const request = (frame, timeoutMs, onProgress) => new Promise((resolve, reject) => {
     if (isClosed) { reject(Object.assign(new Error('petpack connection closed'), { code: 'ECLOSED' })); return }
     const id = `${process.pid}-${++seq}`
     const timer = setTimeout(() => {
       pending.delete(id)
       reject(Object.assign(new Error(`petpack did not answer within ${Math.round(timeoutMs / 1000)} s`), { code: 'ETIMEDOUT' }))
     }, timeoutMs)
-    pending.set(id, { resolve, reject, timer })
+    pending.set(id, { resolve, reject, timer, onProgress })
     send(sock, { ...frame, id })
   })
 
   return {
     info,
     get closed() { return isClosed },
-    call: (tool, args = {}, { timeoutMs = 20000 } = {}) => request({ t: 'call', tool, args }, timeoutMs),
+    // onProgress({ message, progress?, total? }) for each step the overlay streams while the call runs.
+    call: (tool, args = {}, { timeoutMs = 20000, onProgress } = {}) => request({ t: 'call', tool, args }, timeoutMs, onProgress),
     ping: (timeoutMs = 2000) => request({ t: 'ping' }, timeoutMs),
     onClose(cb) { closeCbs.push(cb) },
     close() { sock.end(); sock.destroy(); finish(Object.assign(new Error('closed'), { code: 'ECLOSED' })) },

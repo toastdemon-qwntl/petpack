@@ -369,20 +369,30 @@ export function createMcpServer({
     return p
   }
 
-  async function callTool(name, args) {
+  async function callTool(name, args, meta = {}) {
     const tool = TOOL_MAP.get(name)
     if (!tool) return textResult(`Unknown tool: ${name}`, true)
     args = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
     for (const k of tool.inputSchema.required || []) {
       if (args[k] === undefined || args[k] === null || args[k] === '') return textResult(`Missing required argument: ${k}`, true)
     }
+    // Live steps: Codex 0.166 sends a progressToken on every tools/call and turns notifications/progress into
+    // item/mcpToolCall/progress for the app. The overlay streams steps over IPC; we add our own (start-up, team wait).
+    const token = meta && meta.progressToken
+    let steps = 0
+    const step = (message) => {
+      if (token === undefined || token === null || !message) return
+      write({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: ++steps, message: String(message) } })
+    }
     // Always answer inside Codex's 60 s tool timeout, launch and online waits included.
     const deadline = Date.now() + CALL_BUDGET_MS
     for (let attempt = 0; attempt < 2; attempt++) {
       let c
+      if (!client || client.closed) step('Waking petpack up')
       try { c = await getClient() } catch (e) { return textResult(e.message, true) }
       try {
         if (TEAM_TOOLS.has(name)) {
+          if (onlineClient !== c) step('Waiting for your team to come online')
           const team = await waitForTeam(c, deadline)
           // Still offline: with no peers at all (`offline: true`, or no status) say so plainly. Solo with demo bots
           // still answers from the bots, so the offline `--demo` fallback keeps working.
@@ -391,7 +401,7 @@ export function createMcpServer({
           }
         }
         const timeoutMs = Math.max(3000, Math.min(tool.timeoutMs, deadline - Date.now()))
-        const result = await c.call(name, args, { timeoutMs })
+        const result = await c.call(name, args, { timeoutMs, onProgress: (p) => step(p.message) })
         if (name === 'petpack_status' && isOnline(result)) onlineClient = c
         return textResult(result ?? { ok: true })
       } catch (e) {
@@ -423,7 +433,7 @@ export function createMcpServer({
       }
       case 'ping': return reply({})
       case 'tools/list': return reply({ tools: TOOLS.map(publicTool) })
-      case 'tools/call': return reply(await callTool(params.name, params.arguments))
+      case 'tools/call': return reply(await callTool(params.name, params.arguments, params._meta))
       case 'resources/list': return reply({ resources: [] })
       case 'resources/templates/list': return reply({ resourceTemplates: [] })
       case 'prompts/list': return reply({ prompts: [] })
