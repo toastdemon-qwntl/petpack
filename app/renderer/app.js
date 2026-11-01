@@ -171,9 +171,12 @@ bridge.onStatus?.(s => { brain.setStatus(typeof s === 'string' ? s : s?.status);
 // L3a: what Codex is working on. Our own name tag reads "Pip · fixing tests" (<= 32) while it works.
 let taskTitle = null
 let taskCaption = null
+// The world's pixel font is plain ASCII (no "·" or "…"), and the tag wraps past ~24 characters.
 function nameTag(name, caption) {
-  const s = `${name} · ${caption}`
-  return s.length <= 32 ? s : `${s.slice(0, 31).replace(/\s+\S*$/, '')}…`
+  const clean = String(caption).replace(/[^\x20-\x7e]+/g, ' ').replace(/\s*\([^)]*$/, '').replace(/\s+/g, ' ').trim()
+  if (!clean) return name
+  const s = `${name} - ${clean}`
+  return s.length <= 24 ? s : s.slice(0, 25).replace(/\s+\S*$/, '').replace(/[\s,.;:-]+$/, '')
 }
 let taskBusy = false
 async function refreshTask() {
