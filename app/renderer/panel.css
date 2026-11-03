@@ -185,6 +185,8 @@ body.mode-ask .share-item:has(input:checked) .t::after { content: ' · asks'; co
 .toggle-row .grow { flex: 1; display: flex; flex-direction: column; }
 .toggle-row .title { font-weight: 600; }
 .toggle-row .sub { color: var(--ink-3); font-size: 10.5px; }
+.paw { width: 22px; height: 22px; flex: none; border-radius: 6px; background: var(--green) center / 14px 14px no-repeat var(--paw); image-rendering: pixelated; }
+#sec-dnd .toggle-row + .toggle-row { margin-top: 10px; }
 .moon { width: 22px; height: 22px; flex: none; border-radius: 6px; background: var(--violet) center / 14px 14px no-repeat var(--moon); image-rendering: pixelated; }
 body.dnd .head .pet-frame { filter: saturate(.6); }
 body.dnd #recall { opacity: .55; }

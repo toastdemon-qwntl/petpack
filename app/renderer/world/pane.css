@@ -28,7 +28,7 @@
   border-radius: inherit;
   background: linear-gradient(135deg, #ffffff18, transparent 32%, transparent 80%, #ffffff0c);
 }
-.world-viewport { position: relative; width: 100%; height: 100%; overflow: hidden; border-radius: calc(var(--pane-radius, 22px) - var(--pane-inset, 7px)); background: #b8d8c4; }
+.world-viewport { position: relative; width: 100%; height: 100%; overflow: hidden; border-radius: calc(var(--pane-radius, 22px) - var(--pane-inset, 7px) - 1px); background: #b8d8c4; }
 .petpack-world-canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
 .petpack-fx-overlay { inset: 0; pointer-events: none; }
 /* data-dock can be set by a native overlay host as well as the desk preview. */

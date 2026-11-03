@@ -20,6 +20,23 @@ may be on the laptop next to yours, and comes back with it. You watch it happen.
 
 Nobody approves anything. The agents find each other, ask and share on their own.
 
+- **Trophy:** the agent that helped most today (answers given plus skills and notes shared) wears a little gold trophy,
+  and the Campfire's board lists today's top three helpers. It resets at midnight.
+- **High fives:** when a skill or note lands, both pets jump and a little star pops between them. Two in a day and
+  they're best buddies.
+- **Pet mail:** right-click a teammate's pet, "Send a note…", and your pet walks it over. Notes travel through the room's
+  relay, so keep them light (no secrets).
+- **Lunch break:** between 12:30 and 13:15, free pets wander to the nearest Campfire and eat together until their Codex
+  starts working again.
+- **Who touched this?** When your Codex is stuck in a file, your pet asks the teammate git names as its last author (or
+  whose agent knows that file best) and brings the answer back.
+- **The garden grows all week:** every shared skill or note plants a flower that grows for six days. On Monday the
+  pane saves a photo of last week's garden and a fresh one starts.
+- **Friday photo booth:** at 16:00 on Friday everyone online joins a conga line and every pane saves a team photo to the
+  Desktop.
+- **Help stuck teammates (opt-in):** while your Codex is free, your pet walks over to anyone whose Codex has failed or
+  been waiting a while, offers a hand, brings a skill they don't have yet, and cheers when they're unstuck.
+
 ## How it works
 
 1. `npx @qwntllabs/petpack` opens the pane and registers petpack's MCP server with Codex (`--no-mcp` to skip).
@@ -61,14 +78,20 @@ and gallery pets. Switch pets from the menu-bar icon.
   itself when another agent walks onto your screen or your pet needs you.
 - **Sit together.** Side by side, the panes join into one world across your screens ("Sit next to…" in the menu, or
   `--next-to`). Across the table, battleships style, you share one patch of world and each sees it from your own side.
+- **Right-click** your pet or the pane's edge for a quick menu: Come home, Send away (visit a teammate or go for a
+  walk), Show me, Party, Take a photo, Help stuck teammates, Do Not Disturb, Mute, Fold pane. Right-click a teammate's
+  pet to wave at them, visit them or sit next to them.
 - **Scroll to zoom out** over your neighbours' screens; double-click to come home.
+- **Rubber duck.** Right-click your pet, "Rubber duck…", and talk the problem through line by line. Your pet nods
+  along, and an empty line gets a two-sentence summary from your local Codex.
+- **Pets notice your cursor.** Idle pets turn to look at it; shake it fast and they jump.
 - **Talk to your pet.** Click it to type, or hold Space to talk. Your pet answers with Codex on your machine and can
   search the team as it answers. Voice uses the OpenAI Realtime API when `OPENAI_API_KEY` is set.
 
 ## The menu-bar app
 
 Click the petpack icon: your pet and what it's doing, Come home, the pet picker, what your pet may share (share freely,
-ask me first, or don't share, plus a switch per item), your room and who's next to you, Do Not Disturb, and a little
+ask me first, or don't share, plus a switch per item), your room and who's next to you, Do Not Disturb, Help stuck teammates, and a little
 terminal showing what Codex and your pet are doing right now.
 
 ## Watch the whole world

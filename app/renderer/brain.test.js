@@ -613,6 +613,270 @@ test('relay purge drops leftovers on welcome and full layouts; unanswerable ques
   assert.deepEqual(inbox, [{ id: 'q7', from: 'bea', fromName: 'Bea', question: 'what is the wifi password at the venue?' }])
 })
 
+test('leaderboard: answers and shares count, scores travel over fx, the top helper wears the trophy', async () => {
+  const bridge = { readItem: async ref => ({ ok: true, sha: 's1', text: `content of ${ref}` }), answerAsk: () => new Promise(() => {}) }
+  const net = fakeNet()
+  const seen = []
+  const brain = createBrain({ bridge, net, me: { id: 'me', name: 'Pip', skills: [], catalog: [] },
+    config: { seat: 0, dock: 'right', noVisits: true }, random: seeded(11) })
+  for (const name of ['leader', 'helped']) brain.on(name, (...a) => seen.push([name, ...a]))
+  welcome(brain)
+  assert.deepEqual(brain.leaderboard(), [], 'nobody has helped yet')
+  assert.equal(brain.leader, null)
+
+  // Serving a fetch is a share; answering from the inbox is an answer. Each one tells the room.
+  brain.handle({ t: 'fetch', from: 'bea', fid: 'f1', ref: 'memory:x', as: 'text' })
+  await flush(); await flush()
+  brain.handle({ t: 'ask', from: 'bea', qid: 'q1', question: 'how do I align the panes?', kind: 'technique' })
+  await flush()
+  await brain.call('petpack_answer', { id: 'q1', text: 'Tray Align.' })
+  const mine = brain.leaderboard()[0]
+  assert.deepEqual([mine.name, mine.answers, mine.shares, mine.isMe], ['Pip', 1, 1, true])
+  assert.equal(brain.leader, 'me')
+  assert.deepEqual(seen.find(e => e[0] === 'leader').slice(1), ['me', null])
+  assert.deepEqual(seen.filter(e => e[0] === 'helped').map(e => [e[1].answers, e[1].shares]), [[0, 1], [1, 1]])
+  const score = net.sent.filter(m => m.t === 'fx' && m.kind === 'score').at(-1)
+  assert.deepEqual([score.answers, score.shares, typeof score.day], [1, 1, 'string'])
+  assert.equal('src' in score, false, 'the relay stamps who sent it')
+
+  // Rex reports more help today: the trophy moves. A claimed src can't steal someone else's score.
+  const today = score.day
+  brain.handle({ t: 'fx', from: 'rex', kind: 'score', day: today, answers: 3, shares: 1, at: 1 })
+  assert.equal(brain.leader, 'rex')
+  assert.equal(brain.pets().find(p => p.id === 'me')?.trophy, false)
+  brain.handle({ t: 'fx', from: 'bea', kind: 'score', src: 'rex', day: today, answers: 0, shares: 0, at: 2 })
+  assert.equal(brain.leaderboard(5).find(r => r.id === 'rex').total, 4)
+  // Yesterday's score never counts.
+  brain.handle({ t: 'fx', from: 'bea', kind: 'score', day: '2001-01-01', answers: 99, shares: 99, at: 3 })
+  assert.deepEqual(brain.leaderboard(5).map(r => r.name), ['Rex', 'Pip'])
+  assert.deepEqual(brain.leaderboard(1).map(r => r.name), ['Rex'])
+
+  // A newcomer hears today's scores shortly after joining.
+  const before = net.sent.filter(m => m.kind === 'score').length
+  brain.handle({ t: 'join', peer: { id: 'kai', name: 'Kai', seat: 5, x: 70, z: 1.5, status: 'idle', skills: [], catalog: [] } })
+  await run(brain, 4, 0.25)
+  assert.ok(net.sent.filter(m => m.kind === 'score').length > before)
+
+  // The status tool lists today's helpers; a dropped peer leaves the board.
+  const status = await brain.call('petpack_status', { quiet: true })
+  assert.deepEqual(status.helpers_today.map(h => h.name), ['Rex', 'Pip'])
+  assert.equal(status.helpers_today[1].you, true)
+  brain.handle({ t: 'welcome', v: 2, room: 'net-test', you: { id: 'me', seat: 0 }, peers: [BEA], away: [], agents: [], links: [] })
+  assert.equal(brain.leader, 'me', 'Rex was purged, so the trophy comes back')
+})
+
+test('leaderboard: today\'s own count is seeded from config, yesterday\'s is dropped', () => {
+  const d = new Date()
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const make = helped => createBrain({ bridge: {}, net: fakeNet(), me: { id: 'me', name: 'Pip', skills: [], catalog: [] },
+    config: { seat: 0, noVisits: true, helped }, random: seeded(3) })
+  assert.deepEqual(make({ day, answers: 2, shares: 5, at: 1 }).leaderboard().map(r => [r.answers, r.shares]), [[2, 5]])
+  assert.deepEqual(make({ day: '2001-01-01', answers: 2, shares: 5, at: 1 }).leaderboard(), [])
+})
+
+test('help visits: opt-in; a free pet visits a stuck teammate, offers a hand and comes home', async () => {
+  const net = fakeNet()
+  const brain = createBrain({ bridge: {}, net, me: { id: 'me', name: 'Pip', skills: [], catalog: [] },
+    config: { seat: 0, dock: 'right', noVisits: true }, random: seeded(5) })
+  welcome(brain, [{ ...BEA, seat: 1, x: CHUNK_W, status: 'idle' }])
+  brain.handle({ t: 'fx', from: 'bea', kind: 'pose', ts: Date.now(), x: CHUNK_W, z: 1.5, m: 0 })
+  brain.handle({ t: 'state', pets: [{ id: 'bea', x: CHUNK_W, z: 1.5, facing: 1, anim: 'idle', status: 'failed' }] })
+  // Off by default: nothing happens however long Bea is stuck.
+  await run(brain, 20, 0.25)
+  assert.equal(chunkOf(brain.me.x), 0)
+  assert.ok(!net.sent.some(m => m.t === 'fx' && m.kind === 'say' && m.text === 'need a hand?'))
+
+  // On, but our own Codex is busy: still home.
+  assert.equal(brain.setHelpVisits(true), true)
+  brain.setStatus('working')
+  await run(brain, 5, 0.25)
+  assert.equal(chunkOf(brain.me.x), 0)
+
+  // Free again: the pet walks onto Bea's screen and offers a hand.
+  brain.setStatus('done')
+  const chunks = []
+  await run(brain, 25, 0.25, () => { const c = chunkOf(brain.me.x); if (chunks.at(-1) !== c) chunks.push(c) })
+  assert.ok(chunks.includes(1), `went to Bea (${chunks})`)
+  assert.equal(brain.me.job?.mode, 'help', 'still keeping Bea company')
+  assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'say' && m.text === 'need a hand?'))
+  assert.match((await brain.recall()).message, /busy helping Bea/)
+
+  // Bea's Codex recovers: "nice one!", then home. No second visit within the cooldown.
+  brain.handle({ t: 'state', pets: [{ id: 'bea', x: CHUNK_W, z: 1.5, facing: 1, anim: 'idle', status: 'done' }] })
+  await run(brain, 30, 0.25)
+  assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'say' && m.text === 'nice one!'))
+  assert.equal(chunkOf(brain.me.x), 0, 'home again')
+  brain.handle({ t: 'state', pets: [{ id: 'bea', x: CHUNK_W, z: 1.5, facing: 1, anim: 'idle', status: 'failed' }] })
+  const asks = net.sent.filter(m => m.kind === 'say' && m.text === 'need a hand?').length
+  await run(brain, 30, 0.25)
+  assert.equal(net.sent.filter(m => m.kind === 'say' && m.text === 'need a hand?').length, asks, 'one visit per 5 minutes')
+})
+
+test('help visits: waiting needs 45 s, DND and switching off stop a visit', async () => {
+  const net = fakeNet()
+  const brain = createBrain({ bridge: {}, net, me: { id: 'me', name: 'Pip', skills: [], catalog: [] },
+    config: { seat: 0, dock: 'right', noVisits: true, helpVisits: true }, random: seeded(6) })
+  assert.equal(brain.helpVisits, true, 'config seeds it')
+  welcome(brain, [{ ...REX, seat: 1, x: CHUNK_W, status: 'waiting' }])
+  brain.handle({ t: 'fx', from: 'rex', kind: 'pose', ts: Date.now(), x: CHUNK_W, z: 1.5, m: 0 })
+  await run(brain, 30, 0.25)
+  assert.notEqual(brain.me.job?.mode, 'help', 'waiting under 45 s is not stuck yet')
+  await run(brain, 20, 0.25)
+  assert.equal(brain.me.job?.mode, 'help', 'waiting 45 s+ is')
+  brain.setDnd(true)
+  assert.notEqual(brain.me.job?.mode, 'help', 'heads-down ends the visit')
+  brain.setDnd(false)
+  brain.setHelpVisits(false)
+  await run(brain, 10, 0.25)
+  assert.notEqual(brain.me.job?.mode, 'help')
+})
+
+test('right-click: send away visits a teammate or goes for a walk, come home ends it, wave says hi', async () => {
+  const net = fakeNet()
+  const brain = createBrain({ bridge: {}, net, me: { id: 'me', name: 'Pip', skills: [], catalog: [] },
+    config: { seat: 0, dock: 'right', noVisits: true }, random: seeded(8) })
+  welcome(brain, [{ ...BEA, seat: 1, x: CHUNK_W, status: 'idle' }])
+  brain.handle({ t: 'fx', from: 'bea', kind: 'pose', ts: Date.now(), x: CHUNK_W, z: 1.5, m: 0 })
+
+  assert.equal(brain.sendAway('nobody').ok, false)
+  const r = brain.sendAway('Bea')
+  assert.deepEqual([r.ok, r.message], [true, 'off to see Bea'])
+  const chunks = []
+  await run(brain, 40, 0.25, () => { const c = chunkOf(brain.me.x); if (chunks.at(-1) !== c) chunks.push(c) })
+  assert.deepEqual(chunks.slice(0, 3), [0, 1, 0], `visited Bea and came home (${chunks})`)
+  assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'collab' && m.dst === 'bea'))
+
+  // A walk next door, cut short by Come home.
+  assert.equal(brain.sendAway().message, 'going for a walk')
+  await run(brain, 3, 0.25)
+  assert.notEqual(Math.round(brain.me.x * 10), 0)
+  assert.equal(brain.recall().busy, false, 'a walk is not an errand: home at once')
+  await run(brain, 20, 0.25)
+  assert.equal(chunkOf(brain.me.x), 0)
+
+  // Heads-down stays home.
+  brain.setDnd(true)
+  assert.equal(brain.sendAway('Bea').ok, false)
+  brain.setDnd(false)
+
+  assert.equal(brain.waveAt('bea'), true)
+  assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'wave' && m.dst === 'bea'))
+  assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'say' && m.text === 'hi Bea!'))
+  assert.equal(brain.waveAt('me'), false)
+})
+
+function funBrain({ clock, bridge = {}, config = {}, peers = [{ ...BEA, seat: 1, x: CHUNK_W, status: 'idle' }], seed = 9 } = {}) {
+  const net = fakeNet()
+  const seen = []
+  const brain = createBrain({ bridge, net, me: { id: 'me', name: 'Pip', skills: [], catalog: [] },
+    config: { seat: 0, dock: 'right', noVisits: true, ...(clock ? { now: clock } : {}), ...config }, random: seeded(seed) })
+  for (const name of ['highfive', 'mail', 'booth', 'garden', 'garden-reset', 'touched', 'say']) brain.on(name, (...a) => seen.push([name, ...a]))
+  welcome(brain, peers)
+  for (const p of peers) brain.handle({ t: 'fx', from: p.id, kind: 'pose', ts: Date.now(), x: p.x, z: 1.5, m: 0 })
+  return { brain, net, seen }
+}
+const at = (...parts) => () => new Date(...parts).getTime()
+
+test('high five: a landed dot makes giver and receiver jump; two in a day = best buddies', async () => {
+  const { brain, seen } = funBrain({ clock: at(2026, 10, 2, 10, 0) })
+  brain.handle({ t: 'fx', from: 'bea', kind: 'gift', src: 'bea', dst: 'me', dot: 'skill' })
+  await run(brain, 2, 0.25)
+  assert.deepEqual(seen.filter(e => e[0] === 'highfive').map(e => e.slice(1)), [['bea', 'me', 1]])
+  assert.equal(brain.me.anim, 'jump')
+  brain.handle({ t: 'fx', from: 'bea', kind: 'fetch', src: 'me', dst: 'bea', dot: 'memory' })
+  await run(brain, 2, 0.25)
+  assert.equal(seen.filter(e => e[0] === 'highfive').at(-1)[3], 2)
+  assert.ok(seen.some(e => e[0] === 'say' && e[2] === 'best buddies!'))
+})
+
+test('pet mail: our pet walks the note over; only the addressee raises mail', async () => {
+  const { brain, net, seen } = funBrain()
+  assert.equal(brain.sendMail('Bea', '   ').ok, false)
+  assert.equal(brain.sendMail('nobody', 'hi').ok, false)
+  assert.equal(brain.sendMail('Bea', 'lunch?').message, 'taking your note to Bea')
+  await run(brain, 20, 0.25)
+  const mail = net.sent.find(m => m.t === 'fx' && m.kind === 'mail')
+  assert.deepEqual([mail.dst, mail.text], ['bea', 'lunch?'])
+  assert.equal(seen.filter(e => e[0] === 'mail').length, 0, 'not for us')
+  brain.handle({ t: 'fx', from: 'bea', kind: 'mail', dst: 'me', mid: 'm1', text: 'yes! 12:30' })
+  assert.deepEqual(seen.find(e => e[0] === 'mail')[1], { id: 'm1', from: 'bea', fromName: 'Bea', text: 'yes! 12:30' })
+  brain.handle({ t: 'fx', from: 'bea', kind: 'mail', dst: 'rex', mid: 'm2', text: 'secret' })
+  assert.equal(seen.filter(e => e[0] === 'mail').length, 1)
+})
+
+test('lunch: at 12:30 a free pet eats at the nearest Campfire, once a day, and leaves when Codex works', async () => {
+  let now = new Date(2026, 10, 2, 12, 0).getTime()
+  const { brain, net } = funBrain({ clock: () => now })
+  await run(brain, 5, 0.25)
+  assert.equal(brain.lunchtime, false)
+  assert.notEqual(brain.me.job?.mode, 'lunch')
+  now = new Date(2026, 10, 2, 12, 31).getTime()
+  await run(brain, 25, 0.25)
+  assert.equal(brain.me.job?.mode, 'lunch')
+  assert.equal(chunkOf(brain.me.x), -1, 'seat 0: the Campfire is at chunk -1')
+  assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'say' && m.text === 'lunch time!'))
+  brain.setStatus('working')
+  await run(brain, 25, 0.25)
+  assert.equal(chunkOf(brain.me.x), 0, 'back to work')
+  brain.setStatus('idle')
+  await run(brain, 10, 0.25)
+  assert.notEqual(brain.me.job?.mode, 'lunch', 'once a day')
+})
+
+test('photo booth: Friday 16:00, the lowest id starts a conga and every pane hears booth', async () => {
+  const friday = at(2026, 10, 6, 16, 5)
+  const { brain, net, seen } = funBrain({ clock: friday, peers: [{ ...REX, id: 'zed', status: 'idle' }] })
+  await run(brain, 6, 0.25)
+  assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'booth'), "'me' < 'zed': we run it")
+  assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'conga'))
+  assert.equal(seen.filter(e => e[0] === 'booth').length, 1)
+  await run(brain, 10, 0.25)
+  assert.equal(net.sent.filter(m => m.kind === 'booth').length, 1, 'once a week')
+  // Someone else's pane runs it: we hear it and take the photo too.
+  const other = funBrain({ clock: friday, peers: [{ ...REX, id: 'abe', status: 'idle' }] })
+  await run(other.brain, 6, 0.25)
+  assert.ok(!other.net.sent.some(m => m.kind === 'booth'), "'abe' < 'me': not us")
+  other.brain.handle({ t: 'fx', from: 'abe', kind: 'booth', startAt: Date.now() + 1000, week: '2026-11-02' })
+  assert.equal(other.seen.find(e => e[0] === 'booth')[1].week, '2026-11-02')
+  // Not on Thursday.
+  const thursday = funBrain({ clock: at(2026, 10, 5, 16, 5), peers: [{ ...REX, id: 'zed', status: 'idle' }] })
+  await run(thursday.brain, 6, 0.25)
+  assert.ok(!thursday.net.sent.some(m => m.kind === 'booth'))
+})
+
+test('garden: plants grow through the week and Monday clears them after a recap', async () => {
+  let now = new Date(2026, 10, 3, 9, 0).getTime() // Tuesday
+  const monday = new Date(2026, 10, 2).getTime()
+  const { brain, seen } = funBrain({ clock: () => now,
+    config: { garden: { week: '2026-11-02', items: [{ kind: 'skill', seed: 'bea/skill:pdf', color: '#fff', plantedAt: monday }] } } })
+  assert.equal(brain.gardenWeek, '2026-11-02')
+  const g = brain.gardenList()
+  assert.equal(g.length, 1)
+  assert.ok(g[0].grow > 0.1 && g[0].grow < 0.3, `a day and a half of six: ${g[0].grow}`)
+  now = new Date(2026, 10, 9, 9, 0).getTime() // next Monday
+  await run(brain, 2, 0.25)
+  const reset = seen.find(e => e[0] === 'garden-reset')
+  assert.equal(reset[1].week, '2026-11-02')
+  assert.equal(reset[1].items.length, 1)
+  await run(brain, 6, 0.25)
+  assert.deepEqual(brain.gardenList(), [])
+  // Last week's saved garden doesn't come back on a restart.
+  const fresh = funBrain({ clock: () => now, config: { garden: { week: '2026-11-02', items: [{ kind: 'skill', seed: 'x', plantedAt: monday }] } } })
+  assert.deepEqual(fresh.brain.gardenList(), [])
+})
+
+test('who touched this: a stuck file goes to the teammate git names as its last author', async () => {
+  const need = { question: 'How do I get past "boom"?', error: 'boom', workFile: 'server/relay.js', touchedBy: 'bea', why: 'failed' }
+  const { brain, net } = funBrain({ bridge: { currentNeed: async () => need },
+    peers: [{ ...BEA, seat: 1, x: CHUNK_W, status: 'idle' }, { ...REX, status: 'idle' }] })
+  await run(brain, 32, 0.25)
+  const ask = net.sent.find(m => m.t === 'ask')
+  assert.ok(ask, 'asked someone')
+  assert.equal(ask.to, 'bea')
+  assert.match(ask.question, /server\/relay\.js \(last touched by bea\)/)
+  assert.ok(net.sent.some(m => m.t === 'fx' && m.kind === 'say' && /who touched relay/.test(m.text)))
+})
+
 test('search and meet helpers', () => {
   const owners = [{ id: 'rex', name: 'Rex', online: false, catalog: REX.catalog }]
   const [hit] = searchCatalogs('windows click through', owners, { now: 0 })

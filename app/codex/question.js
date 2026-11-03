@@ -4,7 +4,8 @@
 // currentNeed(codexHome) -> {question, short, kind?, why, error?, prompt?, session, at} when the newest live Codex
 //                           session looks stuck (its turn failed, it has worked > 3 min on one turn, or an error
 //                           repeated), else null. It reads rollout structure only: the latest user prompt and the
-//                           latest failed tool output or error line.
+//                           latest failed tool output or error line. workFile = the newest source file the turn
+//                           touched or errored in; touchedBy = its last git author (from the session's cwd).
 //
 // No Node imports at the top, so the renderer can import shortQuestion too; currentNeed loads fs lazily.
 
@@ -85,6 +86,15 @@ function promptGist (text) {
   return clip(lines[0] || '', 120)
 }
 
+// The source file a line talks about: "src/relay.js:42:7", "*** Update File: app/main.js", "cat lib/x.py".
+const FILE_RE = /(?:^|[\s'"`(=:])((?:\.{0,2}\/)?(?:[\w@.-]+\/)*[\w@-][\w@.-]*\.(?:m?js|cjs|jsx|tsx?|py|go|rs|rb|java|kt|swift|c|cc|cpp|h|hpp|cs|php|css|scss|html|vue|svelte|sql|sh|ya?ml|toml))(?=$|[\s'"`),:;])/g
+export function fileIn (text) {
+  const t = String(text || '').replace(/\\n/g, '\n')
+  let last = null
+  for (const m of t.matchAll(FILE_RE)) if (!/node_modules\/|^\/(?:usr|opt|private|System)\//.test(m[1])) last = m[1]
+  return last ? last.replace(/^\.\//, '') : null
+}
+
 function normError (s) { return String(s || '').toLowerCase().replace(/\d+/g, '#').replace(/\s+/g, ' ').trim() }
 
 // Reads one rollout's lines and works out the current turn's state. Pure (for tests).
@@ -93,6 +103,7 @@ export function analyzeRollout (lines, now = Date.now()) {
   let prompt = null // { text, at }
   let turn = null // { id, startedAt, done: false|true, failed, error }
   let errors = [] // current turn: [{ line, at }]
+  let workFile = null // the newest source file the current turn touched or errored in
   for (const raw of lines) {
     if (!raw || raw[0] !== '{') continue
     let j
@@ -104,6 +115,7 @@ export function analyzeRollout (lines, now = Date.now()) {
       if (p.type === 'task_started') {
         turn = { id: p.turn_id || null, startedAt: at, done: false, failed: false }
         errors = []
+        workFile = null
       } else if (p.type === 'task_complete' && turn) {
         turn.done = true
         turn.endedAt = at
@@ -122,14 +134,16 @@ export function analyzeRollout (lines, now = Date.now()) {
       if (text.trim() && !NOT_PROMPT.test(text)) prompt = { text, at }
     } else if (p.type === 'function_call_output' || p.type === 'custom_tool_call_output' || p.type === 'local_shell_call_output') {
       const line = errorLineOf(p.output)
-      if (line) errors.push({ line, at })
+      if (line) { errors.push({ line, at }); workFile = fileIn(textOf(p.output)) || workFile }
+    } else if (p.type === 'function_call' || p.type === 'custom_tool_call' || p.type === 'local_shell_call') {
+      workFile = fileIn(typeof p.arguments === 'string' ? p.arguments : p.input ?? JSON.stringify(p.action ?? p.arguments ?? '')) || workFile
     }
   }
-  return { meta, prompt, turn, errors, now }
+  return { meta, prompt, turn, errors, now, workFile }
 }
 
 // Decides whether the session is stuck and phrases the question. Pure (for tests).
-export function needFrom ({ meta, prompt, turn, errors, now }, { workingMs = STUCK_WORKING_MS } = {}) {
+export function needFrom ({ meta, prompt, turn, errors, now, workFile = null }, { workingMs = STUCK_WORKING_MS } = {}) {
   if (!turn) return null
   const lastError = errors[errors.length - 1] || null
   const counts = new Map()
@@ -153,6 +167,8 @@ export function needFrom ({ meta, prompt, turn, errors, now }, { workingMs = STU
   if (error) out.error = error
   if (gist) out.prompt = gist
   if (error) out.kind = 'technique'
+  if (workFile) out.workFile = workFile
+  if (workFile && typeof meta?.cwd === 'string') out.cwd = meta.cwd
   return out
 }
 
@@ -193,7 +209,20 @@ async function newestRollout (codexHome, fsp, path) {
   return null
 }
 
-// currentNeed(codexHome, {now, file, workingMs}) -> need | null. Never throws.
+// Who last changed a file, from git in the session's folder: 'Bea Smith' | null. Read-only, 2 s at most.
+export async function lastAuthor (cwd, file) {
+  try {
+    const { execFile } = await import('node:child_process')
+    return await new Promise(resolve => {
+      execFile('git', ['-C', cwd, 'log', '-1', '--format=%an', '--', file], { timeout: 2000, windowsHide: true }, (error, stdout) => {
+        const name = !error && String(stdout || '').trim().split('\n')[0].slice(0, 80)
+        resolve(name || null)
+      })
+    })
+  } catch { return null }
+}
+
+// currentNeed(codexHome, {now, file, workingMs, git}) -> need | null (+ workFile, cwd, touchedBy). Never throws.
 export async function currentNeed (codexHome, opts = {}) {
   try {
     if (typeof codexHome !== 'string') { // called with main's ctx object: resolve the home like the catalog does
@@ -221,6 +250,7 @@ export async function currentNeed (codexHome, opts = {}) {
       } finally { await fh.close() }
     }
     const need = needFrom(analyzeRollout(text.split('\n'), now), opts)
+    if (need?.workFile && need.cwd && opts.git !== false) need.touchedBy = await lastAuthor(need.cwd, need.workFile)
     return need ? { ...need, file: file.f } : null
   } catch { return null }
 }

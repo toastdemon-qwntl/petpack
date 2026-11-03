@@ -192,6 +192,8 @@ export function createTray({ state, actions, onPetChange, pane, userData }) {
       ] },
       { label: pets.current && pets.current.source !== 'none' ? `Pet: ${pets.current.displayName}` : 'Pet',
         submenu: petMenu(pets, choose, chooseFolder) },
+      ...(actions.setHelpVisits ? [{ label: 'Help stuck teammates', type: 'checkbox', checked: s.helpVisits === true,
+        click: item => actions.setHelpVisits(item.checked) }] : []),
       { label: 'Codex', submenu: [...codex,
         ...(actions.setAnswerInCodex ? [{ type: 'separator' }, { label: 'Answer teammates in Codex', type: 'checkbox',
           checked: s.answerInCodex === true, click: item => actions.setAnswerInCodex(item.checked) }] : [])] },

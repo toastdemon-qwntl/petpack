@@ -1,5 +1,5 @@
 // Electron main: petpack:// protocol + CSP, the docked pane, tray, bridge IPC, Codex data and the MCP socket.
-import { app, BrowserWindow, clipboard, desktopCapturer, ipcMain, nativeImage, net, Notification, protocol, screen, session } from 'electron'
+import { app, BrowserWindow, clipboard, desktopCapturer, ipcMain, Menu, nativeImage, net, Notification, protocol, screen, session } from 'electron'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -94,6 +94,7 @@ function config() {
     profile: PROFILE || null, version: VERSION, platform: process.platform,
     pane: { ...paneSize(paneScale), scale: paneScale }, debug: DEBUG,
     sharing: brainSharing(), dnd: Boolean(traySharing()?.dnd), sit: settings.sit === 'across' ? 'across' : 'side',
+    helpVisits: settings.helpVisits === true,
     nextTo: typeof flags['next-to'] === 'string' && flags['next-to'].trim() ? flags['next-to'].trim() : null,
     // Device registry fingerprint (hello.device): this machine + profile, hashed; the relay keys agents by id first.
     device: crypto.createHash('sha256').update(`${os.hostname()}|${PROFILE || ''}`).digest('hex').slice(0, 32),
@@ -458,6 +459,43 @@ handle('petpack:savePhoto', dataUrl => {
   return { saved: true, path: file }
 })
 ipcMain.on('petpack:interactive', (event, on) => { if (trusted(event)) clickThrough?.set(on) })
+// Right-click menu on the pane: the page describes it, main pops the native menu. Settings items (Do Not Disturb, Mute,
+// Help stuck teammates) are saved here through the popover's own commands; everything else goes back to the page.
+// -> { id, handled } for the picked item, or null when the menu closed without a pick.
+const MAIN_ITEMS = new Set(['dnd', 'mute', 'helpVisits'])
+function contextTemplate(items, pick) {
+  return (Array.isArray(items) ? items : []).slice(0, 40).map(item => {
+    if (!item || typeof item !== 'object' || item.type === 'separator') return { type: 'separator' }
+    const label = String(item.label || '').slice(0, 80)
+    if (Array.isArray(item.submenu)) return { label, enabled: item.enabled !== false, submenu: contextTemplate(item.submenu, pick) }
+    const out = { label, enabled: item.enabled !== false && typeof item.id === 'string', click: () => pick(String(item.id)) }
+    if (typeof item.checked === 'boolean') Object.assign(out, { type: 'checkbox', checked: item.checked })
+    return out
+  })
+}
+function runMainItem(id, checked) {
+  const commands = tray?.panel?.commands
+  if (id === 'helpVisits') { trayActions().setHelpVisits(!checked); return true }
+  if (id === 'dnd' && commands?.dnd) { commands.dnd(!checked); return true }
+  if (id === 'mute' && commands?.mute) { commands.mute(); return true }
+  return false // no popover (Linux): the page handles it locally
+}
+ipcMain.handle('petpack:context-menu', (event, items) => {
+  if (!trusted(event) || !win || win.isDestroyed()) return null
+  return new Promise(resolve => {
+    let done = false
+    const finish = value => { if (!done) { done = true; resolve(value) } }
+    const checkedOf = id => {
+      const find = list => { for (const i of list || []) { if (i?.id === id) return i.checked === true; const sub = find(i?.submenu); if (sub != null) return sub } return null }
+      return find(items) === true
+    }
+    const menu = Menu.buildFromTemplate(contextTemplate(items, id => {
+      finish({ id, handled: MAIN_ITEMS.has(id) && runMainItem(id, checkedOf(id)) })
+    }))
+    // The close callback can run before the click on macOS: give the click a moment to land first.
+    menu.popup({ window: win, callback: () => setTimeout(() => finish(null), 150) })
+  })
+})
 ipcMain.on('petpack:agent-ready', (event, ready) => {
   if (!trusted(event)) return
   agentReady = Boolean(ready)
@@ -543,6 +581,11 @@ function trayActions() {
     setSeat: seat => { settings.seat = seat; saveSettings(); refreshTray(); win?.webContents.reload() },
     // "Answer teammates in Codex" (default on): questions we can't answer at once open in the Codex app.
     setAnswerInCodex: on => { settings.answerInCodex = Boolean(on); saveSettings(); refreshTray() },
+    // "Help stuck teammates" (opt-in, default off): the live brain follows at once, no reload.
+    setHelpVisits: on => {
+      settings.helpVisits = Boolean(on); saveSettings(); refreshTray()
+      if (win && !win.isDestroyed()) win.webContents.send('petpack:panel-command', { cmd: 'helpVisits', on: settings.helpVisits })
+    },
     // "Show me" (L2 brain.showMe): the pane opens and our pet comes to the front.
     showMe: () => {
       if (!win || win.isDestroyed()) return
@@ -728,7 +771,7 @@ app.whenReady().then(async () => {
   if (process.platform === 'win32') setInterval(() => win && raiseToTop(win), 10000)
   if (SMOKE) { runSmoke().catch(error => { console.error(error); app.exit(1) }); return }
   tray = createTray({ state: () => ({ room: settings.room, seat: settings.seat, dock: settings.dock, sit: settings.sit === 'across' ? 'across' : 'side', answerInCodex: settings.answerInCodex === true,
-    align: settings.align, codex: codexState }), actions: trayActions(), pane: () => win, userData: USER_DATA,
+    helpVisits: settings.helpVisits === true, align: settings.align, codex: codexState }), actions: trayActions(), pane: () => win, userData: USER_DATA,
     // A new pet from the tray: the page re-reads getMe() and re-sends its sprite (no reload, the walk goes on).
     onPetChange: () => { petFace = null; if (win && !win.isDestroyed()) win.webContents.send('petpack:me-changed') } })
   if (codexLink) { codexState = codexLink.state().status === 'unregistered' ? 'unregistered' : 'registered'; refreshTray() }

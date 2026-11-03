@@ -129,4 +129,6 @@ contextBridge.exposeInMainWorld('petpack', {
     }
   },
   setInteractive: on => ipcRenderer.send('petpack:interactive', Boolean(on)),
+  // Right-click menu: [{ id, label, checked?, enabled? } | { type: 'separator' } | { label, submenu }] -> { id, handled } | null
+  contextMenu: items => ipcRenderer.invoke('petpack:context-menu', items),
 })

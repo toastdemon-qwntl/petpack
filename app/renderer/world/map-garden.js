@@ -23,7 +23,9 @@ function normalize(item) {
   const color = typeof item.color === 'string' && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(item.color)
     ? item.color : typeof item.color === 'number' && Number.isInteger(item.color) && item.color >= 0 && item.color <= 0xffffff
       ? `#${item.color.toString(16).padStart(6, '0')}` : SPECIES[item.kind].color
-  return { key, kind: item.kind, seed, color, chunk: SPECIES[item.kind].chunk }
+  // grow 0..1: how far through its week a plant is; full grown plants are 60 % bigger than new ones.
+  const grow = Number.isFinite(item.grow) ? Math.max(0, Math.min(1, item.grow)) : 1
+  return { key, kind: item.kind, seed, color, chunk: SPECIES[item.kind].chunk, grow }
 }
 
 // Each seed owns its coordinates. Adding another plant never moves an existing
@@ -147,7 +149,7 @@ export function createKnowledgeGarden({ chunkWidth = 14 } = {}) {
       item.age = Math.min(2, item.age + dt)
       const age = item.age
       const growth = age >= 1.4 ? 1 : Math.max(.015, Math.min(1.1, 1 - Math.exp(-6.5 * age) * (Math.cos(age * 10) + .42 * Math.sin(age * 10))))
-      const scale = item.scale * growth
+      const scale = item.scale * growth * (0.75 + 0.45 * item.record.grow)
       const lean = Math.sin(now * 1.05 + item.phase) * .018
       for (const p of item.parts) {
         dummy.position.set(item.x + p.x * scale + lean * p.y, item.y + p.y * scale, item.z + p.z * scale)
@@ -184,7 +186,7 @@ export function createKnowledgeGarden({ chunkWidth = 14 } = {}) {
       const existing = records.get(record.key)
       records.set(record.key, record)
       const chunk = chunks.get(record.chunk)
-      if (chunk && (!existing || existing.color !== record.color)) rebuild(chunk, existing ? null : record.key)
+      if (chunk && (!existing || existing.color !== record.color || existing.grow !== record.grow)) rebuild(chunk, existing ? null : record.key)
       return { kind: record.kind, seed: record.seed, color: record.color, chunk: record.chunk }
     },
     setGarden(items = []) {

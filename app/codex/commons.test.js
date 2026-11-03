@@ -504,3 +504,23 @@ test('toml: tables, quoted keys, multi-line arrays and inline tables', () => {
   assert.deepEqual(t.x['y.z'].m, { P: 'q', R: 's' })
   assert.deepEqual(t.arr, [{ n: true }])
 })
+
+test('need: workFile is the newest source file the stuck turn touched or errored in', async () => {
+  const { fileIn } = await import('./question.js')
+  assert.equal(fileIn('Error: boom\n    at run (src/relay.js:42:7)'), 'src/relay.js')
+  assert.equal(fileIn('*** Begin Patch\n*** Update File: app/renderer/brain.js\n@@'), 'app/renderer/brain.js')
+  assert.equal(fileIn('at /usr/lib/node_modules/x/index.js:1:1'), null)
+  const now = Date.parse('2026-11-01T12:00:00Z')
+  const line = (type, payload) => JSON.stringify({ timestamp: new Date(now - 60000).toISOString(), type, payload })
+  const parsed = analyzeRollout([
+    line('session_meta', { id: 's1', cwd: '/work/petpack' }),
+    line('event_msg', { type: 'task_started', turn_id: 't1' }),
+    line('response_item', { type: 'message', role: 'user', content: 'fix the relay reconnect' }),
+    line('response_item', { type: 'function_call', name: 'shell', arguments: JSON.stringify({ command: ['bash', '-lc', 'node --test server/relay.test.js'] }) }),
+    line('response_item', { type: 'function_call_output', output: 'Error: socket hang up\n    at connect (server/relay.js:88:3)\nexit code: 1' }),
+    line('event_msg', { type: 'task_complete', error: { message: 'socket hang up' } }),
+  ], now)
+  const need = needFrom(parsed)
+  assert.equal(need.workFile, 'server/relay.js')
+  assert.equal(need.cwd, '/work/petpack')
+})

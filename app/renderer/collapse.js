@@ -253,11 +253,14 @@ export function attachCollapse({ world, brain, bridge = window.petpack, root } =
   let overChrome = false
   let hideTimer = 0
   const near = (el, x, y, pad = 4) => { const r = el.getBoundingClientRect(); return x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad }
+  // The world runs edge to edge, so the frame is the outline plus a thin band just inside it (not on the docked edge).
+  const FRAME_BAND = 5
   function onFrame(x, y) {
     const p = pane.getBoundingClientRect()
-    const v = pane.querySelector('.world-viewport')?.getBoundingClientRect()
-    if (!v || x < p.left || x > p.right || y < p.top || y > p.bottom) return false
-    return x < v.left || x > v.right || y < v.top || y > v.bottom
+    if (x < p.left || x > p.right || y < p.top || y > p.bottom) return false
+    const floating = document.body.classList.contains('pp-floating')
+    const band = side => (!floating && side === dock ? 0 : FRAME_BAND)
+    return x < p.left + band('left') || x > p.right - band('right') || y < p.top + FRAME_BAND || y > p.bottom - FRAME_BAND
   }
   const onMove = event => {
     if (state.collapsed || dragging) return
@@ -284,7 +287,7 @@ export function attachCollapse({ world, brain, bridge = window.petpack, root } =
   let dragging = false
   const onDown = event => {
     if (event.button !== 0 || state.collapsed || dragging) return
-    if (event.target !== grip && event.target !== pane) return // the world (pets, throws) keeps its own pointer
+    if (event.target !== grip && event.target !== pane && !onFrame(event.clientX, event.clientY)) return // the world (pets, throws) keeps its own pointer
     event.preventDefault()
     event.stopPropagation()
     dragging = true
